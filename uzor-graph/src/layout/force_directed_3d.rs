@@ -75,7 +75,21 @@ pub struct ForceParams3D {
     /// configurability — was the private [`barnes_hut_3d::MIN_CELL_SIZE`]
     /// constant).
     pub min_cell_size: f32,
+    /// Hard cap on a single particle's own per-tick displacement
+    /// magnitude — 3D mirror of
+    /// [`super::force_directed::ForceParams::max_displacement_per_tick`]
+    /// (Wave G3 item 6 fix). Same default
+    /// ([`DEFAULT_MAX_DISPLACEMENT_PER_TICK_3D`]) and measurement
+    /// rationale as the 2D field's own doc comment — the 3D force model
+    /// is the identical formula generalized to `(x, y, z)`, so the same
+    /// measured headroom applies.
+    pub max_displacement_per_tick: f32,
 }
+
+/// Default for [`ForceParams3D::max_displacement_per_tick`] — 3D mirror
+/// of `super::force_directed::DEFAULT_MAX_DISPLACEMENT_PER_TICK` (Wave
+/// G3 item 6 fix).
+const DEFAULT_MAX_DISPLACEMENT_PER_TICK_3D: f32 = 20_000.0;
 
 impl Default for ForceParams3D {
     fn default() -> Self {
@@ -99,6 +113,7 @@ impl Default for ForceParams3D {
             min_dist2: barnes_hut_3d::MIN_DIST2,
             min_split_dist2: barnes_hut_3d::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut_3d::MIN_CELL_SIZE,
+            max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK_3D,
         }
     }
 }
@@ -298,6 +313,18 @@ impl Layout for ForceDirectedLayout3D {
             particles[i].vx = (particles[i].vx + fx * alpha) * decay_factor;
             particles[i].vy = (particles[i].vy + fy * alpha) * decay_factor;
             particles[i].vz = (particles[i].vz + fz * alpha) * decay_factor;
+            // Wave G3 item 6 fix — 3D mirror of the 2D layout's own
+            // velocity clamp. See `ForceParams3D::max_displacement_per_tick`.
+            if step > 1e-9 {
+                let max_speed = self.params.max_displacement_per_tick / step;
+                let speed2 = particles[i].vx * particles[i].vx + particles[i].vy * particles[i].vy + particles[i].vz * particles[i].vz;
+                if speed2 > max_speed * max_speed {
+                    let scale = max_speed / speed2.sqrt();
+                    particles[i].vx *= scale;
+                    particles[i].vy *= scale;
+                    particles[i].vz *= scale;
+                }
+            }
             let dx = particles[i].vx * step;
             let dy = particles[i].vy * step;
             let dz = particles[i].vz * step;
@@ -616,5 +643,62 @@ mod tests {
             softened_speed < default_speed,
             "a larger min_dist2 softening floor must cap the resulting velocity lower: default={default_speed} softened={softened_speed}"
         );
+    }
+
+    // ── Wave G3 item 6 — 3D mirror of `force_directed`'s own displacement clamp ──
+
+    #[test]
+    fn max_displacement_per_tick_default_matches_the_2d_layouts_own_measured_value() {
+        assert_eq!(ForceParams3D::default().max_displacement_per_tick, 20_000.0);
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// max_displacement_per_tick_actually_bounds_output_when_overridden_low`.
+    #[test]
+    fn max_displacement_per_tick_actually_bounds_output_when_overridden_low() {
+        let n = 600;
+        let mut particles = vec![Particle::default(); n];
+        let degree = vec![0u32; n];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(n, &edges, &degree, vec![4.0; n]);
+        let mut layout = ForceDirectedLayout3D::new(ForceParams3D {
+            seed_degenerate_positions: false,
+            max_displacement_per_tick: 10.0,
+            ..ForceParams3D::default()
+        });
+
+        for _ in 0..30 {
+            let r = layout.tick(&t, &mut particles, 1.0 / 60.0);
+            assert!(
+                r.max_displacement <= 10.0 + 1e-3,
+                "an overridden 10.0 clamp must never let any tick's own max_displacement exceed it: got {}",
+                r.max_displacement
+            );
+        }
+        for p in &particles {
+            assert!(p.x.is_finite() && p.y.is_finite() && p.z.is_finite(), "every coordinate must stay finite under the clamp");
+        }
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// an_ordinary_non_exploding_simulation_is_byte_identical_with_the_clamp_effectively_disabled`.
+    #[test]
+    fn an_ordinary_non_exploding_simulation_is_byte_identical_with_the_clamp_effectively_disabled() {
+        let make_particles = || vec![Particle::at3(-10.0, 0.0, 0.0), Particle::at3(10.0, 0.0, 0.0), Particle::at3(0.0, 15.0, 5.0)];
+        let degree = vec![0u32; 3];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        let mut particles_default = make_particles();
+        let mut layout_default = ForceDirectedLayout3D::default();
+        let mut particles_disabled = make_particles();
+        let mut layout_disabled =
+            ForceDirectedLayout3D::new(ForceParams3D { max_displacement_per_tick: f32::INFINITY, ..ForceParams3D::default() });
+
+        for _ in 0..60 {
+            layout_default.tick(&t, &mut particles_default, 1.0 / 60.0);
+            layout_disabled.tick(&t, &mut particles_disabled, 1.0 / 60.0);
+        }
+        assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
     }
 }

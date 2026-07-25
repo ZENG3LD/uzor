@@ -24,6 +24,12 @@
 //! computes positions once then reports settled forever;
 //! [`Layout::reheat`] forces a recompute — same freeze semantics as
 //! [`super::hierarchical::HierarchicalLayout`].
+//!
+//! **Wave G3 item 3 — [`HierarchicalParams3D::radius_aware_spacing`].**
+//! OFF by default (doctrine: no silent output change). When on, a
+//! ring's own radius/angular allocation is derived from the SUM of each
+//! member's own diameter (via [`SimTopology::radii`]) instead of a flat
+//! per-member arc budget — see [`radius_aware_ring`]'s own doc comment.
 
 use std::f32::consts::TAU;
 
@@ -58,12 +64,59 @@ pub struct HierarchicalParams3D {
     /// configurability — was the private `MIN_RING_RADIUS` constant, with
     /// no matching field before this).
     pub min_ring_radius: f32,
+    /// When `true`, a ring's radius and per-member angular width are
+    /// both derived from the SUM of each member's own diameter (via
+    /// [`SimTopology::radii`]) instead of a flat `ring_spacing`-per-
+    /// member arc budget — see [`radius_aware_ring`]'s own doc comment.
+    /// Defaults to `false`: this CHANGES layout output for any graph
+    /// with varying node radii, so today's count-only ring formula is
+    /// preserved unless a caller opts in (doctrine: no silent output
+    /// change — recommended to the owner, not flipped here).
+    pub radius_aware_spacing: bool,
 }
 
 impl Default for HierarchicalParams3D {
     fn default() -> Self {
-        Self { layer_spacing: 220.0, ring_spacing: 70.0, roots: Vec::new(), min_ring_radius: DEFAULT_MIN_RING_RADIUS }
+        Self {
+            layer_spacing: 220.0,
+            ring_spacing: 70.0,
+            roots: Vec::new(),
+            min_ring_radius: DEFAULT_MIN_RING_RADIUS,
+            radius_aware_spacing: false,
+        }
     }
+}
+
+/// [`HierarchicalParams3D::radius_aware_spacing`]'s own ring
+/// radius/angle formula — each member's own per-ring "arc budget" is
+/// `max(ring_spacing, 2 * own_radius)` (its own diameter, floored at the
+/// ordinary `ring_spacing`), the ring's radius is `sum(budgets) / TAU`
+/// (floored at `min_ring_radius`), and each member's angle sits at the
+/// MIDPOINT of its own budget's cumulative span. When every member's
+/// radius is small enough that `2 * own_radius <= ring_spacing`, every
+/// budget floors to the SAME `ring_spacing` value and this recovers the
+/// non-aware formula's own radius EXACTLY (`sum == count * ring_spacing`,
+/// `radius == ring_spacing * count / TAU`) — angles differ (midpoint of
+/// an equal slice vs. the non-aware formula's own `slot * TAU / count`
+/// slice-START convention), a genuinely different but equally valid
+/// convention, only reachable when this opt-in flag is set.
+fn radius_aware_ring(row: &[usize], radii: &[f32], ring_spacing: f32, min_ring_radius: f32) -> (f32, Vec<f32>) {
+    if row.is_empty() {
+        return (min_ring_radius, Vec::new());
+    }
+    let own_radius = |node: usize| radii.get(node).copied().unwrap_or(1.0).max(0.0);
+    let budgets: Vec<f32> = row.iter().map(|&n| (2.0 * own_radius(n)).max(ring_spacing)).collect();
+    let total: f32 = budgets.iter().sum();
+    let radius = (total / TAU).max(min_ring_radius);
+
+    let mut angles = Vec::with_capacity(row.len());
+    let mut offset = 0.0f32;
+    for &budget in &budgets {
+        let width = TAU * budget / total;
+        angles.push(offset + width * 0.5);
+        offset += width;
+    }
+    (radius, angles)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,7 +149,12 @@ impl Layout for HierarchicalLayout3D {
         let layering = compute_layering(topo, &self.params.roots);
         for (layer_idx, row) in layering.layers.iter().enumerate() {
             let count = row.len().max(1) as f32;
-            let radius = (self.params.ring_spacing * count / TAU).max(self.params.min_ring_radius);
+            let (radius, radius_aware_angles) = if self.params.radius_aware_spacing {
+                let (r, angles) = radius_aware_ring(row, &topo.radii, self.params.ring_spacing, self.params.min_ring_radius);
+                (r, Some(angles))
+            } else {
+                ((self.params.ring_spacing * count / TAU).max(self.params.min_ring_radius), None)
+            };
             let y = -(layer_idx as f32 * self.params.layer_spacing);
             for (slot, &node) in row.iter().enumerate() {
                 let Some(p) = particles.get_mut(node) else { continue };
@@ -114,7 +172,10 @@ impl Layout for HierarchicalLayout3D {
                     p.vz = 0.0;
                     continue;
                 }
-                let angle = slot as f32 * TAU / row.len().max(1) as f32;
+                let angle = match &radius_aware_angles {
+                    Some(angles) => angles[slot],
+                    None => slot as f32 * TAU / row.len().max(1) as f32,
+                };
                 p.x = radius * angle.cos();
                 p.z = radius * angle.sin();
                 p.y = y;
@@ -286,5 +347,70 @@ mod tests {
         layout.tick(&t, &mut particles, 1.0 / 60.0);
         let second: Vec<(f32, f32, f32)> = particles.iter().map(|p| (p.x, p.y, p.z)).collect();
         assert_eq!(first, second);
+    }
+
+    // ── Wave G3 item 3 — `radius_aware_spacing` ─────────────────────────
+
+    #[test]
+    fn hierarchical_params_3d_radius_aware_spacing_defaults_to_false() {
+        assert!(!HierarchicalParams3D::default().radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+    }
+
+    /// When every member's own radius is small (`2 * r <= ring_spacing`),
+    /// `radius_aware_ring` must recover the non-aware formula's own
+    /// RADIUS exactly (angles differ by convention — midpoint-of-slice
+    /// vs. slice-start — see the function's own doc comment).
+    #[test]
+    fn radius_aware_ring_with_small_radii_recovers_the_non_aware_radius_exactly() {
+        let row: Vec<usize> = (0..5).collect();
+        let radii = vec![1.0f32; 5];
+        let (radius, angles) = radius_aware_ring(&row, &radii, 70.0, 20.0);
+        let expected = (70.0 * 5.0 / TAU).max(20.0);
+        assert!((radius - expected).abs() < 1e-3, "radius must match the non-aware formula: {radius} vs {expected}");
+        assert_eq!(angles.len(), 5);
+        for a in &angles {
+            assert!(a.is_finite());
+        }
+    }
+
+    /// Wave G3 item 3 gate: a member whose own diameter exceeds
+    /// `ring_spacing` must widen the RING RADIUS to fit the larger
+    /// circumference its budget demands.
+    #[test]
+    fn radius_aware_ring_widens_the_radius_for_a_large_radius_member() {
+        let row: Vec<usize> = (0..5).collect();
+        let mut radii = vec![1.0f32; 5];
+        radii[2] = 200.0; // one big supernode-like member
+        let (radius, _) = radius_aware_ring(&row, &radii, 70.0, 20.0);
+        let baseline = (70.0 * 5.0 / TAU).max(20.0);
+        assert!(radius > baseline, "a large member must widen the ring radius: {radius} vs baseline {baseline}");
+    }
+
+    /// Integration gate: `HierarchicalParams3D::radius_aware_spacing`
+    /// must actually reach `tick()`, not just exist as an unread field.
+    #[test]
+    fn hierarchical_3d_layout_radius_aware_spacing_actually_changes_output_when_node_radii_vary() {
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5)];
+        let mut radii = vec![1.0f32; 6];
+        radii[3] = 100.0;
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = HierarchicalLayout3D::default();
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout =
+            HierarchicalLayout3D::new(HierarchicalParams3D { radius_aware_spacing: true, ..HierarchicalParams3D::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        assert_ne!(
+            (off_particles[3].x, off_particles[3].z),
+            (on_particles[3].x, on_particles[3].z),
+            "turning radius_aware_spacing on must actually move the big-radius member"
+        );
+        for i in 0..6 {
+            assert_eq!(off_particles[i].y, on_particles[i].y, "layer height (Y) must stay untouched by this item");
+        }
     }
 }

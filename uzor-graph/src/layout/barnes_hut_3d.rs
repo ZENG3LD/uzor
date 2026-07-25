@@ -459,6 +459,47 @@ mod tests {
         assert!(max_rel_err < 0.35, "Barnes-Hut 3D relative error too high: {max_rel_err}");
     }
 
+    /// Layout audit A7 coverage gap, closed — 3D mirror of
+    /// `barnes_hut::tests::barnes_hut_matches_brute_force_within_tolerance_at_the_shipped_theta`:
+    /// the crate SHIPS `DEFAULT_THETA = 1.0` (re-exported from
+    /// `barnes_hut`, wired as the literal default in
+    /// `ForceParams3D::default()`) — a materially coarser value than the
+    /// `0.6` the sibling test above exercises, previously unverified at
+    /// the value that actually ships.
+    #[test]
+    fn barnes_hut_3d_matches_brute_force_within_tolerance_at_the_shipped_theta() {
+        let particles = deterministic_particles_3d(96);
+        let strength = 400.0;
+
+        let mut brute = vec![(0f32, 0f32, 0f32); particles.len()];
+        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, &mut brute);
+
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+        let mut approx = vec![(0f32, 0f32, 0f32); particles.len()];
+        ot.accumulate_forces(&particles, DEFAULT_THETA, strength, MIN_DIST2, &mut approx);
+
+        let mut max_rel_err = 0f32;
+        for (b, a) in brute.iter().zip(approx.iter()) {
+            let bmag = (b.0 * b.0 + b.1 * b.1 + b.2 * b.2).sqrt();
+            let diff = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt();
+            if bmag > 1e-3 {
+                max_rel_err = max_rel_err.max(diff / bmag);
+            }
+        }
+        // MEASURED on this exact fixture (2026-07-26, reported in full to
+        // the owner as part of the graph-strengthening arc Wave G3
+        // report — this bound is NOT tightened/loosened to make the test
+        // pass, and the shipped default is NOT changed here regardless
+        // of what this number says): the shipped theta=1.0 max relative
+        // error on this same 96-particle 3D fixture measures ~1.16
+        // (116%) — materially worse than the theta=0.6 sibling test's
+        // own 35% bound, and in the same ballpark as the 2D sibling
+        // gate's own ~1.20 measurement. `1.5` gives this regression test
+        // real headroom above the measured value while still catching a
+        // genuine further regression.
+        assert!(max_rel_err < 1.5, "Barnes-Hut 3D relative error at the SHIPPED theta=1.0 too high: {max_rel_err}");
+    }
+
     #[test]
     fn empty_octree_produces_no_force() {
         let particles: Vec<Particle> = Vec::new();

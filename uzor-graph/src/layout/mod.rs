@@ -16,6 +16,7 @@ pub use force_directed::{ForceDirectedLayout, ForceParams};
 pub use force_directed_3d::{ForceDirectedLayout3D, ForceParams3D};
 pub use hierarchical::{HierarchicalLayout, HierarchicalParams};
 pub use hierarchical_3d::{HierarchicalLayout3D, HierarchicalParams3D};
+pub use layering::DepthMetric;
 pub use mode::{GraphLayoutMode, LayoutKind};
 pub use mode3d::GraphLayoutMode3D;
 pub use radial::{RadialLayout, RadialParams};

@@ -490,6 +490,21 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// anyway, but the field itself stays internally consistent either
     /// way. See [`GraphEngine3D::render_z_scale`].
     z_scale: f32,
+    /// Wave G3 item 5 fix — whether [`GraphEngine3D::start_transition`]
+    /// has EVER been called on this engine instance, regardless of
+    /// direction. Set `true` unconditionally on every call, never reset.
+    /// This is the signal `start_transition` needs beyond mere
+    /// `dim_transition.is_some()` (`is_fresh`) to distinguish a genuine
+    /// first-ever `In` (whose `z_scale`/`camera` still hold their raw
+    /// construction defaults, `1.0`/`Camera3D::default()`, and must be
+    /// forced to the canonical flat/front-on start) from a REDUNDANT
+    /// `In` call on an engine that already ran at least one transition
+    /// to completion (whose `z_scale`/`camera` already hold an honest
+    /// reflection of the real visual state — reading them directly is
+    /// always correct there, even though `dim_transition` is `None` for
+    /// the unrelated reason that the prior transition already finished).
+    /// See [`GraphEngine3D::start_transition`]'s own doc comment.
+    transition_ever_started: bool,
 
     // ── Graph-strengthening arc Wave G2b — 3D configurability. Every
     // field below replaces a former private constant/hardcoded literal
@@ -572,6 +587,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             dim_transition: None,
             orbit_camera: Camera3D::default(),
             z_scale: 1.0,
+            transition_ever_started: false,
             theme: GraphTheme::default(),
             lighting: Graph3DLighting::default(),
             edge_style: Graph3DEdgeStyle::default(),
@@ -1285,16 +1301,42 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// any ease. `In`'s own end target reads this snapshot (not
     /// `self.camera`), so any number of reversals always still converges
     /// back on the SAME real orbit pose, never a stale or mid-flight one.
+    ///
+    /// **Wave G3 item 5 fix — idempotent against a REDUNDANT `In`.** The
+    /// "genuinely fresh vs. already in flight" question above is
+    /// answered by `is_fresh` (`dim_transition.is_none()`), which is
+    /// correct for REVERSAL detection but NOT for distinguishing a
+    /// genuine first-ever `In` from a redundant one: `dim_transition`
+    /// also reads `None` the instant a PRIOR transition simply finished
+    /// — a caller re-invoking `start_transition(In, _)` on an engine
+    /// that's already fully, steadily 3D (`z_scale == 1.0`, no
+    /// transition object because the last one already completed) would,
+    /// under the old `is_fresh`-only test, still force `start_scale` back
+    /// to `0.0` and the camera back to `front_on` — a spurious
+    /// flatten-then-reinflate/camera-jump glitch, not a genuine
+    /// visual reset. [`Self::transition_ever_started`] is the signal
+    /// that actually distinguishes the two: `false` only on a
+    /// construction-fresh (or never-transitioned) engine, where
+    /// `z_scale`/`camera` still hold their raw, never-set defaults and
+    /// genuinely need forcing to the canonical flat/front-on start;
+    /// `true` for every call after the first, where `z_scale`/`camera`
+    /// already hold an honest reflection of the real visual state
+    /// (steady, or live mid-flight, or the honest result of the LAST
+    /// completed transition — e.g. after a real `Out` finishes, `z_scale`
+    /// is genuinely `0.0`, and a SECOND `In` correctly eases up FROM that
+    /// real flat state) — reading them directly is always correct there.
+    /// Scoped to `In` only, matching the one reachable redundant-call
+    /// path (`Out`'s own `is_fresh`-gated `orbit_camera` capture is
+    /// unaffected — a redundant `Out` is not reachable through this
+    /// crate's own call sites, since every existing caller only invokes
+    /// `Out` while genuinely `ThreeD`).
     pub fn start_transition(&mut self, direction: TransitionDirection, duration_ms: f64) {
         let is_fresh = self.dim_transition.is_none();
-        // A FRESH `In` always starts perfectly flat (`0.0`) — NOT
-        // `self.render_z_scale()`, which reads `1.0` absent a transition
-        // (this engine's ordinary full-volume steady state, exactly what
-        // a fresh 2D->3D switch must NOT start from). A REVERSAL (or any
-        // fresh `Out`, whose canonical start `1.0` already equals the
-        // steady-state reading) correctly continues from whatever the
-        // CURRENT instantaneous scale is.
-        let start_scale = if is_fresh && direction == TransitionDirection::In { 0.0 } else { self.render_z_scale() };
+        // Wave G3 item 5 fix: `bootstrapping` (not `is_fresh`) governs
+        // whether `In` forces the canonical flat/front-on start — see
+        // this method's own doc comment above.
+        let bootstrapping = direction == TransitionDirection::In && !self.transition_ever_started;
+        let start_scale = if bootstrapping { 0.0 } else { self.render_z_scale() };
         let end_scale = match direction {
             TransitionDirection::In => 1.0,
             TransitionDirection::Out => 0.0,
@@ -1306,12 +1348,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
 
         let front_on = self.front_on_camera();
         let (start_camera, end_camera) = match direction {
-            TransitionDirection::In => (if is_fresh { front_on } else { self.camera }, self.orbit_camera),
+            TransitionDirection::In => (if bootstrapping { front_on } else { self.camera }, self.orbit_camera),
             TransitionDirection::Out => (self.camera, front_on),
         };
 
         self.camera = start_camera;
         self.z_scale = start_scale;
+        self.transition_ever_started = true;
         self.dim_transition = Some(DimensionTransition {
             direction,
             elapsed_s: 0.0,
@@ -1792,6 +1835,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// `self.particles` directly — while a [`DimensionTransition`] is in
     /// flight this renders the eased-flat/inflating volume without ever
     /// mutating the simulated particles themselves.
+    ///
+    /// **Wave G3 item 4 fix**: every transparent billboarded-edge entry
+    /// (graph edges + cluster synthetic edges + grid lines — all share
+    /// ONE instanced draw call, see `render3d::sort_line_nodes_back_to_front`'s
+    /// own doc comment) is depth-sorted back-to-front against the
+    /// CURRENT camera eye right before this returns, after every source
+    /// has finished appending — previously arbitrary graph-edge
+    /// iteration order.
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
         let hidden = self.compute_excluded_nodes_3d();
         let render_particles = self.render_particles();
@@ -1827,6 +1878,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 scene.nodes.extend(crate::render3d::build_grid_instances(&plan, &self.edge_mesh, &self.grid_config));
             }
         }
+        // Wave G3 item 4 fix — back-to-front depth sort for every
+        // transparent billboarded-edge entry now that the FULL edge set
+        // (graph edges + cluster synthetic edges + grid lines, all
+        // sharing one instanced draw call) is assembled. See
+        // `render3d::sort_line_nodes_back_to_front`'s own doc comment.
+        crate::render3d::sort_line_nodes_back_to_front(&mut scene.nodes, self.camera.eye());
         scene
     }
 
@@ -4407,6 +4464,103 @@ mod tests {
             last = now;
         }
         assert!(last.abs() < 1e-4);
+    }
+
+    // ── Wave G3 item 5 — `start_transition(In, _)` idempotency ─────────
+
+    /// The actual defect: a REDUNDANT `start_transition(In, _)` call on
+    /// an engine that's already fully, steadily 3D (the first `In`
+    /// completed long ago, `dim_transition` is `None` again for the
+    /// unrelated reason that it finished, not because nothing has ever
+    /// run) must NOT force a spurious flatten-then-reinflate — before
+    /// the fix, `start_scale` was forced to `0.0` regardless.
+    #[test]
+    fn a_redundant_in_transition_after_the_first_one_completed_does_not_reflatten() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 50.0);
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+        }
+        assert_eq!(engine.render_z_scale(), 1.0, "the first In must have settled at the full z-scale");
+
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert_eq!(
+            engine.render_z_scale(),
+            1.0,
+            "a redundant In on an already-steady-3D engine must NOT force a spurious flatten back to 0.0"
+        );
+        // A start==end transition is legitimately a no-op that settles
+        // immediately (or within a couple ticks) rather than genuinely
+        // animating anything, since there's nothing to ease between.
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+            assert_eq!(engine.render_z_scale(), 1.0, "z-scale must stay at 1.0 throughout a redundant, already-settled In");
+        }
+    }
+
+    /// The redundant call must ALSO not snap the camera back to the
+    /// front-on framing — the analogous glitch on the camera side of
+    /// the same `is_fresh`-only bug.
+    #[test]
+    fn a_redundant_in_transition_after_the_first_one_completed_does_not_snap_the_camera() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 50.0);
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+        }
+        let settled_camera = engine.camera;
+        let front_on = engine.front_on_camera();
+        assert_ne!(settled_camera, front_on, "sanity: the settled orbit pose must genuinely differ from the front-on framing");
+
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert_eq!(engine.camera, settled_camera, "a redundant In must NOT snap the camera back to the front-on framing");
+    }
+
+    /// A genuine SECOND entry (after a real `Out` flatten actually
+    /// completed) must still animate correctly — the fix must not break
+    /// the legitimate "flatten, then re-enter" cycle while closing the
+    /// redundant-call glitch.
+    #[test]
+    fn a_genuine_second_in_after_a_completed_out_still_animates_from_flat() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 50.0);
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+        }
+        engine.start_transition(TransitionDirection::Out, 50.0);
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+        }
+        assert!(engine.render_z_scale().abs() < 1e-4, "the Out must have genuinely flattened to 0.0");
+
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert!(engine.render_z_scale().abs() < 1e-4, "a genuine second In must start from the real flat state, not skip the animation");
+        let mut last = engine.render_z_scale();
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100);
+            engine.tick(0.02);
+            let now = engine.render_z_scale();
+            assert!(now >= last - 1e-6, "must ease monotonically back up toward 1.0");
+            last = now;
+        }
+        assert!((last - 1.0).abs() < 1e-4);
     }
 
     // ── Graph-strengthening arc G1.6: camera input vs. an in-flight

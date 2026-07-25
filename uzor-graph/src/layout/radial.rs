@@ -7,13 +7,25 @@
 //! guarantees a minimum angular gap between siblings without any
 //! post-hoc renormalization. One-shot, same freeze semantics as
 //! [`super::hierarchical::HierarchicalLayout`].
+//!
+//! **Wave G3 — `depth_metric`**: depth for the RING assignment is
+//! [`super::layering::DepthMetric::LongestPath`] by default (this
+//! module's own pre-existing behavior, unchanged) — [`super::radial_3d::
+//! RadialLayout3D`] defaults to the OPPOSITE metric
+//! (`ShortestPath`), an unreconciled divergence the layout audit traced
+//! concretely (see [`super::layering::DepthMetric`]'s own doc comment).
+//! [`RadialParams::depth_metric`] lets a caller align the two.
+//!
+//! **Wave G3 — `radius_aware_spacing`**: OFF by default (doctrine: no
+//! silent output change) — see [`RadialParams::radius_aware_spacing`]'s
+//! own doc comment.
 
 use std::f32::consts::TAU;
 
 use crate::graph::{NodeIndex, SimTopology};
 use crate::particle::Particle;
 
-use super::layering::{compute_layering, Layering};
+use super::layering::{compute_bfs_layering, compute_layering, DepthMetric, Layering};
 use super::{Layout, LayoutTickResult};
 
 /// Default for [`RadialParams::leaf_weight_blend`] — how much of a ring's
@@ -42,11 +54,35 @@ pub struct RadialParams {
     /// blend semantics (Wave G2b configurability — was the private
     /// `LEAF_WEIGHT_BLEND` constant, with no matching field before this).
     pub leaf_weight_blend: f32,
+    /// Which depth notion assigns a node to a ring — see
+    /// [`super::layering::DepthMetric`]'s own doc comment (Wave G3 fix).
+    /// Defaults to [`DepthMetric::LongestPath`] — this module's own
+    /// PRE-EXISTING behavior via [`compute_layering`], unchanged.
+    pub depth_metric: DepthMetric,
+    /// When `true`, a ring's angular-width allocation ALSO scales by each
+    /// member's own [`SimTopology::radii`] (relative to that ring's own
+    /// average radius) on top of the existing leaf-count blend, so a
+    /// collapsed-cluster supernode (sqrt-scaled radius,
+    /// `crate::cluster::supernode_radius`) gets proportionally more
+    /// angular room than a same-ring leaf — see [`assign_ring_angles`]'s
+    /// own doc comment for the exact renormalization. Defaults to
+    /// `false`: this CHANGES layout output for any graph with varying
+    /// node radii, so today's leaf-only allocation is preserved unless a
+    /// caller opts in (doctrine: no silent output change; Wave G3 item 3
+    /// — recommended to the owner, not flipped here).
+    pub radius_aware_spacing: bool,
 }
 
 impl Default for RadialParams {
     fn default() -> Self {
-        Self { base_radius: 60.0, ring_spacing: 90.0, roots: Vec::new(), leaf_weight_blend: DEFAULT_LEAF_WEIGHT_BLEND }
+        Self {
+            base_radius: 60.0,
+            ring_spacing: 90.0,
+            roots: Vec::new(),
+            leaf_weight_blend: DEFAULT_LEAF_WEIGHT_BLEND,
+            depth_metric: DepthMetric::LongestPath,
+            radius_aware_spacing: false,
+        }
     }
 }
 
@@ -107,19 +143,40 @@ fn leaf_counts(layering: &Layering) -> Vec<u32> {
 /// (an all-siblings-are-leaves ring still gets non-degenerate spacing;
 /// a `ring.len() == 1` ring degenerates to the whole circle, which is
 /// correct — a single node has no sibling to collide with).
-fn assign_ring_angles(ring: &[usize], leaf: &[u32], leaf_weight_blend: f32) -> Vec<f32> {
+///
+/// `radii` (Wave G3 item 3, `RadialParams::radius_aware_spacing`) —
+/// `None` reproduces the leaf-only blend above byte-for-byte identically
+/// (the default). `Some(radii)` multiplies each node's leaf-blended base
+/// share by `own_radius / ring_average_radius` BEFORE the final
+/// renormalization (`share_i = raw_i / sum(raw)`), so the spans still
+/// sum to exactly `TAU` — a node with an above-average radius (e.g. a
+/// collapsed-cluster supernode) gets proportionally MORE angular room, a
+/// below-average one gets less, while the leaf-count skew from the base
+/// blend is still respected relative to same-radius siblings.
+fn assign_ring_angles(ring: &[usize], leaf: &[u32], leaf_weight_blend: f32, radii: Option<&[f32]>) -> Vec<f32> {
     let len = ring.len();
     if len == 0 {
         return Vec::new();
     }
     let total: f32 = ring.iter().map(|&n| leaf[n] as f32).sum::<f32>().max(1.0);
     let uniform_share = (1.0 - leaf_weight_blend) / len as f32;
+    let base_shares: Vec<f32> = ring.iter().map(|&node| uniform_share + leaf_weight_blend * (leaf[node] as f32) / total).collect();
+
+    let shares: Vec<f32> = match radii {
+        None => base_shares,
+        Some(radii) => {
+            let own_radius = |node: usize| radii.get(node).copied().unwrap_or(1.0).max(1e-3);
+            let avg_radius = (ring.iter().map(|&n| own_radius(n)).sum::<f32>() / len as f32).max(1e-3);
+            let raw: Vec<f32> = ring.iter().zip(base_shares.iter()).map(|(&node, &base)| base * (own_radius(node) / avg_radius)).collect();
+            let raw_total: f32 = raw.iter().sum::<f32>().max(1e-6);
+            raw.into_iter().map(|v| v / raw_total).collect()
+        }
+    };
 
     let mut angles = Vec::with_capacity(len);
     let mut offset = 0.0f32;
-    for &node in ring {
-        let weighted_share = leaf_weight_blend * (leaf[node] as f32) / total;
-        let width = TAU * (uniform_share + weighted_share);
+    for &share in &shares {
+        let width = TAU * share;
         angles.push(offset + width * 0.5);
         offset += width;
     }
@@ -131,11 +188,15 @@ impl Layout for RadialLayout {
         if self.computed {
             return LayoutTickResult { alpha: 0.0, max_displacement: 0.0, settled: true };
         }
-        let layering = compute_layering(topo, &self.params.roots);
+        let layering = match self.params.depth_metric {
+            DepthMetric::LongestPath => compute_layering(topo, &self.params.roots),
+            DepthMetric::ShortestPath => compute_bfs_layering(topo, &self.params.roots),
+        };
         let leaf = leaf_counts(&layering);
+        let radii_for_angles = self.params.radius_aware_spacing.then(|| topo.radii.as_slice());
 
         for row in &layering.layers {
-            let angles = assign_ring_angles(row, &leaf, self.params.leaf_weight_blend);
+            let angles = assign_ring_angles(row, &leaf, self.params.leaf_weight_blend, radii_for_angles);
             for (&node, &angle) in row.iter().zip(angles.iter()) {
                 let Some(p) = particles.get_mut(node) else { continue };
                 if let (Some(fx), Some(fy)) = (p.fx, p.fy) {
@@ -290,5 +351,145 @@ mod tests {
         layout.tick(&t, &mut particles, 1.0 / 60.0);
         let second: Vec<(f32, f32)> = particles.iter().map(|p| (p.x, p.y)).collect();
         assert_eq!(first, second);
+    }
+
+    // ── Wave G3 item 2 — `depth_metric` ─────────────────────────────────
+
+    #[test]
+    fn radial_params_default_depth_metric_is_longest_path_and_radius_aware_spacing_is_off() {
+        let p = RadialParams::default();
+        assert_eq!(p.depth_metric, DepthMetric::LongestPath, "RadialLayout's pre-existing behavior — must not change silently");
+        assert!(!p.radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+    }
+
+    /// Wave G3 item 2 gate: the SAME fixture
+    /// `layering::tests::multi_depth_parents_take_the_longest_path` uses —
+    /// node D has two parents at different depths (C=1, G=2). Under the
+    /// default `LongestPath` metric D lands on ring depth 3; switching to
+    /// `ShortestPath` must genuinely move it to ring depth 2, not just
+    /// accept the field silently.
+    #[test]
+    fn depth_metric_shortest_path_places_a_multi_parent_node_on_a_different_ring_than_longest_path() {
+        let edges = [e(0, 1), e(2, 3), e(3, 4), e(1, 5), e(4, 5)];
+        let t = topo(6, &edges);
+
+        let mut longest_particles = vec![Particle::default(); 6];
+        let mut longest_layout = RadialLayout::default(); // LongestPath default
+        longest_layout.tick(&t, &mut longest_particles, 1.0 / 60.0);
+
+        let mut shortest_particles = vec![Particle::default(); 6];
+        let mut shortest_layout = RadialLayout::new(RadialParams { depth_metric: DepthMetric::ShortestPath, ..RadialParams::default() });
+        shortest_layout.tick(&t, &mut shortest_particles, 1.0 / 60.0);
+
+        let r_longest = radius_of(&longest_particles[5]); // D
+        let r_shortest = radius_of(&shortest_particles[5]);
+        assert!(r_longest > r_shortest, "D's LongestPath layer (3) must sit on a strictly larger ring than its ShortestPath depth (2): {r_longest} vs {r_shortest}");
+
+        let default_params = RadialParams::default();
+        let expected_longest = default_params.base_radius + 3.0 * default_params.ring_spacing;
+        let expected_shortest = default_params.base_radius + 2.0 * default_params.ring_spacing;
+        assert!((r_longest - expected_longest).abs() < 1e-2, "got {r_longest}, expected {expected_longest}");
+        assert!((r_shortest - expected_shortest).abs() < 1e-2, "got {r_shortest}, expected {expected_shortest}");
+    }
+
+    /// Cross-layout consistency gate: with a MATCHED `DepthMetric`,
+    /// `RadialLayout` (2D) and `RadialLayout3D` must assign node D the
+    /// SAME depth number on the identical fixture — the actual defect
+    /// this item fixes (previously unreconciled, always disagreeing).
+    /// `base_radius`/`ring_spacing`(2D) and `shell_spacing`(3D) are tuned
+    /// to `0.0`/`1.0` so each layout's own non-root radius formula
+    /// recovers the depth number exactly (D is never a root in this
+    /// fixture, so the Wave G3 item 1 root-ring special case never
+    /// applies to it).
+    #[test]
+    fn matched_depth_metric_gives_2d_and_3d_radial_layouts_the_same_depth_for_the_layering_fixture() {
+        use super::super::radial_3d::{RadialLayout3D, RadialParams3D};
+
+        let edges = [e(0, 1), e(2, 3), e(3, 4), e(1, 5), e(4, 5)];
+        let t = topo(6, &edges);
+
+        for (metric, expected_depth) in [(DepthMetric::LongestPath, 3.0f32), (DepthMetric::ShortestPath, 2.0f32)] {
+            let mut particles_2d = vec![Particle::default(); 6];
+            let mut layout_2d = RadialLayout::new(RadialParams { base_radius: 0.0, ring_spacing: 1.0, depth_metric: metric, ..RadialParams::default() });
+            layout_2d.tick(&t, &mut particles_2d, 1.0 / 60.0);
+            let r2d = radius_of(&particles_2d[5]);
+            assert!((r2d - expected_depth).abs() < 1e-3, "2D radial depth mismatch for {metric:?}: got {r2d}, expected {expected_depth}");
+
+            let mut particles_3d = vec![Particle::default(); 6];
+            let mut layout_3d = RadialLayout3D::new(RadialParams3D { shell_spacing: 1.0, depth_metric: metric, ..RadialParams3D::default() });
+            layout_3d.tick(&t, &mut particles_3d, 1.0 / 60.0);
+            let r3d = (particles_3d[5].x.powi(2) + particles_3d[5].y.powi(2) + particles_3d[5].z.powi(2)).sqrt();
+            assert!((r3d - expected_depth).abs() < 1e-3, "3D radial depth mismatch for {metric:?}: got {r3d}, expected {expected_depth}");
+        }
+    }
+
+    // ── Wave G3 item 3 — `radius_aware_spacing` ─────────────────────────
+
+    #[test]
+    fn assign_ring_angles_with_radii_none_matches_the_leaf_only_baseline_exactly() {
+        let leaf = vec![1u32, 1, 1, 1, 1];
+        let ring: Vec<usize> = (0..5).collect();
+        let angles = assign_ring_angles(&ring, &leaf, DEFAULT_LEAF_WEIGHT_BLEND, None);
+        let step = TAU / ring.len() as f32;
+        for (i, &a) in angles.iter().enumerate() {
+            let expected = step * i as f32 + step * 0.5;
+            assert!((a - expected).abs() < 1e-4, "angle {i}: {a} vs {expected}");
+        }
+    }
+
+    /// Wave G3 item 3 gate: a member whose own radius is well above its
+    /// ring's average must claim a visibly WIDER angular span than an
+    /// ordinary same-size neighbor — proven via the gap either side of it
+    /// (the gap between two ordinary same-size neighbors must NOT widen
+    /// the same way, and must actually shrink slightly since every span
+    /// still sums to exactly `TAU`).
+    #[test]
+    fn assign_ring_angles_radius_aware_widens_the_span_around_a_larger_member() {
+        let leaf = vec![1u32; 5];
+        let ring: Vec<usize> = (0..5).collect();
+        let radii = vec![1.0f32, 4.0, 1.0, 1.0, 1.0]; // ring slot 1 is 4x bigger
+
+        let off = assign_ring_angles(&ring, &leaf, DEFAULT_LEAF_WEIGHT_BLEND, None);
+        let gap01_off = off[1] - off[0];
+        let gap23_off = off[3] - off[2];
+        assert!((gap01_off - gap23_off).abs() < 1e-4, "without radius-awareness every gap must be identical (uniform leaf counts)");
+
+        let on = assign_ring_angles(&ring, &leaf, DEFAULT_LEAF_WEIGHT_BLEND, Some(&radii));
+        let gap01_on = on[1] - on[0];
+        let gap12_on = on[2] - on[1];
+        let gap23_on = on[3] - on[2];
+        assert!(gap01_on > gap01_off, "the gap approaching the larger member must widen: {gap01_on} vs baseline {gap01_off}");
+        assert!(gap12_on > gap23_off, "the gap leaving the larger member must widen too: {gap12_on} vs an ordinary gap {gap23_off}");
+        assert!(gap23_on < gap23_off, "an ordinary same-size gap must shrink slightly — every span still sums to exactly TAU: {gap23_on} vs baseline {gap23_off}");
+    }
+
+    /// Integration gate: `RadialParams::radius_aware_spacing` must
+    /// actually reach `tick()`, not just exist as an unread field — and
+    /// must leave the RING RADIUS itself untouched (this item's own
+    /// documented scope is within-ring angular allocation only).
+    #[test]
+    fn radial_layout_radius_aware_spacing_actually_changes_output_when_node_radii_vary() {
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5)];
+        let mut radii = vec![1.0f32; 6];
+        radii[1] = 6.0; // node 1 is a big supernode-like member
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = RadialLayout::default();
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout = RadialLayout::new(RadialParams { radius_aware_spacing: true, ..RadialParams::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        assert_ne!(
+            (off_particles[1].x, off_particles[1].y),
+            (on_particles[1].x, on_particles[1].y),
+            "turning radius_aware_spacing on must actually move the big-radius member, not silently do nothing"
+        );
+        assert!(
+            (radius_of(&off_particles[1]) - radius_of(&on_particles[1])).abs() < 1e-3,
+            "ring RADIUS itself must stay untouched by this item — only the angular allocation changes"
+        );
     }
 }

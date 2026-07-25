@@ -89,7 +89,43 @@ pub struct ForceParams {
     /// further (Wave G2b configurability — was the private
     /// [`barnes_hut::MIN_CELL_SIZE`] constant).
     pub min_cell_size: f32,
+    /// Wave G3 item 6 fix — hard cap on a single particle's own per-tick
+    /// displacement magnitude (world units), enforced by clamping
+    /// velocity BEFORE integrating position (so a clamped tick's own
+    /// velocity stays consistent going into the NEXT tick too, not just
+    /// this one). [`ForceParams::min_dist2`] softening already bounds a
+    /// SINGLE pair's own repulsion contribution — nothing previously
+    /// bounded the SUM over many simultaneously-close neighbors (layout
+    /// audit A2): a locally dense cluster (many nodes within a few world
+    /// units of each other — a real shape for an externally-imported
+    /// graph with near-identical starting coordinates) could still
+    /// produce a displacement of thousands of world units in a single
+    /// tick, with every individual term staying finite the whole time
+    /// (no NaN) — "flung off-screen," not a crash.
+    ///
+    /// Default ([`DEFAULT_MAX_DISPLACEMENT_PER_TICK`]) chosen by
+    /// MEASURING, not guessing — see this crate's own
+    /// `tests::the_real_534_node_clusters_demo_fixture_never_comes_close_
+    /// to_the_default_displacement_clamp` for the harness these numbers
+    /// come from: the crate's own real 534-node `clusters` demo fixture
+    /// (the one Wave G1's collision fix targeted) peaks at **~624** world
+    /// units/tick under default params; the SAME fixture with every
+    /// particle deliberately re-collapsed onto the exact origin (the
+    /// adversarial "external caller pre-seeded everything coincident"
+    /// case this item exists for) peaks at **~2475**. `20_000.0` is
+    /// ~8x the measured adversarial worst case and ~32x the real-fixture
+    /// worst case — comfortably above both, so no well-behaved
+    /// simulation this crate has ever produced reaches it (today's
+    /// output is preserved, doctrine), while a genuinely pathological
+    /// input still lands bounded in the low tens of thousands of world
+    /// units instead of unbounded.
+    pub max_displacement_per_tick: f32,
 }
+
+/// Default for [`ForceParams::max_displacement_per_tick`] — see that
+/// field's own doc comment for the measured numbers this derives from
+/// (Wave G3 item 6 fix).
+const DEFAULT_MAX_DISPLACEMENT_PER_TICK: f32 = 20_000.0;
 
 impl Default for ForceParams {
     fn default() -> Self {
@@ -113,6 +149,7 @@ impl Default for ForceParams {
             min_dist2: barnes_hut::MIN_DIST2,
             min_split_dist2: barnes_hut::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut::MIN_CELL_SIZE,
+            max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK,
         }
     }
 }
@@ -301,6 +338,23 @@ impl Layout for ForceDirectedLayout {
             let (fx, fy) = force[i];
             particles[i].vx = (particles[i].vx + fx * alpha) * decay_factor;
             particles[i].vy = (particles[i].vy + fy * alpha) * decay_factor;
+            // Wave G3 item 6 fix: clamp the VELOCITY (not just the
+            // resulting displacement) so a clamped tick's own speed
+            // stays consistent going into the next tick too — see
+            // `ForceParams::max_displacement_per_tick`'s own doc
+            // comment. `step > 0` is required for `max_speed` to be
+            // meaningful; a zero/negative step already produces zero
+            // displacement regardless, so skipping the clamp there is a
+            // no-op either way.
+            if step > 1e-9 {
+                let max_speed = self.params.max_displacement_per_tick / step;
+                let speed2 = particles[i].vx * particles[i].vx + particles[i].vy * particles[i].vy;
+                if speed2 > max_speed * max_speed {
+                    let scale = max_speed / speed2.sqrt();
+                    particles[i].vx *= scale;
+                    particles[i].vy *= scale;
+                }
+            }
             let dx = particles[i].vx * step;
             let dy = particles[i].vy * step;
             particles[i].x += dx;
@@ -341,7 +395,8 @@ impl Layout for ForceDirectedLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::SimEdge;
+    use crate::graph::{NodeIndex, SimEdge};
+    use std::f32::consts::TAU;
 
     fn topo<'a>(node_count: usize, edges: &'a [SimEdge], degree: &'a [u32], radii: Vec<f32>) -> SimTopology<'a> {
         SimTopology { node_count, edges, degree, radii }
@@ -613,5 +668,219 @@ mod tests {
             softened_speed < default_speed,
             "a larger min_dist2 softening floor must cap the resulting velocity lower: default={default_speed} softened={softened_speed}"
         );
+    }
+
+    /// Deterministic splitmix64-style LCG, matching every other
+    /// measurement/test fixture in this file's own convention.
+    struct MeasureRng(u64);
+    impl MeasureRng {
+        fn next_f32(&mut self) -> f32 {
+            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((self.0 >> 33) as u32 % 1_000_000) as f32 / 1_000_000.0
+        }
+    }
+
+    /// Faithful reproduction of `uzor-examples/src/l4/force_graph_demo.rs`'s
+    /// own `build_clusters_graph` — the 534-node fixture (6 clusters × 88
+    /// members + 1 hub each) G1a's own collision fix targeted: golden-
+    /// angle-spread cluster centers (radius 420), per-member jitter up to
+    /// radius 140 around its own center, `EDGES_PER_NODE = 3` random
+    /// intra-cluster edges, a hub wired to every 6th member, hubs chained
+    /// in a ring. Reproduced here (not imported — `uzor-examples` is a
+    /// separate crate this crate doesn't depend on) specifically so this
+    /// measurement instruments the REAL shape, not a synthetic guess.
+    fn clusters_534_fixture() -> (Vec<Particle>, Vec<SimEdge>) {
+        const NUM_CLUSTERS: usize = 6;
+        const CLUSTER_SIZE: usize = 88;
+        const EDGES_PER_NODE: usize = 3;
+
+        let mut positions: Vec<(f32, f32)> = Vec::new();
+        let mut cluster_members: Vec<Vec<usize>> = vec![Vec::new(); NUM_CLUSTERS];
+        let mut hubs = Vec::with_capacity(NUM_CLUSTERS);
+        let mut edges = Vec::new();
+
+        for cluster in 0..NUM_CLUSTERS {
+            let angle = cluster as f32 * 2.399_963;
+            let cx = angle.cos() * 420.0;
+            let cy = angle.sin() * 420.0;
+            for member in 0..CLUSTER_SIZE {
+                let mut rng = MeasureRng((cluster as u64) << 32 | member as u64);
+                let jitter_r = rng.next_f32() * 140.0;
+                let jitter_a = rng.next_f32() * TAU;
+                let x = cx + jitter_a.cos() * jitter_r;
+                let y = cy + jitter_a.sin() * jitter_r;
+                let idx = positions.len();
+                positions.push((x, y));
+                cluster_members[cluster].push(idx);
+            }
+            let hub_idx = positions.len();
+            positions.push((cx, cy));
+            hubs.push(hub_idx);
+        }
+
+        for cluster in 0..NUM_CLUSTERS {
+            let members = &cluster_members[cluster];
+            for (i, &node) in members.iter().enumerate() {
+                let mut rng = MeasureRng(0xC0FF_EE00 ^ ((cluster as u64) << 20) ^ i as u64);
+                for _ in 0..EDGES_PER_NODE {
+                    let j = (rng.next_f32() * members.len() as f32) as usize % members.len().max(1);
+                    if j != i {
+                        edges.push(SimEdge { from: NodeIndex(node as u32), to: NodeIndex(members[j] as u32), weight: 1.0 });
+                    }
+                }
+            }
+            for (i, &node) in members.iter().enumerate() {
+                if i % 6 == 0 {
+                    edges.push(SimEdge { from: NodeIndex(hubs[cluster] as u32), to: NodeIndex(node as u32), weight: 1.0 });
+                }
+            }
+        }
+        for cluster in 0..NUM_CLUSTERS {
+            let next = (cluster + 1) % NUM_CLUSTERS;
+            edges.push(SimEdge { from: NodeIndex(hubs[cluster] as u32), to: NodeIndex(hubs[next] as u32), weight: 0.6 });
+        }
+
+        let particles = positions.into_iter().map(|(x, y)| Particle::at(x, y)).collect();
+        (particles, edges)
+    }
+
+    /// Wave G3 item 6 gate: the default clamp must be exactly the
+    /// measured-and-documented value — see
+    /// [`ForceParams::max_displacement_per_tick`]'s own doc comment for
+    /// the full measurement writeup.
+    #[test]
+    fn max_displacement_per_tick_default_matches_the_measured_and_documented_value() {
+        assert_eq!(ForceParams::default().max_displacement_per_tick, 20_000.0);
+    }
+
+    /// Wave G3 item 6 — MEASURED, not guessed, proof that today's real
+    /// output is preserved: the crate's own real 534-node `clusters`
+    /// demo fixture (the exact one Wave G1's collision fix targeted, real
+    /// edges included so spring forces contribute too) never gets
+    /// remotely close to the default clamp under default params — every
+    /// tick's own `max_displacement` stays two full orders of magnitude
+    /// below it. This is the actual harness
+    /// [`ForceParams::max_displacement_per_tick`]'s own doc comment
+    /// reports numbers from (measured max ~624 on a full settle run).
+    #[test]
+    fn the_real_534_node_clusters_demo_fixture_never_comes_close_to_the_default_displacement_clamp() {
+        let (mut particles, edges) = clusters_534_fixture();
+        let n = particles.len();
+        assert_eq!(n, 534, "sanity: the reproduced fixture must match the real demo's own node count");
+        let degree = vec![0u32; n];
+        let radii = vec![4.0; n];
+        let t = topo(n, &edges, &degree, radii);
+        let mut layout = ForceDirectedLayout::default();
+
+        let mut max = 0f32;
+        for _ in 0..600 {
+            let r = layout.tick(&t, &mut particles, 1.0 / 60.0);
+            max = max.max(r.max_displacement);
+            if r.settled {
+                break;
+            }
+        }
+        assert!(
+            max < 5_000.0,
+            "the real demo fixture's own per-tick displacement must stay comfortably below the default 20_000.0 clamp: measured max = {max}"
+        );
+    }
+
+    /// Wave G3 item 6 — the deliberately ADVERSARIAL worst case this
+    /// item exists for: the SAME 534-node fixture, but every particle
+    /// re-collapsed onto the exact origin before the sim ever runs (the
+    /// "external caller pre-seeded everything coincident" shape —
+    /// `seed_degenerate_positions` is disabled deliberately, since that
+    /// safety net only fires when NOTHING has positioned the particles
+    /// at all, and this fixture's whole point is proving what happens
+    /// WITHOUT it). Even this adversarial case still settles well below
+    /// the DEFAULT clamp (measured max ~2475) — proving the default is
+    /// chosen with real headroom above every fixture this crate can
+    /// currently produce, not just the well-behaved one above.
+    #[test]
+    fn the_534_node_fixture_collapsed_to_the_origin_stays_below_the_default_clamp_too() {
+        let (mut particles, edges) = clusters_534_fixture();
+        for p in &mut particles {
+            p.x = 0.0;
+            p.y = 0.0;
+        }
+        let n = particles.len();
+        let degree = vec![0u32; n];
+        let radii = vec![4.0; n];
+        let t = topo(n, &edges, &degree, radii);
+        let mut layout = ForceDirectedLayout::new(ForceParams { seed_degenerate_positions: false, ..ForceParams::default() });
+
+        let mut max = 0f32;
+        for _ in 0..600 {
+            let r = layout.tick(&t, &mut particles, 1.0 / 60.0);
+            max = max.max(r.max_displacement);
+            if r.settled {
+                break;
+            }
+        }
+        assert!(
+            max < ForceParams::default().max_displacement_per_tick,
+            "even the adversarial collapsed-to-origin fixture must stay below the default clamp: measured max = {max}"
+        );
+        for p in &particles {
+            assert!(p.x.is_finite() && p.y.is_finite(), "no coordinate may ever go non-finite, clamped or not");
+        }
+    }
+
+    /// Wave G3 item 6 gate: proves the clamp MECHANISM actually engages
+    /// and bounds output, using a caller-overridden LOW value (the
+    /// default is deliberately never reached by any fixture above, so a
+    /// direct override is the only way to prove the clamp isn't dead
+    /// code) — a 600-particle fully-degenerate start (every layout's own
+    /// worst-case unseeded shape) with the phyllotaxis seed DISABLED,
+    /// so the whole burst of separating force actually has to run
+    /// through the clamp instead of starting from an already-spread
+    /// seed.
+    #[test]
+    fn max_displacement_per_tick_actually_bounds_output_when_overridden_low() {
+        let n = 600;
+        let mut particles = vec![Particle::default(); n];
+        let degree = vec![0u32; n];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(n, &edges, &degree, vec![4.0; n]);
+        let mut layout =
+            ForceDirectedLayout::new(ForceParams { seed_degenerate_positions: false, max_displacement_per_tick: 10.0, ..ForceParams::default() });
+
+        for _ in 0..30 {
+            let r = layout.tick(&t, &mut particles, 1.0 / 60.0);
+            assert!(
+                r.max_displacement <= 10.0 + 1e-3,
+                "an overridden 10.0 clamp must never let any tick's own max_displacement exceed it: got {}",
+                r.max_displacement
+            );
+        }
+        for p in &particles {
+            assert!(p.x.is_finite() && p.y.is_finite(), "every coordinate must stay finite under the clamp");
+        }
+    }
+
+    /// Wave G3 item 6 gate: a caller who never sets an unusually small
+    /// `min_dist2` and stays well under the clamp must see BYTE-IDENTICAL
+    /// behavior whether the clamp is at its default or effectively
+    /// disabled (`f32::INFINITY`) — the clamp must never perturb an
+    /// ordinary, non-exploding simulation.
+    #[test]
+    fn an_ordinary_non_exploding_simulation_is_byte_identical_with_the_clamp_effectively_disabled() {
+        let make_particles = || vec![Particle::at(-10.0, 0.0), Particle::at(10.0, 0.0), Particle::at(0.0, 15.0)];
+        let degree = vec![0u32; 3];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        let mut particles_default = make_particles();
+        let mut layout_default = ForceDirectedLayout::default();
+        let mut particles_disabled = make_particles();
+        let mut layout_disabled =
+            ForceDirectedLayout::new(ForceParams { max_displacement_per_tick: f32::INFINITY, ..ForceParams::default() });
+
+        for _ in 0..60 {
+            layout_default.tick(&t, &mut particles_default, 1.0 / 60.0);
+            layout_disabled.tick(&t, &mut particles_disabled, 1.0 / 60.0);
+        }
+        assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
     }
 }

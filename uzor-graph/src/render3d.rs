@@ -223,7 +223,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use glam::{Quat, Vec3};
-use uzor_urx_3d::{Light, Mesh, MeshLit, Node, PhongMaterial, Scene3D, Vertex};
+use uzor_urx_3d::{Light, Mesh, MeshLit, Node, NodeMesh, PhongMaterial, Scene3D, Vertex};
 
 use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
@@ -586,6 +586,71 @@ pub fn build_scene<N, E>(
     scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh, hidden, edge_style));
     scene.nodes.extend(build_node_instances(graph, particles, node_mesh, hidden, lighting.node_material));
     scene
+}
+
+/// Wave G3 item 4 fix — back-to-front depth sort for every
+/// `NodeMesh::Line` entry in `nodes` (graph edges, cluster synthetic
+/// edges, and grid lines all share ONE `edge_mesh` Arc — confirmed by
+/// direct read of `uzor_urx_3d::pipeline.rs`: they're grouped into a
+/// SINGLE instanced draw call keyed by that shared mesh's own Arc
+/// pointer identity, in exactly the order they appear in `scene.nodes`,
+/// with no depth-awareness of its own).
+///
+/// **Confirmed, not assumed, before this fix**: `pipeline.rs`'s general
+/// transparency path DOES sort (`transparent_order.sort_by(...)`,
+/// back-to-front by view depth) — but every `NodeMesh::Line` node is
+/// pulled OUT of that path before the sort ever runs and routed through
+/// its own dedicated instanced pass, built purely from the group's own
+/// iteration order (i.e. `scene.nodes` push order — plain graph-edge
+/// iteration order, with zero depth awareness). Depth-WRITE is correctly
+/// OFF for this pipeline already (a separate, prior, deliberate
+/// decision — edges are still correctly occluded by opaque node spheres
+/// via depth-TEST, which stays on) — the missing piece this fix adds is
+/// purely the missing back-to-front ORDER among edges themselves, so two
+/// overlapping/crossing alpha-blended edge quads (a routine occurrence
+/// any time two edges cross on screen) blend correctly instead of in
+/// arbitrary insertion order.
+///
+/// Reorders ONLY the Line entries relative to each other — every other
+/// entry (opaque node spheres) stays at its own original SLOT in
+/// `nodes`, since only intra-group order (among entries that end up in
+/// the SAME instanced draw call) has any effect on the final image; a
+/// Line entry's own depth key is its MIDPOINT's squared distance from
+/// `eye` (cheap, monotonic with true distance, avoids a sqrt per edge
+/// every frame — the standard "sort by distance to camera" approximation
+/// for a group of independent, roughly-similar-length translucent
+/// primitives, e.g. three.js's own `Object3D` render-order convention).
+/// Farthest-first (descending depth) is back-to-front, the correct
+/// painter's-algorithm order for alpha blending.
+pub fn sort_line_nodes_back_to_front(nodes: &mut [Node], eye: Vec3) {
+    let mut line_slots: Vec<usize> = Vec::new();
+    let mut by_depth: Vec<(usize, f32)> = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        if let NodeMesh::Line(_) = &n.geometry {
+            line_slots.push(i);
+            by_depth.push((i, line_node_depth_key(n, eye)));
+        }
+    }
+    if line_slots.len() < 2 {
+        return;
+    }
+    by_depth.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let sorted: Vec<Node> = by_depth.into_iter().map(|(i, _)| nodes[i].clone()).collect();
+    for (&slot, node) in line_slots.iter().zip(sorted) {
+        nodes[slot] = node;
+    }
+}
+
+/// Squared distance from `eye` to a `NodeMesh::Line` node's own segment
+/// MIDPOINT — see [`sort_line_nodes_back_to_front`]'s own doc comment.
+/// `node.translation` is the FROM endpoint (this crate's own established
+/// convention, see [`build_edge_instances`]'s doc comment); the TO
+/// endpoint is `translation + rotation * (0, scale.y, 0)`, recovering
+/// [`build_edge_instances`]'s own instance-transform convention exactly.
+fn line_node_depth_key(node: &Node, eye: Vec3) -> f32 {
+    let to = node.translation + node.rotation * (Vec3::Y * node.scale.y);
+    let mid = (node.translation + to) * 0.5;
+    (mid - eye).length_squared()
 }
 
 /// Cluster-supernode aggregated cross-cluster edges (cluster-collapse
@@ -1477,6 +1542,108 @@ mod tests {
 
         assert_eq!(edges.len(), 1, "both raw cross-cluster edges aggregate onto the same outside node, so exactly one synthetic edge is drawn");
         assert_eq!(edges[0].color_tint, CLUSTER_EDGE_TINT);
+    }
+
+    // ── Wave G3 item 4 — transparent edge back-to-front depth sort ─────
+
+    fn line_node_at(mesh: &Arc<Mesh>, from: Vec3, to: Vec3) -> Node {
+        let delta = to - from;
+        let length = delta.length();
+        let dir = delta / length;
+        Node::new_line(mesh.clone()).with_translation(from).with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)).with_scale(Vec3::new(1.0, length, 1.0))
+    }
+
+    #[test]
+    fn sort_line_nodes_back_to_front_orders_edges_farthest_first_from_the_eye() {
+        let mesh = unit_edge_quad_mesh();
+        let eye = Vec3::new(0.0, 0.0, 0.0);
+        // Three edges at increasing distance from the eye, pushed in a
+        // DELIBERATELY scrambled (non-monotonic) order.
+        let near = line_node_at(&mesh, Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 1.0, 0.0));
+        let mid = line_node_at(&mesh, Vec3::new(50.0, 0.0, 0.0), Vec3::new(50.0, 1.0, 0.0));
+        let far = line_node_at(&mesh, Vec3::new(100.0, 0.0, 0.0), Vec3::new(100.0, 1.0, 0.0));
+        let mut nodes = vec![near.clone(), far.clone(), mid.clone()];
+
+        sort_line_nodes_back_to_front(&mut nodes, eye);
+
+        let depths: Vec<f32> = nodes.iter().map(|n| line_node_depth_key(n, eye)).collect();
+        assert!(depths[0] > depths[1] && depths[1] > depths[2], "must be strictly farthest-first (back-to-front): {depths:?}");
+        // The FAR edge (originally pushed at index 1) must now come first.
+        assert_eq!(nodes[0].translation, far.translation);
+        assert_eq!(nodes[1].translation, mid.translation);
+        assert_eq!(nodes[2].translation, near.translation);
+    }
+
+    /// Non-`Line` entries (opaque node spheres) must be left completely
+    /// untouched at their own original slot — only intra-Line order
+    /// changes.
+    #[test]
+    fn sort_line_nodes_back_to_front_leaves_non_line_nodes_at_their_original_slots() {
+        let line_mesh = unit_edge_quad_mesh();
+        let node_mesh = unit_mesh();
+        let eye = Vec3::ZERO;
+        let sphere_a = Node::new_lit(node_mesh.clone()).with_translation(Vec3::new(1.0, 0.0, 0.0));
+        let sphere_b = Node::new_lit(node_mesh.clone()).with_translation(Vec3::new(2.0, 0.0, 0.0));
+        let near = line_node_at(&line_mesh, Vec3::new(10.0, 0.0, 0.0), Vec3::new(10.0, 1.0, 0.0));
+        let far = line_node_at(&line_mesh, Vec3::new(100.0, 0.0, 0.0), Vec3::new(100.0, 1.0, 0.0));
+        let mut nodes = vec![sphere_a.clone(), near.clone(), sphere_b.clone(), far.clone()];
+
+        sort_line_nodes_back_to_front(&mut nodes, eye);
+
+        assert_eq!(nodes[0].translation, sphere_a.translation, "slot 0 (a sphere) must be untouched");
+        assert_eq!(nodes[2].translation, sphere_b.translation, "slot 2 (a sphere) must be untouched");
+        // Slots 1 and 3 (the Line slots) must now hold far-then-near.
+        assert_eq!(nodes[1].translation, far.translation);
+        assert_eq!(nodes[3].translation, near.translation);
+    }
+
+    #[test]
+    fn sort_line_nodes_back_to_front_is_a_no_op_for_zero_or_one_line_nodes() {
+        let mesh = unit_edge_quad_mesh();
+        let mut empty: Vec<Node> = Vec::new();
+        sort_line_nodes_back_to_front(&mut empty, Vec3::ZERO);
+        assert!(empty.is_empty());
+
+        let solo = line_node_at(&mesh, Vec3::new(5.0, 0.0, 0.0), Vec3::new(5.0, 1.0, 0.0));
+        let mut one = vec![solo.clone()];
+        sort_line_nodes_back_to_front(&mut one, Vec3::ZERO);
+        assert_eq!(one[0].translation, solo.translation);
+    }
+
+    /// Integration gate: a `GraphEngine3D`-shaped scene (built via the
+    /// SAME `build_scene`/`build_cluster_edge_instances` production
+    /// path, not a hand-rolled fixture) must ALSO come out correctly
+    /// sorted once its Line entries are collected and re-sorted — proves
+    /// the depth key survives the full instance-construction pipeline
+    /// (rotation/scale-packed endpoints), not just the hand-built
+    /// `line_node_at` helper above.
+    #[test]
+    fn sort_line_nodes_back_to_front_orders_real_build_edge_instances_output() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        let c = graph.push_node((), "c", "x", 1.0);
+        let d = graph.push_node((), "d", "x", 1.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(c, d, 1.0, ());
+        // Edge a-b sits FAR from the eye, edge c-d sits NEAR — pushed in
+        // far-then-near order (the "wrong" order a back-to-front sort
+        // must correct).
+        let particles = vec![
+            Particle::at3(200.0, 0.0, 0.0),
+            Particle::at3(200.0, 10.0, 0.0),
+            Particle::at3(5.0, 0.0, 0.0),
+            Particle::at3(5.0, 10.0, 0.0),
+        ];
+        let mesh = unit_edge_quad_mesh();
+        let mut edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
+        assert_eq!(edges.len(), 2);
+
+        let eye = Vec3::ZERO;
+        sort_line_nodes_back_to_front(&mut edges, eye);
+
+        let depths: Vec<f32> = edges.iter().map(|n| line_node_depth_key(n, eye)).collect();
+        assert!(depths[0] > depths[1], "the far a-b edge must sort before the near c-d edge: {depths:?}");
     }
 
     // ── Wave 4: GPU color-ID picking encode/decode ─────────────────────
