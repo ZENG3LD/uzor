@@ -40,6 +40,8 @@ use crate::layout::force_directed_3d::ForceDirectedLayout3D;
 use crate::layout::{Layout, LayoutTickResult};
 use crate::particle::Particle;
 use crate::render::{draw_hover_card, HoverCardInfo};
+use crate::render3d::{Graph3DEdgeStyle, Graph3DGridConfig, Graph3DLighting};
+use crate::theme::GraphTheme;
 
 /// Wheel-to-dolly screen-delta sensitivity — mirrors
 /// [`crate::engine::GraphEngine`]'s own `ZOOM_SENSITIVITY` (`engine.rs`)
@@ -238,19 +240,6 @@ const REHEAT_ALPHA: f32 = 0.35;
 /// once per engine, not once per node) — negligible at these numbers.
 const NODE_SPHERE_RINGS: u32 = 22;
 const NODE_SPHERE_SLICES: u32 = 30;
-
-/// Label text offset from its node's projected screen position (Wave 4
-/// — [`GraphEngine3D::draw_overlay`]). The 2D engine's own
-/// `render::draw_nodes` offsets by `node_screen_radius + 4.0` (a
-/// per-node value); 3D's `visible_labels` doesn't expose each node's
-/// own projected screen radius (only `label_grid::select_labels`'s
-/// internal tie-break sees it, per that method's own doc comment) —
-/// recomputing the pinhole-projection formula a second time here, only
-/// for a text offset, is more machinery than this wave's "labels + card
-/// are the deliverable" scope needs. A fixed offset is the documented
-/// Wave 4 simplification; see `uzor-graph/CLAUDE.md`'s divergence log.
-const OVERLAY_LABEL_OFFSET_X: f64 = 6.0;
-const OVERLAY_LABEL_OFFSET_Y: f64 = 4.0;
 
 /// [`Camera3D::fit_bounds`]'s own multiplicative margin, applied by
 /// [`GraphEngine3D::fit_view`] — the owner's own spec ("~1.1").
@@ -501,6 +490,53 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// anyway, but the field itself stays internally consistent either
     /// way. See [`GraphEngine3D::render_z_scale`].
     z_scale: f32,
+
+    // ── Graph-strengthening arc Wave G2b — 3D configurability. Every
+    // field below replaces a former private constant/hardcoded literal
+    // the 3D quality audit's own inventory flagged with no caller-facing
+    // override; each follows the SAME "private field + accessor pair"
+    // convention `label_halo`/`set_label_halo` above already established.
+    /// Overlay paint (selection ring, node/cluster labels, box-select,
+    /// hover card) — see [`GraphEngine3D::theme`]/[`GraphEngine3D::set_theme`].
+    /// Reuses the exact SAME [`GraphTheme`] type the 2D engine owns (not a
+    /// parallel 3D-only theme type) — most of its fields already carry
+    /// values that happen to match what this engine's `draw_overlay`
+    /// hardcoded before this wave (selection ring, node label fill/font,
+    /// cluster label color, hover card, box-select); [`GraphTheme`]
+    /// gained a handful of 3D-only fields (`label_offset_3d_x`/`_y`,
+    /// `cluster_label_extra_offset_3d_x`, `grid_tick_font`,
+    /// `grid_tick_color`) for the few offsets/fonts that have no 2D
+    /// equivalent value to share.
+    theme: GraphTheme,
+    /// Node lit-material response + default scene lighting rig — see
+    /// [`GraphEngine3D::lighting`]/[`GraphEngine3D::set_lighting`].
+    lighting: Graph3DLighting,
+    /// Edge/cluster-edge tint, alpha, and width-scale ceiling — see
+    /// [`GraphEngine3D::edge_style`]/[`GraphEngine3D::set_edge_style`].
+    edge_style: Graph3DEdgeStyle,
+    /// Reference-grid tuning (line/strong-line alpha, tint, cadence,
+    /// ground-plane margin, distance-LOD target, axis-label cap) — see
+    /// [`GraphEngine3D::grid_config`]/[`GraphEngine3D::set_grid_config`].
+    /// Distinct from [`Self::grid_enabled`], which stays the plain on/off
+    /// toggle.
+    grid_config: Graph3DGridConfig,
+    /// World-space hit-test slack added to a node's paint radius before
+    /// the CPU ray-sphere pick test — was the private
+    /// [`pick3d::PICK_RADIUS_SLACK_WORLD`] constant read directly by
+    /// every [`pick3d::nearest_node_3d`] call site. Exposed now (per this
+    /// wave's own scope); making it scale with zoom instead of staying a
+    /// flat world-space margin is Wave G3, not this one. See
+    /// [`GraphEngine3D::pick_radius_slack_world`]/
+    /// [`GraphEngine3D::set_pick_radius_slack_world`].
+    pick_radius_slack_world: f32,
+    /// Label-LOD grid/fade tuning fed to [`label_grid::select_labels`]/
+    /// [`label_grid::label_alpha`] — reuses the exact SAME
+    /// [`label_grid::LabelLodConfig`] type the 2D engine's own
+    /// `GraphEngine::label_lod` already owns (was this engine's own
+    /// `LabelLodConfig::default()` placeholder, passed at both call
+    /// sites without ever being a real, caller-configurable field). See
+    /// [`GraphEngine3D::label_lod`]/[`GraphEngine3D::set_label_lod`].
+    label_lod: label_grid::LabelLodConfig,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -536,6 +572,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             dim_transition: None,
             orbit_camera: Camera3D::default(),
             z_scale: 1.0,
+            theme: GraphTheme::default(),
+            lighting: Graph3DLighting::default(),
+            edge_style: Graph3DEdgeStyle::default(),
+            grid_config: Graph3DGridConfig::default(),
+            pick_radius_slack_world: pick3d::PICK_RADIUS_SLACK_WORLD,
+            label_lod: label_grid::LabelLodConfig::default(),
         }
     }
 
@@ -753,7 +795,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
         let candidates = self.pick_candidates();
         let render_particles = self.render_particles();
-        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &render_particles, ray_origin, ray_dir, &candidates) {
+        if let Some(hit) =
+            pick3d::nearest_node_3d(&self.graph, &render_particles, ray_origin, ray_dir, &candidates, self.pick_radius_slack_world)
+        {
             if let Some(p) = self.particles.get(hit.index()) {
                 let anchor_pos = Vec3::new(p.x, p.y, p.z);
                 let plane_point = anchor_pos;
@@ -1027,7 +1071,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let (origin, dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
         let candidates = self.pick_candidates();
         let render_particles = self.render_particles();
-        pick3d::nearest_node_3d(&self.graph, &render_particles, origin, dir, &candidates)
+        pick3d::nearest_node_3d(&self.graph, &render_particles, origin, dir, &candidates, self.pick_radius_slack_world)
     }
 
     /// Node ids currently eligible for hover/click/drag picking, box-select
@@ -1364,6 +1408,85 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         self.label_halo = color.into();
     }
 
+    // ── Graph-strengthening arc Wave G2b — 3D configurability accessors.
+    // Same "private field + accessor pair" convention as
+    // `label_halo`/`set_label_halo` above. ──────────────────────────────
+
+    /// This engine's own overlay theme — see [`Self::theme`] field's own
+    /// doc comment. Default: [`GraphTheme::default`] (`dark()`),
+    /// byte-identical to this engine's own pre-existing hardcoded overlay
+    /// literals.
+    pub fn theme(&self) -> &GraphTheme {
+        &self.theme
+    }
+
+    /// Replace this engine's overlay theme — e.g. [`GraphTheme::light`]/
+    /// [`GraphTheme::high_contrast`], or a struct-update literal changing
+    /// just one field.
+    pub fn set_theme(&mut self, theme: GraphTheme) {
+        self.theme = theme;
+    }
+
+    /// This engine's own node-material + default lighting rig — see
+    /// [`Self::lighting`] field's own doc comment. Default:
+    /// [`Graph3DLighting::default`], byte-identical to this engine's own
+    /// pre-existing hardcoded material/lighting literals.
+    pub fn lighting(&self) -> &Graph3DLighting {
+        &self.lighting
+    }
+
+    pub fn set_lighting(&mut self, lighting: Graph3DLighting) {
+        self.lighting = lighting;
+    }
+
+    /// This engine's own edge/cluster-edge paint style — see
+    /// [`Self::edge_style`] field's own doc comment. Default:
+    /// [`Graph3DEdgeStyle::default`], byte-identical to this engine's own
+    /// pre-existing hardcoded edge-tint/width literals.
+    pub fn edge_style(&self) -> &Graph3DEdgeStyle {
+        &self.edge_style
+    }
+
+    pub fn set_edge_style(&mut self, style: Graph3DEdgeStyle) {
+        self.edge_style = style;
+    }
+
+    /// This engine's own reference-grid tuning — see [`Self::grid_config`]
+    /// field's own doc comment. Default: [`Graph3DGridConfig::default`],
+    /// byte-identical to this engine's own pre-existing hardcoded grid
+    /// literals. Distinct from [`Self::grid_enabled`]/
+    /// [`Self::set_grid_enabled`], which stays the plain on/off toggle.
+    pub fn grid_config(&self) -> &Graph3DGridConfig {
+        &self.grid_config
+    }
+
+    pub fn set_grid_config(&mut self, config: Graph3DGridConfig) {
+        self.grid_config = config;
+    }
+
+    /// World-space hit-test slack currently added to a node's paint
+    /// radius before the CPU ray-sphere pick test — see [`Self::pick_radius_slack_world`]
+    /// field's own doc comment. Default: [`pick3d::PICK_RADIUS_SLACK_WORLD`].
+    pub fn pick_radius_slack_world(&self) -> f32 {
+        self.pick_radius_slack_world
+    }
+
+    pub fn set_pick_radius_slack_world(&mut self, slack: f32) {
+        self.pick_radius_slack_world = slack;
+    }
+
+    /// This engine's own label-LOD grid/fade tuning — see
+    /// [`Self::label_lod`] field's own doc comment. Default:
+    /// [`label_grid::LabelLodConfig::default`], byte-identical to this
+    /// engine's own pre-existing `LabelLodConfig::default()` placeholder.
+    pub fn label_lod(&self) -> &label_grid::LabelLodConfig {
+        &self.label_lod
+    }
+
+    pub fn set_label_lod(&mut self, lod: label_grid::LabelLodConfig) {
+        self.label_lod = lod;
+    }
+
     // ── Filter / local subgraph (filter/local-subgraph wave — mirrors
     // `GraphEngine`'s own `set_local_root`/`local_root`/`set_filter`/
     // `filter` API 1:1, reusing the exact SAME [`FilterSpec`] type) ──────
@@ -1672,7 +1795,15 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
         let hidden = self.compute_excluded_nodes_3d();
         let render_particles = self.render_particles();
-        let mut scene = crate::render3d::build_scene(&self.graph, &render_particles, &self.node_mesh, &self.edge_mesh, &hidden);
+        let mut scene = crate::render3d::build_scene(
+            &self.graph,
+            &render_particles,
+            &self.node_mesh,
+            &self.edge_mesh,
+            &hidden,
+            &self.lighting,
+            &self.edge_style,
+        );
         // Post-effects OFF for graph scenes (perf pass 2026-07-24):
         // `SceneEffects::default()` arms shadows + bloom + SSAO, and
         // `Renderer3D` genuinely runs the whole bloom mip pyramid + SSAO
@@ -1682,13 +1813,18 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // composite zeroes the corresponding strengths when disabled, so
         // this skips real GPU passes, not just their visual contribution.
         scene.effects = uzor_urx_3d::SceneEffects { shadows: false, bloom: false, ssao: false };
-        scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&render_particles, &self.edge_mesh, &self.clusters));
+        scene.nodes.extend(crate::render3d::build_cluster_edge_instances(
+            &render_particles,
+            &self.edge_mesh,
+            &self.clusters,
+            self.edge_style.cluster_edge_tint,
+        ));
         if self.grid_enabled {
             if let Some((min, max)) = particle_aabb(&render_particles) {
                 let fov_y = self.camera.to_perspective(1.0).fov_y;
-                let step = crate::render3d::grid_step_for_scale(self.camera.distance, fov_y, viewport_height_px);
-                let plan = crate::render3d::build_grid_plan(min, max, step);
-                scene.nodes.extend(crate::render3d::build_grid_instances(&plan, &self.edge_mesh));
+                let step = crate::render3d::grid_step_for_scale(self.camera.distance, fov_y, viewport_height_px, &self.grid_config);
+                let plan = crate::render3d::build_grid_plan(min, max, step, &self.grid_config);
+                scene.nodes.extend(crate::render3d::build_grid_instances(&plan, &self.edge_mesh, &self.grid_config));
             }
         }
         scene
@@ -1894,14 +2030,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         }
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
         let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
-        // 2D-only graph-strengthening arc Wave G2 threaded a caller-
-        // configurable `LabelLodConfig` into `select_labels`/`label_alpha`
-        // — this 3D engine is out of that wave's scope, so it keeps
-        // calling both with the default config (byte-identical to the
-        // pre-Wave-G2 module constants), preserving its own behavior
-        // unchanged.
-        let lod = label_grid::LabelLodConfig::default();
-        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &forced, &lod);
+        // Graph-strengthening arc Wave G2b: `self.label_lod` is now a
+        // real, caller-configurable field (was an unconditional
+        // `LabelLodConfig::default()` placeholder) — reuses the exact
+        // SAME type the 2D engine's own `GraphEngine::label_lod` owns,
+        // via `GraphEngine3D::label_lod`/`set_label_lod`.
+        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &forced, &self.label_lod);
         shown.into_iter().filter_map(|id| screen_positions.get(&id).map(|&(x, y)| (id, x, y))).collect()
     }
 
@@ -1937,9 +2071,11 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// font/fill-color/alpha-fade convention `crate::render::draw_nodes`
     /// uses for the 2D engine's own labels (`label_grid::label_alpha`,
     /// degree-boosted fade) — "same quality as 2D mode's labels" per the
-    /// plan's own goal — just at a fixed text offset (see
-    /// [`OVERLAY_LABEL_OFFSET_X`]/[`OVERLAY_LABEL_OFFSET_Y`]'s own doc
-    /// comment for why, unlike 2D, this isn't `node_screen_radius`-based).
+    /// plan's own goal — just at a fixed text offset
+    /// ([`crate::theme::GraphTheme::label_offset_3d_x`]/`label_offset_3d_y`,
+    /// distinct from [`crate::theme::GraphTheme::label_offset_x`]/`label_offset_y`
+    /// — see that field's own doc comment for why, unlike 2D, this isn't
+    /// `node_screen_radius`-based).
     ///
     /// Hover card: reuses [`crate::render::draw_hover_card`] (the SAME
     /// function the 2D engine's own hover card calls) anchored at the
@@ -2007,17 +2143,24 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 1.0
             } else {
                 let normalized_degree = self.graph.degree(id) as f64 / max_degree as f64;
-                label_grid::label_alpha(zoom_analog, normalized_degree, &label_grid::LabelLodConfig::default())
+                label_grid::label_alpha(zoom_analog, normalized_degree, &self.label_lod)
             };
             if alpha <= 0.01 {
                 continue;
             }
             render.set_global_alpha(alpha);
-            render.set_font("11px sans-serif");
+            render.set_font(&self.theme.label_font);
             // Halo (owner defect report: thin edge strokes crossing node
             // label text made it unreadable) — same treatment
             // `crate::render::draw_nodes` uses for the 2D engine's labels.
-            fill_text_with_halo(render, &node.label, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y, "#e6e6ea", &self.label_halo);
+            fill_text_with_halo(
+                render,
+                &node.label,
+                sx + self.theme.label_offset_3d_x,
+                sy + self.theme.label_offset_3d_y,
+                &self.theme.label_fill,
+                &self.label_halo,
+            );
             render.set_global_alpha(1.0);
             labels_drawn += 1;
         }
@@ -2032,8 +2175,15 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             let world = Vec3::new(p.x, p.y, p.z * scale);
             let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
             let text = format!("×{}", cluster.member_count());
-            render.set_font("11px sans-serif");
-            fill_text_with_halo(render, &text, sx + OVERLAY_LABEL_OFFSET_X + 10.0, sy + OVERLAY_LABEL_OFFSET_Y, "#f0e6c0", &self.label_halo);
+            render.set_font(&self.theme.label_font);
+            fill_text_with_halo(
+                render,
+                &text,
+                sx + self.theme.label_offset_3d_x + self.theme.cluster_label_extra_offset_3d_x,
+                sy + self.theme.label_offset_3d_y,
+                &self.theme.cluster_label_color,
+                &self.label_halo,
+            );
             cluster_labels_drawn += 1;
         }
 
@@ -2050,10 +2200,10 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             let world = Vec3::new(p.x, p.y, p.z * scale);
             let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
             let r = project_screen_radius(camera, viewport, world, graph_node.radius);
-            render.set_stroke_color("#ffffff");
-            render.set_stroke_width(2.0);
+            render.set_stroke_color(&self.theme.selection_ring_color);
+            render.set_stroke_width(self.theme.selection_ring_width);
             render.begin_path();
-            render.arc(sx, sy, r + 2.0, 0.0, std::f64::consts::TAU);
+            render.arc(sx, sy, r + self.theme.selection_ring_offset_px, 0.0, std::f64::consts::TAU);
             render.stroke();
             selection_rings_drawn += 1;
         }
@@ -2064,12 +2214,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 let world = Vec3::new(p.x, p.y, p.z * scale);
                 if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
                     let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
-                    // 2D-only graph-strengthening arc Wave G2 made the
-                    // hover card's `FigureTheme` caller-configurable; this
-                    // 3D overlay is out of that wave's scope, so it keeps
-                    // the SAME `FigureTheme::dark()` this call site always
-                    // hardcoded, preserving its own behavior unchanged.
-                    draw_hover_card(render, anchor, &info, viewport, &uzor_figures::theme::FigureTheme::dark());
+                    // Graph-strengthening arc Wave G2b — the hover card's
+                    // `FigureTheme` is now this engine's OWN `self.theme.hover_card`
+                    // (was an unconditional `FigureTheme::dark()` literal;
+                    // `GraphTheme::dark().hover_card` is byte-identical to
+                    // that prior literal, so this preserves default
+                    // behavior while a caller can now override it via
+                    // `set_theme`).
+                    draw_hover_card(render, anchor, &info, viewport, &self.theme.hover_card);
                     hover_card_drawn = true;
                 }
             }
@@ -2080,9 +2232,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // `GraphEngine::draw`, which paints `draw_box_select_rect`
         // after nodes/labels/hover card).
         if let Some(rect) = self.box_select_rect() {
-            // Same out-of-scope-for-3D reasoning as `draw_hover_card`
-            // above — keeps the pre-Wave-G2 `GraphTheme::dark()` colors.
-            crate::render::draw_box_select_rect(render, rect, &crate::theme::GraphTheme::dark());
+            // Graph-strengthening arc Wave G2b — now this engine's OWN
+            // `self.theme` (was an unconditional `GraphTheme::dark()`
+            // literal; `GraphTheme::dark()` is byte-identical, so this
+            // preserves default behavior while a caller can now override
+            // it via `set_theme`).
+            crate::render::draw_box_select_rect(render, rect, &self.theme);
         }
 
         render.restore();
@@ -2095,14 +2250,15 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// [`GraphEngine3D::build_scene`] instances from, not a
     /// `label_grid::LabelGrid` pass: axis ticks are already sparse and
     /// perfectly regular, so a flat off-viewport cull plus a count cap
-    /// ([`crate::render3d::GRID_MAX_AXIS_LABELS`]) is the whole LOD this
-    /// needs. Recomputes the SAME `crate::render3d::grid_step_for_scale`/
-    /// `build_grid_plan` [`GraphEngine3D::build_scene`] used, from
-    /// `viewport.height` — a caller feeding a different height here than
-    /// it fed `build_scene` this frame would see labels that don't quite
-    /// match the rendered grid; the demo wiring keeps both fed from the
-    /// SAME real surface height every tick, per this method's own
-    /// contract. Returns `0` (no-op) once there isn't a single particle.
+    /// ([`crate::render3d::Graph3DGridConfig::max_axis_labels`]) is the
+    /// whole LOD this needs. Recomputes the SAME
+    /// `crate::render3d::grid_step_for_scale`/`build_grid_plan`
+    /// [`GraphEngine3D::build_scene`] used, from `viewport.height` — a
+    /// caller feeding a different height here than it fed `build_scene`
+    /// this frame would see labels that don't quite match the rendered
+    /// grid; the demo wiring keeps both fed from the SAME real surface
+    /// height every tick, per this method's own contract. Returns `0`
+    /// (no-op) once there isn't a single particle.
     fn draw_grid_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> usize {
         // Dimension-transition wave: the SAME `z`-scaled snapshot
         // `build_scene` uses for its own grid geometry this frame (see
@@ -2111,13 +2267,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // inflating.
         let render_particles = self.render_particles();
         let Some((min, max)) = particle_aabb(&render_particles) else { return 0 };
-        let step = crate::render3d::grid_step_for_scale(self.camera.distance, camera.fov_y, viewport.height);
-        let plan = crate::render3d::build_grid_plan(min, max, step);
+        let step = crate::render3d::grid_step_for_scale(self.camera.distance, camera.fov_y, viewport.height, &self.grid_config);
+        let plan = crate::render3d::build_grid_plan(min, max, step, &self.grid_config);
 
-        render.set_font("10px sans-serif");
+        render.set_font(&self.theme.grid_tick_font);
         let mut drawn = 0usize;
         for line in plan.lines.iter().filter(|l| l.strong) {
-            if drawn >= crate::render3d::GRID_MAX_AXIS_LABELS {
+            if drawn >= self.grid_config.max_axis_labels {
                 break;
             }
             let Some((sx, sy)) = pick3d::project_world_to_screen(camera, line.from, viewport) else { continue };
@@ -2129,7 +2285,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             // `uzor-graph/CLAUDE.md`'s divergence log): grid tick labels
             // gained the same 8-direction halo protection node/cluster
             // labels already had.
-            fill_text_with_halo(render, &text, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y, "#8a93a6", &self.label_halo);
+            fill_text_with_halo(
+                render,
+                &text,
+                sx + self.theme.label_offset_3d_x,
+                sy + self.theme.label_offset_3d_y,
+                &self.theme.grid_tick_color,
+                &self.label_halo,
+            );
             drawn += 1;
         }
         drawn
@@ -2190,11 +2353,20 @@ mod tests {
 
     struct RecordingRenderContext {
         fill_texts: Vec<(String, f64, f64)>,
+        // Graph-strengthening arc Wave G2b — the theme-threading tests
+        // below need to observe WHICH color/font a draw call actually
+        // used, not just that text was painted somewhere; the pre-
+        // existing no-op `set_fill_color`/`set_stroke_color`/`set_font`
+        // gave no way to do that.
+        fill_colors: Vec<String>,
+        stroke_colors: Vec<String>,
+        stroke_widths: Vec<f64>,
+        fonts: Vec<String>,
     }
 
     impl RecordingRenderContext {
         fn new() -> Self {
-            Self { fill_texts: Vec::new() }
+            Self { fill_texts: Vec::new(), fill_colors: Vec::new(), stroke_colors: Vec::new(), stroke_widths: Vec::new(), fonts: Vec::new() }
         }
     }
 
@@ -2204,10 +2376,16 @@ mod tests {
         fn translate(&mut self, _x: f64, _y: f64) {}
         fn rotate(&mut self, _angle: f64) {}
         fn scale(&mut self, _x: f64, _y: f64) {}
-        fn set_fill_color(&mut self, _color: &str) {}
+        fn set_fill_color(&mut self, color: &str) {
+            self.fill_colors.push(color.to_owned());
+        }
         fn set_global_alpha(&mut self, _alpha: f64) {}
-        fn set_stroke_color(&mut self, _color: &str) {}
-        fn set_stroke_width(&mut self, _width: f64) {}
+        fn set_stroke_color(&mut self, color: &str) {
+            self.stroke_colors.push(color.to_owned());
+        }
+        fn set_stroke_width(&mut self, width: f64) {
+            self.stroke_widths.push(width);
+        }
         fn set_line_dash(&mut self, _pattern: &[f64]) {}
         fn set_line_cap(&mut self, _cap: &str) {}
         fn set_line_join(&mut self, _join: &str) {}
@@ -2224,7 +2402,9 @@ mod tests {
         fn fill(&mut self) {}
     }
     impl uzor::render::TextRenderer for RecordingRenderContext {
-        fn set_font(&mut self, _font: &str) {}
+        fn set_font(&mut self, font: &str) {
+            self.fonts.push(font.to_owned());
+        }
         fn set_text_align(&mut self, _align: uzor::render::TextAlign) {}
         fn set_text_baseline(&mut self, _baseline: uzor::render::TextBaseline) {}
         fn fill_text(&mut self, text: &str, x: f64, y: f64) {
@@ -3244,6 +3424,160 @@ mod tests {
         assert_eq!(engine.label_halo(), DEFAULT_LABEL_HALO, "default halo must match the 2D engine's own default");
         engine.set_label_halo("#112233");
         assert_eq!(engine.label_halo(), "#112233");
+    }
+
+    // ── Graph-strengthening arc Wave G2b — 3D configurability accessors ─
+
+    #[test]
+    fn theme_defaults_to_dark_and_set_theme_updates_the_getter() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        assert_eq!(engine.theme().selection_ring_color, GraphTheme::dark().selection_ring_color);
+        engine.set_theme(GraphTheme::light());
+        assert_eq!(engine.theme().selection_ring_color, GraphTheme::light().selection_ring_color);
+    }
+
+    /// Wave G2b configurability gate: the theme's own overlay fields
+    /// must actually reach the paint calls `draw_overlay` makes — not
+    /// just exist as an unread struct.
+    #[test]
+    fn draw_overlay_paints_the_node_label_using_the_engines_own_theme() {
+        let mut engine = spread_triangle_engine();
+        engine.set_label_density(100.0);
+        let custom = GraphTheme { label_fill: "#ff00ff".to_owned(), label_font: "22px monospace".to_owned(), ..GraphTheme::dark() };
+        engine.set_theme(custom);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(ctx.fill_colors.contains(&"#ff00ff".to_owned()), "the custom label_fill must actually be used to paint a node label");
+        assert!(ctx.fonts.contains(&"22px monospace".to_owned()), "the custom label_font must actually be set before painting a node label");
+    }
+
+    #[test]
+    fn draw_overlay_paints_the_selection_ring_using_the_engines_own_theme() {
+        let mut engine = spread_triangle_engine();
+        let ids: Vec<NodeIndex> = engine.graph.nodes().map(|(id, _)| id).collect();
+        engine.select(ids[0]);
+        let custom = GraphTheme { selection_ring_color: "#00ffaa".to_owned(), selection_ring_width: 5.0, ..GraphTheme::dark() };
+        engine.set_theme(custom);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.selection_rings_drawn, 1);
+        assert!(ctx.stroke_colors.contains(&"#00ffaa".to_owned()), "the custom selection_ring_color must actually be used");
+        assert!(ctx.stroke_widths.contains(&5.0), "the custom selection_ring_width must actually be used");
+    }
+
+    #[test]
+    fn draw_overlay_paints_grid_tick_labels_using_the_engines_own_theme() {
+        let mut engine = spread_triangle_engine();
+        engine.set_grid_enabled(true);
+        let custom = GraphTheme { grid_tick_color: "#123456".to_owned(), grid_tick_font: "9px cursive".to_owned(), ..GraphTheme::dark() };
+        engine.set_theme(custom);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(stats.grid_labels_drawn > 0, "the fixture/viewport must actually produce at least one strong gridline label");
+        assert!(ctx.fill_colors.contains(&"#123456".to_owned()), "the custom grid_tick_color must actually be used");
+        assert!(ctx.fonts.contains(&"9px cursive".to_owned()), "the custom grid_tick_font must actually be used");
+    }
+
+    #[test]
+    fn lighting_defaults_and_set_lighting_updates_the_getter_and_reaches_build_scene() {
+        let mut engine = spread_triangle_engine();
+        assert_eq!(engine.lighting().node_material.ambient_strength, Graph3DLighting::default().node_material.ambient_strength);
+
+        let custom = Graph3DLighting { ambient: [0.0, 0.0, 0.0], light_intensity: 0.05, ..Graph3DLighting::default() };
+        engine.set_lighting(custom);
+        assert_eq!(engine.lighting().ambient, [0.0, 0.0, 0.0]);
+
+        let scene = engine.build_scene(300.0);
+        assert_eq!(scene.ambient, [0.0, 0.0, 0.0], "a caller-supplied lighting config must actually reach build_scene's own Scene3D");
+    }
+
+    #[test]
+    fn edge_style_defaults_and_set_edge_style_updates_the_getter_and_reaches_build_scene() {
+        let mut engine = spread_triangle_engine();
+        assert_eq!(engine.edge_style().tint_rgb, Graph3DEdgeStyle::default().tint_rgb);
+
+        let custom = Graph3DEdgeStyle { tint_rgb: [0.9, 0.1, 0.1], alpha: 0.77, ..Graph3DEdgeStyle::default() };
+        engine.set_edge_style(custom);
+        assert_eq!(engine.edge_style().alpha, 0.77);
+
+        let scene = engine.build_scene(300.0);
+        let edge_node = scene.nodes.iter().find(|n| matches!(n.geometry, uzor_urx_3d::NodeMesh::Line(_))).expect("at least one edge instance");
+        assert_eq!(edge_node.color_tint, [0.9, 0.1, 0.1, 0.77], "a caller-supplied edge style must actually reach build_scene's own edge tint");
+    }
+
+    #[test]
+    fn grid_config_defaults_and_set_grid_config_updates_the_getter_and_reaches_the_overlay_cap() {
+        let mut engine = spread_triangle_engine();
+        assert_eq!(engine.grid_config().max_axis_labels, Graph3DGridConfig::default().max_axis_labels);
+        engine.set_grid_enabled(true);
+
+        let capped = Graph3DGridConfig { max_axis_labels: 0, ..Graph3DGridConfig::default() };
+        engine.set_grid_config(capped);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.grid_labels_drawn, 0, "a max_axis_labels of 0 must actually suppress every grid tick label");
+    }
+
+    #[test]
+    fn pick_radius_slack_world_defaults_and_the_setter_updates_the_getter() {
+        let engine = spread_triangle_engine();
+        assert_eq!(engine.pick_radius_slack_world(), pick3d::PICK_RADIUS_SLACK_WORLD);
+    }
+
+    /// Wave G2b configurability gate: `set_pick_radius_slack_world` must
+    /// actually reach the real CPU ray-pick, changing whether the SAME
+    /// screen point resolves a hit — not just update the getter. One
+    /// node, radius 1.0, offset 1.5 world units from the screen-center
+    /// ray (mirrors `interaction::pick3d`'s own
+    /// `nearest_node_3d_slack_widens_or_narrows_the_hit_test_radius`
+    /// unit-level proof, here exercised through the full engine's own
+    /// `pick_at`).
+    #[test]
+    fn set_pick_radius_slack_world_changes_which_node_pick_at_actually_resolves() {
+        let mut graph = DemoGraph::new();
+        graph.push_node((), "a", "x", 1.0);
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        engine.particles[0] = Particle::at3(0.0, 1.5, 0.0);
+        engine.camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0 };
+        let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
+        let ids: Vec<NodeIndex> = engine.graph.nodes().map(|(id, _)| id).collect();
+
+        engine.set_pick_radius_slack_world(0.0);
+        assert_eq!(engine.pick_at(100.0, 100.0, viewport), None, "zero slack must miss — the screen-center ray clears the bare radius by 0.5 units");
+
+        engine.set_pick_radius_slack_world(1.0);
+        assert_eq!(engine.pick_at(100.0, 100.0, viewport), Some(ids[0]), "a slack of 1.0 must cover the 0.5-unit gap and hit the same screen point");
+    }
+
+    #[test]
+    fn label_lod_defaults_and_the_setter_updates_the_getter() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        assert_eq!(*engine.label_lod(), label_grid::LabelLodConfig::default());
+        let custom = label_grid::LabelLodConfig { grid_cell_size_px: 42.0, ..label_grid::LabelLodConfig::default() };
+        engine.set_label_lod(custom);
+        assert_eq!(engine.label_lod().grid_cell_size_px, 42.0);
     }
 
     #[test]

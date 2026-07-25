@@ -125,6 +125,30 @@ pub struct GraphTheme {
     /// hardcoded palette). A caller wanting the colorblind-safe Okabe-Ito
     /// set assigns `CategoricalScale::default_palette()` here instead.
     pub category_palette: CategoricalScale,
+
+    // ── 3D overlay (graph-strengthening arc Wave G2b —
+    // `crate::engine3d::GraphEngine3D::{draw_overlay, draw_grid_overlay}`)
+    // ────────────────────────────────────────────────────────────────────
+    /// Node/cluster label text offset from a 3D node's projected screen
+    /// position — distinct from [`GraphTheme::label_offset_x`]/
+    /// [`GraphTheme::label_offset_y`] above, which 2D adds ON TOP of each
+    /// node's own on-screen radius; the 3D overlay doesn't expose that
+    /// per-node value at its label call site (`GraphEngine3D::draw_overlay`'s
+    /// own doc comment explains why), so this is a flat offset instead.
+    /// Was `engine3d.rs`'s private `OVERLAY_LABEL_OFFSET_X`/`_Y` constants.
+    pub label_offset_3d_x: f64,
+    pub label_offset_3d_y: f64,
+    /// 3D overlay: the cluster "×N" member-count label's own EXTRA
+    /// x-offset, added on top of [`GraphTheme::label_offset_3d_x`] — was
+    /// the inline `+ 10.0` literal in `GraphEngine3D::draw_overlay`.
+    pub cluster_label_extra_offset_3d_x: f64,
+    /// 3D overlay: ground-reference-grid axis-tick label font/color
+    /// (`GraphEngine3D::draw_grid_overlay`) — distinct from
+    /// [`GraphTheme::label_font`]/[`GraphTheme::label_fill`], since a grid
+    /// tick is its own smaller, dimmer element with no 2D equivalent. Was
+    /// the inline `"10px sans-serif"`/`"#8a93a6"` literals.
+    pub grid_tick_font: String,
+    pub grid_tick_color: String,
 }
 
 impl GraphTheme {
@@ -170,6 +194,12 @@ impl GraphTheme {
 
             hover_card: FigureTheme::dark(),
             category_palette: default_category_palette(),
+
+            label_offset_3d_x: 6.0,
+            label_offset_3d_y: 4.0,
+            cluster_label_extra_offset_3d_x: 10.0,
+            grid_tick_font: "10px sans-serif".to_owned(),
+            grid_tick_color: "#8a93a6".to_owned(),
         }
     }
 
@@ -217,6 +247,12 @@ impl GraphTheme {
 
             hover_card: FigureTheme::light(),
             category_palette: default_category_palette(),
+
+            label_offset_3d_x: 6.0,
+            label_offset_3d_y: 4.0,
+            cluster_label_extra_offset_3d_x: 10.0,
+            grid_tick_font: "10px sans-serif".to_owned(),
+            grid_tick_color: "#5c6579".to_owned(),
         }
     }
 
@@ -266,6 +302,12 @@ impl GraphTheme {
 
             hover_card: FigureTheme::high_contrast(),
             category_palette: default_category_palette(),
+
+            label_offset_3d_x: 6.0,
+            label_offset_3d_y: 4.0,
+            cluster_label_extra_offset_3d_x: 10.0,
+            grid_tick_font: "10px sans-serif".to_owned(),
+            grid_tick_color: "#cccccc".to_owned(),
         }
     }
 }
@@ -314,6 +356,11 @@ mod tests {
         assert_eq!(theme.box_select_border, "#7fb2ff");
         assert_eq!(theme.box_select_border_width, 1.0);
         assert_eq!(theme.hover_card.background, FigureTheme::dark().background);
+        assert_eq!(theme.label_offset_3d_x, 6.0);
+        assert_eq!(theme.label_offset_3d_y, 4.0);
+        assert_eq!(theme.cluster_label_extra_offset_3d_x, 10.0);
+        assert_eq!(theme.grid_tick_font, "10px sans-serif");
+        assert_eq!(theme.grid_tick_color, "#8a93a6");
     }
 
     #[test]
@@ -353,6 +400,21 @@ mod tests {
         assert_eq!(theme.category_palette.len(), 8);
         assert_eq!(theme.category_palette.color_for(0), CategoricalScale::default_palette().color_for(0));
         assert_ne!(theme.category_palette.color_for(0), default_category_palette().color_for(0));
+    }
+
+    #[test]
+    fn every_preset_shares_the_same_3d_overlay_offsets_but_a_distinct_grid_tick_color() {
+        let dark = GraphTheme::dark();
+        let light = GraphTheme::light();
+        let hc = GraphTheme::high_contrast();
+        for theme in [&dark, &light, &hc] {
+            assert_eq!(theme.label_offset_3d_x, 6.0);
+            assert_eq!(theme.label_offset_3d_y, 4.0);
+            assert_eq!(theme.cluster_label_extra_offset_3d_x, 10.0);
+            assert_eq!(theme.grid_tick_font, "10px sans-serif");
+        }
+        assert_ne!(dark.grid_tick_color, light.grid_tick_color);
+        assert_ne!(dark.grid_tick_color, hc.grid_tick_color);
     }
 
     #[test]

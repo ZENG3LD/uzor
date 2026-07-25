@@ -16,22 +16,29 @@ pub const DEFAULT_THETA: f32 = 1.0;
 pub const BRUTE_FORCE_THRESHOLD: usize = 500;
 
 /// Softening term — avoids a divide-by-zero singularity for
-/// coincident/near-coincident particles.
-const MIN_DIST2: f32 = 1.0;
+/// coincident/near-coincident particles. Graph-strengthening arc Wave
+/// G2b: promoted `pub` (was private) so [`super::force_directed::ForceParams::min_dist2`]
+/// can default to it — every call site that used to read this constant
+/// directly now takes it as an explicit parameter instead (see
+/// [`apply_repulsion_brute_force`]/[`QuadNode::accumulate`]/[`apply_point`]/
+/// [`Quadtree::accumulate_forces`]).
+pub const MIN_DIST2: f32 = 1.0;
 
 /// Two points closer (squared) than this can't be meaningfully separated
 /// by subdividing — merged into one heavier leaf on insert. Cluster
 /// collapse pins whole member stacks onto one exact centroid, so the
 /// coincident case is routine, and without this guard `QuadNode::insert`
 /// recurses forever (stack overflow — live-caught via the second
-/// `collapse` action in force-graph-demo).
-const MIN_SPLIT_DIST2: f32 = 1e-8;
+/// `collapse` action in force-graph-demo). Graph-strengthening arc Wave
+/// G2b: promoted `pub`, see [`MIN_DIST2`]'s own doc comment for why.
+pub const MIN_SPLIT_DIST2: f32 = 1e-8;
 
 /// Subdivision floor: a cell this small is never split further, its
 /// second point merges into the existing leaf. Backstop for
 /// near-coincident (but not equal) floats that would take hundreds of
-/// halvings to separate.
-const MIN_CELL_SIZE: f32 = 1e-3;
+/// halvings to separate. Graph-strengthening arc Wave G2b: promoted
+/// `pub`, see [`MIN_DIST2`]'s own doc comment for why.
+pub const MIN_CELL_SIZE: f32 = 1e-3;
 
 /// Floor on the distance-to-center-of-mass used by [`QuadNode::accumulate`]'s
 /// θ (multipole acceptance) ratio test — a DIFFERENT floor from
@@ -57,15 +64,17 @@ const CELL_ACCEPTANCE_MIN_DIST: f32 = 0.001;
 
 /// O(n²) reference implementation. Accumulates repulsion force into
 /// `out[i]` for every particle `i` (does not clear `out` first — caller
-/// combines with other forces in the same buffer).
-pub fn apply_repulsion_brute_force(particles: &[Particle], strength: f32, out: &mut [(f32, f32)]) {
+/// combines with other forces in the same buffer). `min_dist2` is the
+/// softening floor — was the private [`MIN_DIST2`] constant, now a
+/// caller-supplied parameter (graph-strengthening arc Wave G2b).
+pub fn apply_repulsion_brute_force(particles: &[Particle], strength: f32, min_dist2: f32, out: &mut [(f32, f32)]) {
     let n = particles.len();
     for i in 0..n {
         let (xi, yi) = (particles[i].x, particles[i].y);
         for j in (i + 1)..n {
             let dx = xi - particles[j].x;
             let dy = yi - particles[j].y;
-            let d2 = (dx * dx + dy * dy).max(MIN_DIST2);
+            let d2 = (dx * dx + dy * dy).max(min_dist2);
             let d = d2.sqrt();
             let f = strength / d2;
             let fx = dx / d * f;
@@ -153,7 +162,7 @@ impl QuadNode {
         Self { bounds, mass: 0.0, com_x: 0.0, com_y: 0.0, content: NodeContent::Empty }
     }
 
-    fn insert(&mut self, x: f32, y: f32, mass: f32, index: u32) {
+    fn insert(&mut self, x: f32, y: f32, mass: f32, index: u32, min_split_dist2: f32, min_cell_size: f32) {
         let new_mass = self.mass + mass;
         self.com_x = (self.com_x * self.mass + x * mass) / new_mass;
         self.com_y = (self.com_y * self.mass + y * mass) / new_mass;
@@ -171,7 +180,7 @@ impl QuadNode {
                 // leaf (exactly the "one point mass" equivalence
                 // cluster.rs relies on) instead of recursing forever.
                 let (dx, dy) = (x - *lx, y - *ly);
-                if dx * dx + dy * dy <= MIN_SPLIT_DIST2 || self.bounds.size <= MIN_CELL_SIZE {
+                if dx * dx + dy * dy <= min_split_dist2 || self.bounds.size <= min_cell_size {
                     *lmass += mass;
                     indices.push(index);
                     return;
@@ -196,32 +205,32 @@ impl QuadNode {
                 ];
                 let prior_quadrant = self.bounds.quadrant(lx, ly);
                 for prior_index in prior_indices {
-                    children[prior_quadrant].insert(lx, ly, 1.0, prior_index);
+                    children[prior_quadrant].insert(lx, ly, 1.0, prior_index, min_split_dist2, min_cell_size);
                 }
-                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index);
+                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index, min_split_dist2, min_cell_size);
                 self.content = NodeContent::Internal { children: Box::new(children) };
             }
             NodeContent::Internal { children } => {
-                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index);
+                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index, min_split_dist2, min_cell_size);
             }
         }
     }
 
-    fn accumulate(&self, x: f32, y: f32, theta: f32, strength: f32, out: &mut (f32, f32)) {
+    fn accumulate(&self, x: f32, y: f32, theta: f32, strength: f32, min_dist2: f32, out: &mut (f32, f32)) {
         match &self.content {
             NodeContent::Empty => {}
             NodeContent::Leaf { x: lx, y: ly, mass, .. } => {
-                apply_point(x, y, *lx, *ly, *mass, strength, out);
+                apply_point(x, y, *lx, *ly, *mass, strength, min_dist2, out);
             }
             NodeContent::Internal { children } => {
                 let dx = x - self.com_x;
                 let dy = y - self.com_y;
                 let d = (dx * dx + dy * dy).sqrt().max(CELL_ACCEPTANCE_MIN_DIST);
                 if self.bounds.size / d < theta {
-                    apply_point(x, y, self.com_x, self.com_y, self.mass, strength, out);
+                    apply_point(x, y, self.com_x, self.com_y, self.mass, strength, min_dist2, out);
                 } else {
                     for child in children.iter() {
-                        child.accumulate(x, y, theta, strength, out);
+                        child.accumulate(x, y, theta, strength, min_dist2, out);
                     }
                 }
             }
@@ -250,10 +259,10 @@ impl QuadNode {
     }
 }
 
-fn apply_point(x: f32, y: f32, px: f32, py: f32, mass: f32, strength: f32, out: &mut (f32, f32)) {
+fn apply_point(x: f32, y: f32, px: f32, py: f32, mass: f32, strength: f32, min_dist2: f32, out: &mut (f32, f32)) {
     let dx = x - px;
     let dy = y - py;
-    let d2 = (dx * dx + dy * dy).max(MIN_DIST2);
+    let d2 = (dx * dx + dy * dy).max(min_dist2);
     let d = d2.sqrt();
     let f = strength * mass / d2;
     out.0 += dx / d * f;
@@ -267,7 +276,10 @@ pub struct Quadtree {
 }
 
 impl Quadtree {
-    pub fn build(particles: &[Particle]) -> Self {
+    /// `min_split_dist2`/`min_cell_size` were the private [`MIN_SPLIT_DIST2`]/
+    /// [`MIN_CELL_SIZE`] constants — now caller-supplied parameters (graph-
+    /// strengthening arc Wave G2b).
+    pub fn build(particles: &[Particle], min_split_dist2: f32, min_cell_size: f32) -> Self {
         if particles.is_empty() {
             return Self { root: None };
         }
@@ -282,18 +294,20 @@ impl Quadtree {
         let bounds = QuadBounds { min_x, min_y, size };
         let mut root = QuadNode::new_empty(bounds);
         for (i, p) in particles.iter().enumerate() {
-            root.insert(p.x, p.y, 1.0, i as u32);
+            root.insert(p.x, p.y, 1.0, i as u32, min_split_dist2, min_cell_size);
         }
         Self { root: Some(root) }
     }
 
     /// Accumulate the approximated repulsion force for every particle
-    /// into `out[i]` (added to, not overwritten).
-    pub fn accumulate_forces(&self, particles: &[Particle], theta: f32, strength: f32, out: &mut [(f32, f32)]) {
+    /// into `out[i]` (added to, not overwritten). `min_dist2` was the
+    /// private [`MIN_DIST2`] constant — now a caller-supplied parameter
+    /// (graph-strengthening arc Wave G2b).
+    pub fn accumulate_forces(&self, particles: &[Particle], theta: f32, strength: f32, min_dist2: f32, out: &mut [(f32, f32)]) {
         let Some(root) = &self.root else { return };
         for (i, p) in particles.iter().enumerate() {
             let mut acc = (0.0, 0.0);
-            root.accumulate(p.x, p.y, theta, strength, &mut acc);
+            root.accumulate(p.x, p.y, theta, strength, min_dist2, &mut acc);
             out[i].0 += acc.0;
             out[i].1 += acc.1;
         }
@@ -400,11 +414,11 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force(&particles, strength, &mut brute);
+        apply_repulsion_brute_force(&particles, strength, MIN_DIST2, &mut brute);
 
-        let qt = Quadtree::build(&particles);
+        let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32); particles.len()];
-        qt.accumulate_forces(&particles, 0.6, strength, &mut approx);
+        qt.accumulate_forces(&particles, 0.6, strength, MIN_DIST2, &mut approx);
 
         let mut max_rel_err = 0f32;
         for (b, a) in brute.iter().zip(approx.iter()) {
@@ -420,18 +434,18 @@ mod tests {
     #[test]
     fn empty_quadtree_produces_no_force() {
         let particles: Vec<Particle> = Vec::new();
-        let qt = Quadtree::build(&particles);
+        let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut out: Vec<(f32, f32)> = Vec::new();
-        qt.accumulate_forces(&particles, DEFAULT_THETA, 100.0, &mut out);
+        qt.accumulate_forces(&particles, DEFAULT_THETA, 100.0, MIN_DIST2, &mut out);
         assert!(out.is_empty());
     }
 
     #[test]
     fn single_particle_produces_no_self_force() {
         let particles = vec![Particle::at(3.0, 4.0)];
-        let qt = Quadtree::build(&particles);
+        let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut out = vec![(0f32, 0f32)];
-        qt.accumulate_forces(&particles, DEFAULT_THETA, 100.0, &mut out);
+        qt.accumulate_forces(&particles, DEFAULT_THETA, 100.0, MIN_DIST2, &mut out);
         assert_eq!(out[0], (0.0, 0.0));
     }
 
@@ -455,17 +469,17 @@ mod tests {
         particles.push(Particle::at(0.0, 0.0));
 
         let strength = 100.0;
-        let qt = Quadtree::build(&particles); // pre-fix: never returns
+        let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE); // pre-fix: never returns
         let mut out = vec![(0f32, 0f32); particles.len()];
-        qt.accumulate_forces(&particles, DEFAULT_THETA, strength, &mut out);
+        qt.accumulate_forces(&particles, DEFAULT_THETA, strength, MIN_DIST2, &mut out);
 
         let probe = out[16];
         assert!(probe.0.is_finite() && probe.1.is_finite());
 
         // The probe must feel each stack as an 8x-mass single point.
         let mut expected = (0.0f32, 0.0f32);
-        apply_point(0.0, 0.0, -50.0, 0.0, 8.0, strength, &mut expected);
-        apply_point(0.0, 0.0, 40.0, 30.0, 8.0, strength, &mut expected);
+        apply_point(0.0, 0.0, -50.0, 0.0, 8.0, strength, MIN_DIST2, &mut expected);
+        apply_point(0.0, 0.0, 40.0, 30.0, 8.0, strength, MIN_DIST2, &mut expected);
         let diff = ((probe.0 - expected.0).powi(2) + (probe.1 - expected.1).powi(2)).sqrt();
         let mag = (expected.0 * expected.0 + expected.1 * expected.1).sqrt();
         assert!(

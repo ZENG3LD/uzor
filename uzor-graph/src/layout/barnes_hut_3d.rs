@@ -14,33 +14,34 @@
 //! [`super::force_directed_3d::ForceDirectedLayout3D`]: brute-force under
 //! [`BRUTE_FORCE_THRESHOLD`] particles, Barnes-Hut above, θ =
 //! [`DEFAULT_THETA`] by default — [`DEFAULT_THETA`]/[`BRUTE_FORCE_THRESHOLD`]
-//! are re-exported from [`super::barnes_hut`] rather than re-declared,
-//! since those two constants are already `pub` there (the coincident-
-//! point merge guard constants below are private in `barnes_hut.rs`, so
-//! they're re-declared verbatim instead — see the plan's own note on
-//! this).
+//! are re-exported from [`super::barnes_hut`], as are the coincident-point
+//! merge guard constants ([`MIN_DIST2`]/[`MIN_SPLIT_DIST2`]/[`MIN_CELL_SIZE`]
+//! — promoted `pub` there in graph-strengthening arc Wave G2b so they no
+//! longer need a verbatim-duplicated re-declaration here).
 
 use crate::particle::Particle;
 
 pub use super::barnes_hut::{BRUTE_FORCE_THRESHOLD, DEFAULT_THETA};
 
 /// Softening term — avoids a divide-by-zero singularity for
-/// coincident/near-coincident particles. Verbatim copy of
-/// `barnes_hut::MIN_DIST2` (private there, so re-declared here rather
-/// than reached via `pub use`).
-const MIN_DIST2: f32 = 1.0;
+/// coincident/near-coincident particles. Was a verbatim copy of
+/// `barnes_hut::MIN_DIST2`; now re-exported from it directly (both are
+/// `pub` as of graph-strengthening arc Wave G2b, so the duplicate literal
+/// is no longer needed — see [`super::force_directed_3d::ForceParams3D::min_dist2`]).
+pub use super::barnes_hut::MIN_DIST2;
 
 /// Two points closer (squared) than this can't be meaningfully separated
-/// by subdividing — merged into one heavier leaf on insert. Verbatim
-/// copy of `barnes_hut::MIN_SPLIT_DIST2` — see that constant's doc
-/// comment for the coincident-cluster-collapse rationale, which applies
-/// identically in 3D.
-const MIN_SPLIT_DIST2: f32 = 1e-8;
+/// by subdividing — merged into one heavier leaf on insert. Re-exported
+/// from `barnes_hut::MIN_SPLIT_DIST2` (Wave G2b, see [`MIN_DIST2`]'s own
+/// doc comment) — see that constant's own doc comment for the
+/// coincident-cluster-collapse rationale, which applies identically in 3D.
+pub use super::barnes_hut::MIN_SPLIT_DIST2;
 
 /// Subdivision floor: a cell this small is never split further, its
-/// second point merges into the existing leaf. Verbatim copy of
-/// `barnes_hut::MIN_CELL_SIZE`.
-const MIN_CELL_SIZE: f32 = 1e-3;
+/// second point merges into the existing leaf. Re-exported from
+/// `barnes_hut::MIN_CELL_SIZE` (Wave G2b, see [`MIN_DIST2`]'s own doc
+/// comment).
+pub use super::barnes_hut::MIN_CELL_SIZE;
 
 /// Floor on the distance-to-center-of-mass used by [`OctNode::accumulate`]'s
 /// θ ratio test — verbatim copy of `barnes_hut::CELL_ACCEPTANCE_MIN_DIST`;
@@ -52,8 +53,10 @@ const CELL_ACCEPTANCE_MIN_DIST: f32 = 0.001;
 
 /// O(n²) reference implementation. Accumulates repulsion force into
 /// `out[i]` for every particle `i` (does not clear `out` first — caller
-/// combines with other forces in the same buffer).
-pub fn apply_repulsion_brute_force_3d(particles: &[Particle], strength: f32, out: &mut [(f32, f32, f32)]) {
+/// combines with other forces in the same buffer). `min_dist2` is the
+/// softening floor — was [`MIN_DIST2`] read directly, now a caller-
+/// supplied parameter (graph-strengthening arc Wave G2b).
+pub fn apply_repulsion_brute_force_3d(particles: &[Particle], strength: f32, min_dist2: f32, out: &mut [(f32, f32, f32)]) {
     let n = particles.len();
     for i in 0..n {
         let (xi, yi, zi) = (particles[i].x, particles[i].y, particles[i].z);
@@ -61,7 +64,7 @@ pub fn apply_repulsion_brute_force_3d(particles: &[Particle], strength: f32, out
             let dx = xi - particles[j].x;
             let dy = yi - particles[j].y;
             let dz = zi - particles[j].z;
-            let d2 = (dx * dx + dy * dy + dz * dz).max(MIN_DIST2);
+            let d2 = (dx * dx + dy * dy + dz * dz).max(min_dist2);
             let d = d2.sqrt();
             let f = strength / d2;
             let fx = dx / d * f;
@@ -160,7 +163,7 @@ impl OctNode {
         Self { bounds, mass: 0.0, com_x: 0.0, com_y: 0.0, com_z: 0.0, content: NodeContent::Empty }
     }
 
-    fn insert(&mut self, x: f32, y: f32, z: f32, mass: f32, index: u32) {
+    fn insert(&mut self, x: f32, y: f32, z: f32, mass: f32, index: u32, min_split_dist2: f32, min_cell_size: f32) {
         let new_mass = self.mass + mass;
         self.com_x = (self.com_x * self.mass + x * mass) / new_mass;
         self.com_y = (self.com_y * self.mass + y * mass) / new_mass;
@@ -179,7 +182,7 @@ impl OctNode {
                 // `barnes_hut.rs`'s 2D guard). Merge into a single heavier
                 // leaf instead of recursing forever.
                 let (dx, dy, dz) = (x - *lx, y - *ly, z - *lz);
-                if dx * dx + dy * dy + dz * dz <= MIN_SPLIT_DIST2 || self.bounds.size <= MIN_CELL_SIZE {
+                if dx * dx + dy * dy + dz * dz <= min_split_dist2 || self.bounds.size <= min_cell_size {
                     *lmass += mass;
                     indices.push(index);
                     return;
@@ -203,22 +206,22 @@ impl OctNode {
                 ];
                 let prior_octant = self.bounds.octant(lx, ly, lz);
                 for prior_index in prior_indices {
-                    children[prior_octant].insert(lx, ly, lz, 1.0, prior_index);
+                    children[prior_octant].insert(lx, ly, lz, 1.0, prior_index, min_split_dist2, min_cell_size);
                 }
-                children[self.bounds.octant(x, y, z)].insert(x, y, z, mass, index);
+                children[self.bounds.octant(x, y, z)].insert(x, y, z, mass, index, min_split_dist2, min_cell_size);
                 self.content = NodeContent::Internal { children: Box::new(children) };
             }
             NodeContent::Internal { children } => {
-                children[self.bounds.octant(x, y, z)].insert(x, y, z, mass, index);
+                children[self.bounds.octant(x, y, z)].insert(x, y, z, mass, index, min_split_dist2, min_cell_size);
             }
         }
     }
 
-    fn accumulate(&self, x: f32, y: f32, z: f32, theta: f32, strength: f32, out: &mut (f32, f32, f32)) {
+    fn accumulate(&self, x: f32, y: f32, z: f32, theta: f32, strength: f32, min_dist2: f32, out: &mut (f32, f32, f32)) {
         match &self.content {
             NodeContent::Empty => {}
             NodeContent::Leaf { x: lx, y: ly, z: lz, mass, .. } => {
-                apply_point(x, y, z, *lx, *ly, *lz, *mass, strength, out);
+                apply_point(x, y, z, *lx, *ly, *lz, *mass, strength, min_dist2, out);
             }
             NodeContent::Internal { children } => {
                 let dx = x - self.com_x;
@@ -226,10 +229,10 @@ impl OctNode {
                 let dz = z - self.com_z;
                 let d = (dx * dx + dy * dy + dz * dz).sqrt().max(CELL_ACCEPTANCE_MIN_DIST);
                 if self.bounds.size / d < theta {
-                    apply_point(x, y, z, self.com_x, self.com_y, self.com_z, self.mass, strength, out);
+                    apply_point(x, y, z, self.com_x, self.com_y, self.com_z, self.mass, strength, min_dist2, out);
                 } else {
                     for child in children.iter() {
-                        child.accumulate(x, y, z, theta, strength, out);
+                        child.accumulate(x, y, z, theta, strength, min_dist2, out);
                     }
                 }
             }
@@ -254,11 +257,11 @@ impl OctNode {
     }
 }
 
-fn apply_point(x: f32, y: f32, z: f32, px: f32, py: f32, pz: f32, mass: f32, strength: f32, out: &mut (f32, f32, f32)) {
+fn apply_point(x: f32, y: f32, z: f32, px: f32, py: f32, pz: f32, mass: f32, strength: f32, min_dist2: f32, out: &mut (f32, f32, f32)) {
     let dx = x - px;
     let dy = y - py;
     let dz = z - pz;
-    let d2 = (dx * dx + dy * dy + dz * dz).max(MIN_DIST2);
+    let d2 = (dx * dx + dy * dy + dz * dz).max(min_dist2);
     let d = d2.sqrt();
     let f = strength * mass / d2;
     out.0 += dx / d * f;
@@ -273,7 +276,10 @@ pub struct Octree {
 }
 
 impl Octree {
-    pub fn build(particles: &[Particle]) -> Self {
+    /// `min_split_dist2`/`min_cell_size` were [`MIN_SPLIT_DIST2`]/
+    /// [`MIN_CELL_SIZE`] read directly — now caller-supplied parameters
+    /// (graph-strengthening arc Wave G2b).
+    pub fn build(particles: &[Particle], min_split_dist2: f32, min_cell_size: f32) -> Self {
         if particles.is_empty() {
             return Self { root: None };
         }
@@ -291,18 +297,20 @@ impl Octree {
         let bounds = OctBounds { min_x, min_y, min_z, size };
         let mut root = OctNode::new_empty(bounds);
         for (i, p) in particles.iter().enumerate() {
-            root.insert(p.x, p.y, p.z, 1.0, i as u32);
+            root.insert(p.x, p.y, p.z, 1.0, i as u32, min_split_dist2, min_cell_size);
         }
         Self { root: Some(root) }
     }
 
     /// Accumulate the approximated repulsion force for every particle
-    /// into `out[i]` (added to, not overwritten).
-    pub fn accumulate_forces(&self, particles: &[Particle], theta: f32, strength: f32, out: &mut [(f32, f32, f32)]) {
+    /// into `out[i]` (added to, not overwritten). `min_dist2` was
+    /// [`MIN_DIST2`] read directly — now a caller-supplied parameter
+    /// (graph-strengthening arc Wave G2b).
+    pub fn accumulate_forces(&self, particles: &[Particle], theta: f32, strength: f32, min_dist2: f32, out: &mut [(f32, f32, f32)]) {
         let Some(root) = &self.root else { return };
         for (i, p) in particles.iter().enumerate() {
             let mut acc = (0.0, 0.0, 0.0);
-            root.accumulate(p.x, p.y, p.z, theta, strength, &mut acc);
+            root.accumulate(p.x, p.y, p.z, theta, strength, min_dist2, &mut acc);
             out[i].0 += acc.0;
             out[i].1 += acc.1;
             out[i].2 += acc.2;
@@ -434,11 +442,11 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force_3d(&particles, strength, &mut brute);
+        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, &mut brute);
 
-        let ot = Octree::build(&particles);
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32, 0f32); particles.len()];
-        ot.accumulate_forces(&particles, 0.6, strength, &mut approx);
+        ot.accumulate_forces(&particles, 0.6, strength, MIN_DIST2, &mut approx);
 
         let mut max_rel_err = 0f32;
         for (b, a) in brute.iter().zip(approx.iter()) {
@@ -454,18 +462,18 @@ mod tests {
     #[test]
     fn empty_octree_produces_no_force() {
         let particles: Vec<Particle> = Vec::new();
-        let ot = Octree::build(&particles);
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut out: Vec<(f32, f32, f32)> = Vec::new();
-        ot.accumulate_forces(&particles, DEFAULT_THETA, 100.0, &mut out);
+        ot.accumulate_forces(&particles, DEFAULT_THETA, 100.0, MIN_DIST2, &mut out);
         assert!(out.is_empty());
     }
 
     #[test]
     fn single_particle_produces_no_self_force() {
         let particles = vec![Particle::at3(3.0, 4.0, 5.0)];
-        let ot = Octree::build(&particles);
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut out = vec![(0f32, 0f32, 0f32)];
-        ot.accumulate_forces(&particles, DEFAULT_THETA, 100.0, &mut out);
+        ot.accumulate_forces(&particles, DEFAULT_THETA, 100.0, MIN_DIST2, &mut out);
         assert_eq!(out[0], (0.0, 0.0, 0.0));
     }
 
@@ -496,17 +504,17 @@ mod tests {
         particles.push(Particle::at3(0.0, 0.0, 0.0));
 
         let strength = 100.0;
-        let ot = Octree::build(&particles); // pre-fix-equivalent: never returns
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE); // pre-fix-equivalent: never returns
         let mut out = vec![(0f32, 0f32, 0f32); particles.len()];
-        ot.accumulate_forces(&particles, DEFAULT_THETA, strength, &mut out);
+        ot.accumulate_forces(&particles, DEFAULT_THETA, strength, MIN_DIST2, &mut out);
 
         let probe = out[16];
         assert!(probe.0.is_finite() && probe.1.is_finite() && probe.2.is_finite());
 
         // The probe must feel each stack as an 8x-mass single point.
         let mut expected = (0.0f32, 0.0f32, 0.0f32);
-        apply_point(0.0, 0.0, 0.0, -50.0, 0.0, 0.0, 8.0, strength, &mut expected);
-        apply_point(0.0, 0.0, 0.0, 0.0, -30.0, -40.0, 8.0, strength, &mut expected);
+        apply_point(0.0, 0.0, 0.0, -50.0, 0.0, 0.0, 8.0, strength, MIN_DIST2, &mut expected);
+        apply_point(0.0, 0.0, 0.0, 0.0, -30.0, -40.0, 8.0, strength, MIN_DIST2, &mut expected);
         let diff =
             ((probe.0 - expected.0).powi(2) + (probe.1 - expected.1).powi(2) + (probe.2 - expected.2).powi(2)).sqrt();
         let mag = (expected.0 * expected.0 + expected.1 * expected.1 + expected.2 * expected.2).sqrt();
@@ -557,7 +565,7 @@ mod tests {
             }
         }
 
-        let ot = Octree::build(&particles);
+        let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut tree = vec![(0f32, 0f32, 0f32); n];
         ot.apply_collision_3d(&particles, &radii, strength, &mut tree);
 

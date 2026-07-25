@@ -216,8 +216,8 @@
 //! [`crate::engine3d::GraphEngine3D::draw_overlay`] just walks the same
 //! [`GridLine`] list [`build_grid_plan`] produced, keeps `strong` lines
 //! only, culls anything that fails to project or lands off-viewport, and
-//! caps the total at [`GRID_MAX_AXIS_LABELS`] — a documented
-//! simplification, not a forgotten integration.
+//! caps the total at [`Graph3DGridConfig::max_axis_labels`] — a
+//! documented simplification, not a forgotten integration.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -254,11 +254,12 @@ pub const EDGE_ALPHA: f32 = 0.45;
 /// premultiplied by its own analytic-AA coverage in the fragment stage).
 pub const EDGE_TINT: [f32; 4] = [EDGE_TINT_RGB[0], EDGE_TINT_RGB[1], EDGE_TINT_RGB[2], EDGE_ALPHA];
 
-/// 2026-07-22 (3D-parity-arc final wave) — absolute on-screen cap an
-/// edge's per-instance width should ever reach (the owner's own "~6px"
-/// spec), expressed as a SCALE multiplier against `uzor_urx_3d::pipeline`'s
-/// own private `DEFAULT_EDGE_WIDTH_PX = 1.75` (mirrored here as a literal
-/// — the SAME "redeclare a small cross-crate constant" convention
+/// Default for [`Graph3DEdgeStyle::width_scale_max`] — 2026-07-22
+/// (3D-parity-arc final wave) — absolute on-screen cap an edge's
+/// per-instance width should ever reach (the owner's own "~6px" spec),
+/// expressed as a SCALE multiplier against `uzor_urx_3d::pipeline`'s own
+/// private `DEFAULT_EDGE_WIDTH_PX = 1.75` (mirrored here as a literal —
+/// the SAME "redeclare a small cross-crate constant" convention
 /// `DEFAULT_LOCAL_DEPTH_3D` already established for 2D's private
 /// `DEFAULT_LOCAL_DEPTH`, since that constant isn't `pub`): `6.0 / 1.75
 /// ≈ 3.4286`. A caller that changes the renderer's own BASE
@@ -285,22 +286,65 @@ pub const EDGE_WIDTH_SCALE_MAX: f32 = 6.0 / 1.75;
 /// implicit weight every pre-existing graph-edge push used before this
 /// wave — recovers `scale == 1.0` exactly, the byte/pixel-compatibility
 /// this wave's own gate required (the renderer's BASE `edge_width_px`
-/// uniform, `~1.75px` by default, is untouched either way). Clamped at
-/// [`EDGE_WIDTH_SCALE_MAX`] so no single edge's weight can blow the line
-/// out past the owner's own "~6px" sane maximum.
-pub fn edge_width_scale(weight: f32) -> f32 {
+/// uniform, `~1.75px` by default, is untouched either way). `max_scale`
+/// clamps the result — was the private [`EDGE_WIDTH_SCALE_MAX`] constant
+/// read directly; now a caller-supplied parameter (graph-strengthening
+/// arc Wave G2b, via [`Graph3DEdgeStyle::width_scale_max`]) so no single
+/// edge's weight can blow the line out past a caller-chosen sane maximum.
+pub fn edge_width_scale(weight: f32, max_scale: f32) -> f32 {
     let w = weight.max(0.0);
-    ((1.0 + w.sqrt()) * 0.5).min(EDGE_WIDTH_SCALE_MAX)
+    ((1.0 + w.sqrt()) * 0.5).min(max_scale)
 }
 
-/// Aggregated cross-cluster synthetic-edge tint (cluster-collapse wave) —
-/// the SAME warm gold accent the 2D engine's own default
+/// Default for [`Graph3DEdgeStyle::cluster_edge_tint`] — aggregated
+/// cross-cluster synthetic-edge tint (cluster-collapse wave) — the SAME
+/// warm gold accent the 2D engine's own default
 /// `GraphTheme::dark().cluster_accent` (`"#c9a94e"`) uses for its cluster
 /// affordances, converted to a `[f32; 4]` tint (opaque — unlike the
-/// desaturated, alpha-blended [`EDGE_TINT`], a cluster's cross-edges are
-/// meant to read as a distinct, more prominent accent, mirroring 2D's own
-/// opaque `cluster_accent` stroke).
+/// desaturated, alpha-blended default [`Graph3DEdgeStyle::tint_rgb`]/
+/// [`Graph3DEdgeStyle::alpha`], a cluster's cross-edges are meant to read
+/// as a distinct, more prominent accent, mirroring 2D's own opaque
+/// `cluster_accent` stroke).
 pub const CLUSTER_EDGE_TINT: [f32; 4] = [0.788, 0.663, 0.306, 1.0];
+
+/// Every edge/cluster-edge paint constant this render layer owns,
+/// bundled into one caller-configurable struct (graph-strengthening arc
+/// Wave G2b — the 3D audit's own configurability inventory flagged every
+/// one of these `✗`, no override anywhere). [`Default`] reproduces
+/// [`EDGE_TINT_RGB`]/[`EDGE_ALPHA`]/[`EDGE_WIDTH_SCALE_MAX`]/
+/// [`CLUSTER_EDGE_TINT`] byte-identically. One `edge_style:
+/// Graph3DEdgeStyle` field on [`crate::engine3d::GraphEngine3D`] with an
+/// `edge_style()`/`set_edge_style()` accessor pair — the same established
+/// shape [`crate::engine::GraphEngine::label_halo`]/`set_label_halo`
+/// already use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Graph3DEdgeStyle {
+    /// Ordinary graph-edge tint (RGB) — was [`EDGE_TINT_RGB`].
+    pub tint_rgb: [f32; 3],
+    /// Ordinary graph-edge alpha — was [`EDGE_ALPHA`].
+    pub alpha: f32,
+    /// [`edge_width_scale`]'s own clamp ceiling — was
+    /// [`EDGE_WIDTH_SCALE_MAX`].
+    pub width_scale_max: f32,
+    /// Aggregated cross-cluster synthetic-edge tint — was
+    /// [`CLUSTER_EDGE_TINT`].
+    pub cluster_edge_tint: [f32; 4],
+}
+
+impl Graph3DEdgeStyle {
+    /// `tint_rgb`/`alpha` packed into the `[f32; 4]` `Node::color_tint`
+    /// every ordinary edge instance shares — was the module-level
+    /// `EDGE_TINT` constant, now derived from this struct's own fields.
+    pub fn edge_tint(&self) -> [f32; 4] {
+        [self.tint_rgb[0], self.tint_rgb[1], self.tint_rgb[2], self.alpha]
+    }
+}
+
+impl Default for Graph3DEdgeStyle {
+    fn default() -> Self {
+        Self { tint_rgb: EDGE_TINT_RGB, alpha: EDGE_ALPHA, width_scale_max: EDGE_WIDTH_SCALE_MAX, cluster_edge_tint: CLUSTER_EDGE_TINT }
+    }
+}
 
 /// Convert [`category_color_default`]'s fixed `"#rrggbb"` palette into an
 /// opaque `[f32; 4]` tint — `Node::color_tint` takes floats, not a
@@ -321,28 +365,69 @@ fn category_tint(category: &str) -> [f32; 4] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
 }
 
-/// Wave C — node material softening (owner live-verdict: lit spheres
-/// read "muddy/concrete" — a harsh lit/shadow split that washes out
-/// category saturation, worsened downstream by the ACES tonemap's own
-/// highlight rolloff). The SHARED `uzor_urx_3d::PhongMaterial::default()`
-/// (`ambient_strength: 0.1, diffuse_strength: 0.85, specular_strength:
-/// 0.4, shininess: 32.0`) is deliberately left untouched — that default
-/// is a crate-wide value every OTHER `uzor-urx-3d` consumer also gets,
-/// out of this graph-only quality wave's scope. `phong_instanced.wgsl`'s
-/// own `fs_main` multiplies `lights.ambient` (`arm_default_lighting`'s
-/// scene ambient, below) by `material.ambient_strength` — at the OLD
-/// `0.1` default, even a bright scene ambient barely lifts a sphere's
-/// unlit hemisphere (`0.28 * 0.1 = 0.028` — near-black), which is
-/// exactly the harsh "concrete" look. Raising `ambient_strength` here
-/// (own node material, not the shared default) gives a real hemisphere
-/// fill; lowering `specular_strength`/`shininess` softens the highlight
-/// that was previously washing out saturated hues at its hot spot.
-const NODE_MATERIAL: PhongMaterial = PhongMaterial {
+/// Default for [`Graph3DLighting::node_material`] — Wave C node material
+/// softening (owner live-verdict: lit spheres read "muddy/concrete" — a
+/// harsh lit/shadow split that washes out category saturation, worsened
+/// downstream by the ACES tonemap's own highlight rolloff). The SHARED
+/// `uzor_urx_3d::PhongMaterial::default()` (`ambient_strength: 0.1,
+/// diffuse_strength: 0.85, specular_strength: 0.4, shininess: 32.0`) is
+/// deliberately left untouched — that default is a crate-wide value
+/// every OTHER `uzor-urx-3d` consumer also gets, out of this graph-only
+/// quality wave's scope. `phong_instanced.wgsl`'s own `fs_main`
+/// multiplies `lights.ambient` (`Graph3DLighting::ambient`, below) by
+/// `material.ambient_strength` — at the OLD `0.1` default, even a bright
+/// scene ambient barely lifts a sphere's unlit hemisphere (`0.28 * 0.1 =
+/// 0.028` — near-black), which is exactly the harsh "concrete" look.
+/// Raising `ambient_strength` here (own node material, not the shared
+/// default) gives a real hemisphere fill; lowering
+/// `specular_strength`/`shininess` softens the highlight that was
+/// previously washing out saturated hues at its hot spot.
+const DEFAULT_NODE_MATERIAL: PhongMaterial = PhongMaterial {
     ambient_strength: 0.35,
     diffuse_strength: 0.7,
     specular_strength: 0.15,
     shininess: 24.0,
 };
+
+/// Node lit-material response + default scene lighting rig (3D quality
+/// audit B6), bundled into one caller-configurable struct
+/// (graph-strengthening arc Wave G2b) — mirrors
+/// [`crate::engine::GraphInteractionConfig`]'s own "bundle every
+/// constant belonging to one visual subsystem" shape. [`Default`]
+/// reproduces [`DEFAULT_NODE_MATERIAL`]/[`arm_default_lighting`]'s own
+/// pre-existing values byte-identically. One `lighting: Graph3DLighting`
+/// field on [`crate::engine3d::GraphEngine3D`] with a
+/// `lighting()`/`set_lighting()` accessor pair — the same established
+/// shape [`crate::engine::GraphEngine::label_halo`]/`set_label_halo`
+/// already use.
+#[derive(Debug, Clone, Copy)]
+pub struct Graph3DLighting {
+    /// Every node's shared lit-material response — was the private
+    /// [`DEFAULT_NODE_MATERIAL`] constant.
+    pub node_material: PhongMaterial,
+    /// Scene-wide ambient floor — was `arm_default_lighting`'s hardcoded
+    /// `scene.ambient = [0.5, 0.5, 0.55]`.
+    pub ambient: [f32; 3],
+    /// The single default directional key light's direction — was
+    /// `arm_default_lighting`'s hardcoded `Vec3::new(-0.4, -1.0, -0.3)`.
+    pub light_direction: Vec3,
+    /// The key light's color — was the hardcoded `[1.0, 1.0, 1.0]`.
+    pub light_color: [f32; 3],
+    /// The key light's intensity — was the hardcoded `0.75`.
+    pub light_intensity: f32,
+}
+
+impl Default for Graph3DLighting {
+    fn default() -> Self {
+        Self {
+            node_material: DEFAULT_NODE_MATERIAL,
+            ambient: [0.5, 0.5, 0.55],
+            light_direction: Vec3::new(-0.4, -1.0, -0.3),
+            light_color: [1.0, 1.0, 1.0],
+            light_intensity: 0.75,
+        }
+    }
+}
 
 /// One instanced `Node::new_lit` per graph node — see the module doc.
 /// `hidden` (cluster-collapse wave) is every node currently hidden by a
@@ -355,11 +440,15 @@ const NODE_MATERIAL: PhongMaterial = PhongMaterial {
 /// — the graph's own radius field already reflects the supernode size
 /// (`crate::cluster::ClusterRegistry::collapse_3d` bumps it in place), so
 /// no separate supernode-scaling branch is needed here.
+/// `material` was the private [`DEFAULT_NODE_MATERIAL`] constant — now a
+/// caller-supplied parameter (graph-strengthening arc Wave G2b, via
+/// [`Graph3DLighting::node_material`]).
 pub fn build_node_instances<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     mesh: &Arc<MeshLit>,
     hidden: &HashSet<NodeIndex>,
+    material: PhongMaterial,
 ) -> Vec<Node> {
     graph
         .nodes()
@@ -373,7 +462,7 @@ pub fn build_node_instances<N, E>(
                     .with_translation(Vec3::new(p.x, p.y, p.z))
                     .with_scale(Vec3::splat(node.radius.max(0.01)))
                     .with_tint(category_tint(&node.category))
-                    .with_material(NODE_MATERIAL),
+                    .with_material(material),
             )
         })
         .collect()
@@ -401,16 +490,20 @@ pub fn build_node_instances<N, E>(
 /// **2026-07-22 (3D-parity-arc final wave)**: `scale.x` — provably
 /// unused by `edge_quad_instanced.wgsl`'s own vertex math before this
 /// wave (see that shader's own module doc) — now carries
-/// [`edge_width_scale(edge.weight)`](edge_width_scale), a per-instance
-/// width MULTIPLIER against the renderer's BASE `edge_width_px`
-/// uniform. A weight-1.0 edge recovers `scale.x == 1.0` exactly, so
-/// every pre-existing graph built before this wave (implicit weight
-/// 1.0) renders byte-for-byte unchanged.
+/// [`edge_width_scale`], a per-instance width MULTIPLIER against the
+/// renderer's BASE `edge_width_px` uniform. A weight-1.0 edge recovers
+/// `scale.x == 1.0` exactly, so every pre-existing graph built before
+/// this wave (implicit weight 1.0) renders byte-for-byte unchanged.
+///
+/// `style` was the module-level [`EDGE_TINT`]/[`EDGE_WIDTH_SCALE_MAX`]
+/// constants read directly — now a caller-supplied parameter
+/// (graph-strengthening arc Wave G2b, via [`Graph3DEdgeStyle`]).
 pub fn build_edge_instances<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     mesh: &Arc<Mesh>,
     hidden: &HashSet<NodeIndex>,
+    style: &Graph3DEdgeStyle,
 ) -> Vec<Node> {
     graph
         .edges()
@@ -433,8 +526,8 @@ pub fn build_edge_instances<N, E>(
                 Node::new_line(mesh.clone())
                     .with_translation(from)
                     .with_rotation(rotation)
-                    .with_scale(Vec3::new(edge_width_scale(edge.weight), length, 1.0))
-                    .with_tint(EDGE_TINT),
+                    .with_scale(Vec3::new(edge_width_scale(edge.weight, style.width_scale_max), length, 1.0))
+                    .with_tint(style.edge_tint()),
             )
         })
         .collect()
@@ -451,12 +544,15 @@ pub fn build_edge_instances<N, E>(
 /// `build_scene`'s output visually distinct, not an optional flourish.
 /// The key light's own intensity is DOWN from the original `1.0` — a
 /// "hemisphere-ish fill, gentler key" so a node's lit and shadowed
-/// hemispheres sit closer together in brightness (with [`NODE_MATERIAL`]'s
-/// raised `ambient_strength`, the shadow side is no longer near-black
-/// either), instead of the old high-contrast harsh-directional look.
-fn arm_default_lighting(scene: &mut Scene3D) {
-    scene.ambient = [0.5, 0.5, 0.55];
-    scene.push_light(Light::directional(Vec3::new(-0.4, -1.0, -0.3), [1.0, 1.0, 1.0], 0.75));
+/// hemispheres sit closer together in brightness (with
+/// [`Graph3DLighting::node_material`]'s raised `ambient_strength`, the
+/// shadow side is no longer near-black either), instead of the old
+/// high-contrast harsh-directional look. `lighting` was every field here
+/// read directly from a hardcoded literal — now a caller-supplied
+/// parameter (graph-strengthening arc Wave G2b, via [`Graph3DLighting`]).
+fn arm_default_lighting(scene: &mut Scene3D, lighting: &Graph3DLighting) {
+    scene.ambient = lighting.ambient;
+    scene.push_light(Light::directional(lighting.light_direction, lighting.light_color, lighting.light_intensity));
 }
 
 /// Build the full 3D scene (plan §1.3): every node as an instanced
@@ -473,18 +569,22 @@ fn arm_default_lighting(scene: &mut Scene3D) {
 /// [`build_cluster_edge_instances`], a separate additive call
 /// (`GraphEngine3D::build_scene` composes both, mirroring the 2D engine's
 /// own `GraphEngine::draw`'s separate `draw_edges`/`draw_cluster_edges`
-/// calls).
+/// calls). `lighting`/`edge_style` were module-level constants read
+/// directly — now caller-supplied parameters (graph-strengthening arc
+/// Wave G2b).
 pub fn build_scene<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     node_mesh: &Arc<MeshLit>,
     edge_mesh: &Arc<Mesh>,
     hidden: &HashSet<NodeIndex>,
+    lighting: &Graph3DLighting,
+    edge_style: &Graph3DEdgeStyle,
 ) -> Scene3D {
     let mut scene = Scene3D::new();
-    arm_default_lighting(&mut scene);
-    scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh, hidden));
-    scene.nodes.extend(build_node_instances(graph, particles, node_mesh, hidden));
+    arm_default_lighting(&mut scene, lighting);
+    scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh, hidden, edge_style));
+    scene.nodes.extend(build_node_instances(graph, particles, node_mesh, hidden, lighting.node_material));
     scene
 }
 
@@ -501,10 +601,14 @@ pub fn build_scene<N, E>(
 /// support in the 2026-07-22 wave ([`edge_width_scale`]/
 /// [`build_edge_instances`]'s own doc comment) — every synthetic
 /// cross-cluster edge here shares the SAME tint/width as an ordinary
-/// weight-1.0 graph edge, just through [`CLUSTER_EDGE_TINT`] instead of
-/// [`EDGE_TINT`], a documented divergence rather than an oversight (out
-/// of scope for that wave — it named `build_edge_instances` specifically).
-pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, clusters: &ClusterRegistry) -> Vec<Node> {
+/// weight-1.0 graph edge, just through `cluster_edge_tint` instead of the
+/// ordinary edge tint, a documented divergence rather than an oversight
+/// (out of scope for that wave — it named `build_edge_instances`
+/// specifically). `cluster_edge_tint` was the module-level
+/// [`CLUSTER_EDGE_TINT`] constant read directly — now a caller-supplied
+/// parameter (graph-strengthening arc Wave G2b, via
+/// [`Graph3DEdgeStyle::cluster_edge_tint`]).
+pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, clusters: &ClusterRegistry, cluster_edge_tint: [f32; 4]) -> Vec<Node> {
     let mut out = Vec::new();
     for cluster in clusters.collapsed_clusters() {
         let Some(rep) = particles.get(cluster.representative.index()) else { continue };
@@ -524,7 +628,7 @@ pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, cl
                     .with_translation(from)
                     .with_rotation(rotation)
                     .with_scale(Vec3::new(1.0, length, 1.0))
-                    .with_tint(CLUSTER_EDGE_TINT),
+                    .with_tint(cluster_edge_tint),
             );
         }
     }
@@ -533,45 +637,96 @@ pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, cl
 
 // ── Wave 5 — 3D reference ground grid + axis tick labels (distance LOD) ──
 
-/// Dim gridline alpha (the owner's own spec: "~0.15").
-pub const GRID_LINE_ALPHA: f32 = 0.15;
-/// Every 5th line's own, more visible alpha (the owner's own spec: "~0.25").
-pub const GRID_STRONG_LINE_ALPHA: f32 = 0.25;
-/// Neutral gray-blue tint — visually distinct from [`EDGE_TINT_RGB`]'s own
-/// warmer blue-gray so a grid line and a graph edge don't read as the
-/// exact same element even though they share one rendering pipeline.
-pub const GRID_TINT_RGB: [f32; 3] = [0.60, 0.63, 0.70];
-/// Every `GRID_STRONG_LINE_EVERY`th tick (index counted from world
-/// coordinate `0`, not from the range's own start — so which lines are
-/// "strong" doesn't shift as the graph's own AABB drifts) is a strong
-/// line, per the owner's own spec.
-const GRID_STRONG_LINE_EVERY: i64 = 5;
-/// Ground-plane drop below the AABB's own lowest point, as a fraction of
-/// the AABB's largest dimension (floored by [`GRID_Y_MARGIN_MIN`] so a
-/// very flat/small graph still gets a visibly separated ground plane) —
-/// the task's own "AABB min y minus a small margin" simplification of
-/// "the XZ plane through the centroid."
-const GRID_Y_MARGIN_FRACTION: f32 = 0.08;
-const GRID_Y_MARGIN_MIN: f32 = 4.0;
+/// Default for [`Graph3DGridConfig::line_alpha`] — dim gridline alpha
+/// (the owner's own spec: "~0.15").
+const DEFAULT_GRID_LINE_ALPHA: f32 = 0.15;
+/// Default for [`Graph3DGridConfig::strong_line_alpha`] — every 5th
+/// line's own, more visible alpha (the owner's own spec: "~0.25").
+const DEFAULT_GRID_STRONG_LINE_ALPHA: f32 = 0.25;
+/// Default for [`Graph3DGridConfig::tint_rgb`] — neutral gray-blue tint,
+/// visually distinct from [`EDGE_TINT_RGB`]'s own warmer blue-gray so a
+/// grid line and a graph edge don't read as the exact same element even
+/// though they share one rendering pipeline.
+const DEFAULT_GRID_TINT_RGB: [f32; 3] = [0.60, 0.63, 0.70];
+/// Default for [`Graph3DGridConfig::strong_line_every`] — every Nth tick
+/// (index counted from world coordinate `0`, not from the range's own
+/// start — so which lines are "strong" doesn't shift as the graph's own
+/// AABB drifts) is a strong line, per the owner's own spec.
+const DEFAULT_GRID_STRONG_LINE_EVERY: i64 = 5;
+/// Default for [`Graph3DGridConfig::y_margin_fraction`] — ground-plane
+/// drop below the AABB's own lowest point, as a fraction of the AABB's
+/// largest dimension (floored by [`DEFAULT_GRID_Y_MARGIN_MIN`] so a very
+/// flat/small graph still gets a visibly separated ground plane) — the
+/// task's own "AABB min y minus a small margin" simplification of "the
+/// XZ plane through the centroid."
+const DEFAULT_GRID_Y_MARGIN_FRACTION: f32 = 0.08;
+/// Default for [`Graph3DGridConfig::y_margin_min`].
+const DEFAULT_GRID_Y_MARGIN_MIN: f32 = 4.0;
 
 /// Target on-screen gridline-spacing BAND (the owner's own spec: "roughly
 /// 40-160px"). [`grid_step_for_scale`] snaps to whichever 1/2/5×10^k
 /// ladder rung lands closest (in log-RATIO terms, not linear difference)
-/// to [`GRID_TARGET_SCREEN_PX`] — the band's own geometric mean, the
-/// natural "center" of a multiplicative range. The worst-case ladder gap
-/// (`5 -> 10`, or equivalently `1 -> 2`, both ratio `2.5`) means the
-/// worst-case snap lands at `sqrt(2.5) ≈ 1.58×` off target in either
-/// direction — `80 / 1.58 ≈ 50.6px` and `80 * 1.58 ≈ 126.5px` — safely
-/// inside this band with real margin either side.
+/// to [`Graph3DGridConfig::target_screen_px`] — the band's own geometric
+/// mean, the natural "center" of a multiplicative range. The worst-case
+/// ladder gap (`5 -> 10`, or equivalently `1 -> 2`, both ratio `2.5`)
+/// means the worst-case snap lands at `sqrt(2.5) ≈ 1.58×` off target in
+/// either direction — `80 / 1.58 ≈ 50.6px` and `80 * 1.58 ≈ 126.5px` —
+/// safely inside this band with real margin either side. `GRID_MIN/MAX_SCREEN_PX`
+/// are documentation of the resulting band, not inputs any function reads
+/// — the ladder snap against `target_screen_px` is what actually produces
+/// it.
 pub const GRID_MIN_SCREEN_PX: f64 = 40.0;
 pub const GRID_MAX_SCREEN_PX: f64 = 160.0;
-const GRID_TARGET_SCREEN_PX: f64 = 80.0;
+/// Default for [`Graph3DGridConfig::target_screen_px`].
+const DEFAULT_GRID_TARGET_SCREEN_PX: f64 = 80.0;
 
-/// Axis-tick-label budget per [`crate::engine3d::GraphEngine3D::draw_overlay`]
-/// call (module doc's own "documented simplification, not a forgotten
+/// Default for [`Graph3DGridConfig::max_axis_labels`] — axis-tick-label
+/// budget per [`crate::engine3d::GraphEngine3D::draw_overlay`] call
+/// (module doc's own "documented simplification, not a forgotten
 /// integration" note) — cheap insurance against an extreme AABB/step
 /// combination producing an unreasonable label count.
-pub const GRID_MAX_AXIS_LABELS: usize = 40;
+const DEFAULT_GRID_MAX_AXIS_LABELS: usize = 40;
+
+/// Every reference-grid tuning constant this render layer owns, bundled
+/// into one caller-configurable struct (graph-strengthening arc Wave
+/// G2b — 3D quality audit B7: "grid tuning constants have zero exposed
+/// configurability beyond the on/off toggle"). [`Default`] reproduces
+/// every constant above byte-identically. One `grid_config:
+/// Graph3DGridConfig` field on [`crate::engine3d::GraphEngine3D`] with a
+/// `grid_config()`/`set_grid_config()` accessor pair — the same
+/// established shape [`crate::engine::GraphEngine::label_halo`]/
+/// `set_label_halo` already use. Distinct from
+/// [`crate::engine3d::GraphEngine3D::grid_enabled`], which stays the
+/// existing plain on/off toggle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Graph3DGridConfig {
+    pub line_alpha: f32,
+    pub strong_line_alpha: f32,
+    pub tint_rgb: [f32; 3],
+    pub strong_line_every: i64,
+    pub y_margin_fraction: f32,
+    pub y_margin_min: f32,
+    /// [`grid_step_for_scale`]'s own target on-screen spacing — see
+    /// [`GRID_MIN_SCREEN_PX`]/[`GRID_MAX_SCREEN_PX`]'s own doc comment
+    /// for the resulting band this produces.
+    pub target_screen_px: f64,
+    pub max_axis_labels: usize,
+}
+
+impl Default for Graph3DGridConfig {
+    fn default() -> Self {
+        Self {
+            line_alpha: DEFAULT_GRID_LINE_ALPHA,
+            strong_line_alpha: DEFAULT_GRID_STRONG_LINE_ALPHA,
+            tint_rgb: DEFAULT_GRID_TINT_RGB,
+            strong_line_every: DEFAULT_GRID_STRONG_LINE_EVERY,
+            y_margin_fraction: DEFAULT_GRID_Y_MARGIN_FRACTION,
+            y_margin_min: DEFAULT_GRID_Y_MARGIN_MIN,
+            target_screen_px: DEFAULT_GRID_TARGET_SCREEN_PX,
+            max_axis_labels: DEFAULT_GRID_MAX_AXIS_LABELS,
+        }
+    }
+}
 
 /// Snap `raw` (a positive, unitless "world units per target pixel"
 /// value) to the nearest 1/2/5×10^k "nice number" ladder rung — the same
@@ -606,14 +761,17 @@ fn snap_to_nice_step(raw: f64) -> f64 {
 /// `viewport_height_px`-tall surface — see the module doc's own
 /// distance-LOD writeup. Non-finite/non-positive inputs fall back to a
 /// step of `1.0` rather than propagating NaN/inf into the grid geometry.
-pub fn grid_step_for_scale(camera_distance: f32, fov_y_radians: f32, viewport_height_px: f64) -> f64 {
+/// `config.target_screen_px` was the private [`DEFAULT_GRID_TARGET_SCREEN_PX`]
+/// constant read directly — now a caller-supplied parameter
+/// (graph-strengthening arc Wave G2b).
+pub fn grid_step_for_scale(camera_distance: f32, fov_y_radians: f32, viewport_height_px: f64, config: &Graph3DGridConfig) -> f64 {
     let half_fov_tan = (fov_y_radians * 0.5).tan().max(1e-6) as f64;
     let distance = (camera_distance.max(1e-3)) as f64;
     let px_per_world_unit = (viewport_height_px.max(1.0) * 0.5) / (distance * half_fov_tan);
     if !px_per_world_unit.is_finite() || px_per_world_unit <= 0.0 {
         return 1.0;
     }
-    snap_to_nice_step(GRID_TARGET_SCREEN_PX / px_per_world_unit)
+    snap_to_nice_step(config.target_screen_px / px_per_world_unit)
 }
 
 /// One planned gridline before it becomes an instanced [`Node`] — also
@@ -629,9 +787,10 @@ pub struct GridLine {
     /// value for a line that runs parallel to X) — the tick label's
     /// numeric text, via [`format_tick_value`].
     pub tick_value: f64,
-    /// Every [`GRID_STRONG_LINE_EVERY`]th tick — drawn at
-    /// [`GRID_STRONG_LINE_ALPHA`] instead of [`GRID_LINE_ALPHA`], and the
-    /// only lines that ever get a tick label.
+    /// Every [`Graph3DGridConfig::strong_line_every`]th tick — drawn at
+    /// [`Graph3DGridConfig::strong_line_alpha`] instead of
+    /// [`Graph3DGridConfig::line_alpha`], and the only lines that ever
+    /// get a tick label.
     pub strong: bool,
 }
 
@@ -646,10 +805,13 @@ pub struct GridPlan {
 }
 
 /// Ground-plane Y (module doc: "AABB min y minus a small margin").
-fn grid_ground_y(min: Vec3, max: Vec3) -> f32 {
+/// `config.y_margin_fraction`/`config.y_margin_min` were private
+/// constants read directly — now caller-supplied parameters
+/// (graph-strengthening arc Wave G2b).
+fn grid_ground_y(min: Vec3, max: Vec3, config: &Graph3DGridConfig) -> f32 {
     let extent = max - min;
     let largest = extent.x.max(extent.y).max(extent.z).max(0.0);
-    let margin = (largest * GRID_Y_MARGIN_FRACTION).max(GRID_Y_MARGIN_MIN);
+    let margin = (largest * config.y_margin_fraction).max(config.y_margin_min);
     min.y - margin
 }
 
@@ -659,15 +821,17 @@ fn grid_ground_y(min: Vec3, max: Vec3) -> f32 {
 /// coordinate `0`, not from `min`, via [`i64::rem_euclid`] so a negative
 /// tick index still lands on the correct 5-line cadence. Empty for a
 /// non-finite/non-positive `step`, or `min > max` (shouldn't happen for a
-/// real AABB, but a defensive empty result beats a panic).
-fn grid_ticks(min: f64, max: f64, step: f64) -> Vec<(f64, bool)> {
+/// real AABB, but a defensive empty result beats a panic). `strong_line_every`
+/// was the private `GRID_STRONG_LINE_EVERY` constant read directly — now
+/// a caller-supplied parameter (graph-strengthening arc Wave G2b).
+fn grid_ticks(min: f64, max: f64, step: f64, strong_line_every: i64) -> Vec<(f64, bool)> {
     if !min.is_finite() || !max.is_finite() || !step.is_finite() || step <= 0.0 || min > max {
         return Vec::new();
     }
     let start_index = (min / step).floor() as i64;
     let end_index = (max / step).ceil() as i64;
     (start_index..=end_index)
-        .map(|index| (index as f64 * step, index.rem_euclid(GRID_STRONG_LINE_EVERY) == 0))
+        .map(|index| (index as f64 * step, index.rem_euclid(strong_line_every) == 0))
         .collect()
 }
 
@@ -675,12 +839,14 @@ fn grid_ticks(min: f64, max: f64, step: f64) -> Vec<(f64, bool)> {
 /// `step` — see the module doc. Lines run BOTH ways: one per X tick
 /// (running parallel to Z, spanning the full rounded-out Z range) and
 /// one per Z tick (running parallel to X, spanning the full rounded-out
-/// X range) — the ordinary two-family regular grid.
-pub fn build_grid_plan(min: Vec3, max: Vec3, step: f64) -> GridPlan {
+/// X range) — the ordinary two-family regular grid. `config` was every
+/// grid-tuning constant read directly — now a caller-supplied parameter
+/// (graph-strengthening arc Wave G2b, via [`Graph3DGridConfig`]).
+pub fn build_grid_plan(min: Vec3, max: Vec3, step: f64, config: &Graph3DGridConfig) -> GridPlan {
     let step = if step.is_finite() && step > 0.0 { step } else { 1.0 };
-    let grid_y = grid_ground_y(min, max);
-    let x_ticks = grid_ticks(min.x as f64, max.x as f64, step);
-    let z_ticks = grid_ticks(min.z as f64, max.z as f64, step);
+    let grid_y = grid_ground_y(min, max, config);
+    let x_ticks = grid_ticks(min.x as f64, max.x as f64, step, config.strong_line_every);
+    let z_ticks = grid_ticks(min.z as f64, max.z as f64, step, config.strong_line_every);
     let z_min = z_ticks.first().map_or(min.z as f64, |t| t.0);
     let z_max = z_ticks.last().map_or(max.z as f64, |t| t.0);
     let x_min = x_ticks.first().map_or(min.x as f64, |t| t.0);
@@ -714,7 +880,9 @@ pub fn build_grid_plan(min: Vec3, max: Vec3, step: f64) -> GridPlan {
 /// (the per-instance-width-scale wave's default, see the module doc's
 /// own "2026-07-22" section) — a grid line has no weight concept to
 /// scale by, so it always renders at the renderer's BASE `edge_width_px`.
-pub fn build_grid_instances(plan: &GridPlan, mesh: &Arc<Mesh>) -> Vec<Node> {
+/// `config` was every grid-paint constant read directly — now a
+/// caller-supplied parameter (graph-strengthening arc Wave G2b).
+pub fn build_grid_instances(plan: &GridPlan, mesh: &Arc<Mesh>, config: &Graph3DGridConfig) -> Vec<Node> {
     plan.lines
         .iter()
         .filter_map(|line| {
@@ -725,8 +893,8 @@ pub fn build_grid_instances(plan: &GridPlan, mesh: &Arc<Mesh>) -> Vec<Node> {
             }
             let dir = delta / length;
             let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
-            let alpha = if line.strong { GRID_STRONG_LINE_ALPHA } else { GRID_LINE_ALPHA };
-            let tint = [GRID_TINT_RGB[0], GRID_TINT_RGB[1], GRID_TINT_RGB[2], alpha];
+            let alpha = if line.strong { config.strong_line_alpha } else { config.line_alpha };
+            let tint = [config.tint_rgb[0], config.tint_rgb[1], config.tint_rgb[2], alpha];
             Some(
                 Node::new_line(mesh.clone())
                     .with_translation(line.from)
@@ -1041,14 +1209,27 @@ mod tests {
         let particles = vec![Particle::at3(1.0, 2.0, 3.0)];
         let mesh = unit_mesh();
 
-        let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new());
+        let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new(), DEFAULT_NODE_MATERIAL);
 
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].translation, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(nodes[0].scale, Vec3::splat(2.0));
         assert_eq!(nodes[0].color_tint, category_tint("cat-a"));
         assert!(nodes[0].is_lit());
-        assert_eq!(nodes[0].material.ambient_strength, NODE_MATERIAL.ambient_strength, "Wave C node-material softening must actually be wired into build_node_instances");
+        assert_eq!(nodes[0].material.ambient_strength, DEFAULT_NODE_MATERIAL.ambient_strength, "Wave C node-material softening must actually be wired into build_node_instances");
+    }
+
+    #[test]
+    fn build_node_instances_uses_the_caller_supplied_material_not_a_hardcoded_one() {
+        let mut graph = DemoGraph::new();
+        graph.push_node((), "a", "cat-a", 2.0);
+        let particles = vec![Particle::at3(1.0, 2.0, 3.0)];
+        let mesh = unit_mesh();
+        let custom = PhongMaterial { ambient_strength: 0.9, diffuse_strength: 0.1, specular_strength: 0.0, shininess: 4.0 };
+
+        let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new(), custom);
+
+        assert_eq!(nodes[0].material.ambient_strength, 0.9, "Wave G2b configurability gate: the material parameter must actually be threaded through, not ignored");
     }
 
     #[test]
@@ -1060,7 +1241,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
 
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].translation, Vec3::ZERO, "translation must be the FROM endpoint, not the midpoint — see the module doc");
@@ -1083,7 +1264,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(3.0, 4.0, 0.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
 
         let expected_dir = Vec3::new(3.0, 4.0, 0.0).normalize();
         let rotated_axis = edges[0].rotation * Vec3::Y;
@@ -1095,41 +1276,52 @@ mod tests {
 
     #[test]
     fn edge_width_scale_of_weight_1_is_the_identity_scale() {
-        assert_eq!(edge_width_scale(1.0), 1.0, "a weight-1.0 edge must recover exactly scale 1.0 — the byte/pixel-compatibility gate");
+        assert_eq!(edge_width_scale(1.0, EDGE_WIDTH_SCALE_MAX), 1.0, "a weight-1.0 edge must recover exactly scale 1.0 — the byte/pixel-compatibility gate");
     }
 
     #[test]
     fn edge_width_scale_of_a_lower_weight_is_visibly_thinner_than_weight_1() {
         // Mirrors the demo's own `clusters`/`sparse` fixtures: hub-ring
         // edges at weight 0.6 vs intra-cluster edges at weight 1.0.
-        let thinner = edge_width_scale(0.6);
-        let baseline = edge_width_scale(1.0);
+        let thinner = edge_width_scale(0.6, EDGE_WIDTH_SCALE_MAX);
+        let baseline = edge_width_scale(1.0, EDGE_WIDTH_SCALE_MAX);
         assert!(thinner < baseline, "weight 0.6 must scale visibly thinner than weight 1.0: {thinner} vs {baseline}");
         assert!(baseline - thinner > 0.05, "the difference must be large enough to actually READ as a different width on screen, not a sub-pixel rounding wash: {thinner} vs {baseline}");
     }
 
     #[test]
     fn edge_width_scale_is_monotonically_increasing_in_weight() {
-        let low = edge_width_scale(0.1);
-        let mid = edge_width_scale(1.0);
-        let high = edge_width_scale(4.0);
+        let low = edge_width_scale(0.1, EDGE_WIDTH_SCALE_MAX);
+        let mid = edge_width_scale(1.0, EDGE_WIDTH_SCALE_MAX);
+        let high = edge_width_scale(4.0, EDGE_WIDTH_SCALE_MAX);
         assert!(low < mid, "{low} should be < {mid}");
         assert!(mid < high, "{mid} should be < {high}");
     }
 
     #[test]
     fn edge_width_scale_clamps_at_the_sane_max_for_an_extreme_weight() {
-        let extreme = edge_width_scale(10_000.0);
-        assert_eq!(extreme, EDGE_WIDTH_SCALE_MAX, "an extreme weight must clamp at EDGE_WIDTH_SCALE_MAX, not blow the line out unbounded");
-        // At the renderer's own default 1.75px base uniform, the clamp
-        // must land close to the owner's own "~6px" sane maximum.
+        let extreme = edge_width_scale(10_000.0, EDGE_WIDTH_SCALE_MAX);
+        assert_eq!(extreme, EDGE_WIDTH_SCALE_MAX, "an extreme weight must clamp at the caller-supplied max_scale, not blow the line out unbounded");
+        // At the renderer's own default 1.75px base uniform, the default
+        // max_scale must land close to the owner's own "~6px" sane
+        // maximum.
         let clamped_px = 1.75 * EDGE_WIDTH_SCALE_MAX;
         assert!((clamped_px - 6.0).abs() < 0.01, "EDGE_WIDTH_SCALE_MAX against the 1.75px default base must land at ~6px, got {clamped_px}");
     }
 
     #[test]
     fn edge_width_scale_never_goes_negative_for_a_negative_weight() {
-        assert!(edge_width_scale(-5.0) > 0.0, "a defensively-clamped negative weight must still produce a positive scale");
+        assert!(edge_width_scale(-5.0, EDGE_WIDTH_SCALE_MAX) > 0.0, "a defensively-clamped negative weight must still produce a positive scale");
+    }
+
+    /// Wave G2b configurability gate: a caller-supplied `max_scale`
+    /// actually clamps at a DIFFERENT ceiling than the default, not just
+    /// exist as an unread parameter.
+    #[test]
+    fn edge_width_scale_clamps_at_a_caller_supplied_max_scale_not_just_the_default() {
+        let custom_max = 2.0;
+        assert_eq!(edge_width_scale(10_000.0, custom_max), custom_max);
+        assert_ne!(edge_width_scale(10_000.0, custom_max), EDGE_WIDTH_SCALE_MAX);
     }
 
     #[test]
@@ -1141,11 +1333,30 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
 
         assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].scale.x, edge_width_scale(0.6), "scale.x must carry exactly edge_width_scale(edge.weight), not the old hardcoded 1.0");
+        assert_eq!(edges[0].scale.x, edge_width_scale(0.6, EDGE_WIDTH_SCALE_MAX), "scale.x must carry exactly edge_width_scale(edge.weight, style.width_scale_max), not the old hardcoded 1.0");
         assert_ne!(edges[0].scale.x, 1.0, "a weight-0.6 edge must NOT recover the identity scale");
+    }
+
+    /// Wave G2b configurability gate: a caller-supplied `Graph3DEdgeStyle`
+    /// (distinct tint, not just default) must actually paint the edge —
+    /// proving the parameter is threaded through, not silently ignored.
+    #[test]
+    fn build_edge_instances_uses_the_caller_supplied_style_tint() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        graph.push_edge(a, b, 1.0, ());
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
+        let mesh = unit_edge_quad_mesh();
+        let style = Graph3DEdgeStyle { tint_rgb: [1.0, 0.0, 0.0], alpha: 0.9, ..Graph3DEdgeStyle::default() };
+
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &style);
+
+        assert_eq!(edges[0].color_tint, [1.0, 0.0, 0.0, 0.9]);
+        assert_ne!(edges[0].color_tint, EDGE_TINT);
     }
 
     #[test]
@@ -1160,7 +1371,7 @@ mod tests {
         assert!(clusters.collapse_3d(id, &mut graph, &mut particles), "collapse_3d must succeed");
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_cluster_edge_instances(&particles, &mesh, &clusters);
+        let edges = build_cluster_edge_instances(&particles, &mesh, &clusters, CLUSTER_EDGE_TINT);
 
         assert!(!edges.is_empty(), "expected at least one aggregated cross-cluster edge (summed weight 5.0)");
         for e in &edges {
@@ -1177,7 +1388,7 @@ mod tests {
         let particles = vec![Particle::at3(2.0, 2.0, 2.0), Particle::at3(2.0, 2.0, 2.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
 
         assert!(edges.is_empty(), "a zero-length edge has no well-defined direction — must not emit a NaN-rotation node");
     }
@@ -1194,7 +1405,7 @@ mod tests {
         let mesh = unit_edge_quad_mesh();
         let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh, &hidden);
+        let edges = build_edge_instances(&graph, &particles, &mesh, &hidden, &Graph3DEdgeStyle::default());
 
         assert!(edges.is_empty(), "both edges touch the hidden node b — neither may be emitted");
     }
@@ -1208,7 +1419,7 @@ mod tests {
         let mesh = unit_mesh();
         let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
 
-        let nodes = build_node_instances(&graph, &particles, &mesh, &hidden);
+        let nodes = build_node_instances(&graph, &particles, &mesh, &hidden, DEFAULT_NODE_MATERIAL);
 
         assert_eq!(nodes.len(), 1, "the hidden node must emit zero instances, the other node must still emit one");
         assert_eq!(nodes[0].translation, Vec3::new(0.0, 0.0, 0.0), "the surviving instance must belong to node a, not the hidden node b");
@@ -1222,7 +1433,7 @@ mod tests {
         let node_mesh = unit_mesh();
         let edge_mesh = unit_edge_quad_mesh();
 
-        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &HashSet::new());
+        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &HashSet::new(), &Graph3DLighting::default(), &Graph3DEdgeStyle::default());
 
         assert_eq!(scene.nodes.len(), 1);
         assert!(!scene.lights.is_empty());
@@ -1239,7 +1450,7 @@ mod tests {
         let edge_mesh = unit_edge_quad_mesh();
         let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
 
-        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &hidden);
+        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &hidden, &Graph3DLighting::default(), &Graph3DEdgeStyle::default());
 
         assert_eq!(scene.nodes.len(), 1, "one surviving node sphere, zero edges (the edge touches the hidden node)");
     }
@@ -1262,7 +1473,7 @@ mod tests {
         assert!(registry.collapse_3d(id, &mut graph, &mut particles));
 
         let mesh = unit_edge_quad_mesh();
-        let edges = build_cluster_edge_instances(&particles, &mesh, &registry);
+        let edges = build_cluster_edge_instances(&particles, &mesh, &registry, CLUSTER_EDGE_TINT);
 
         assert_eq!(edges.len(), 1, "both raw cross-cluster edges aggregate onto the same outside node, so exactly one synthetic edge is drawn");
         assert_eq!(edges[0].color_tint, CLUSTER_EDGE_TINT);
@@ -1389,16 +1600,18 @@ mod tests {
         let viewport_height_px = 900.0_f64;
         let half_fov_tan = (fov_y * 0.5).tan() as f64;
         let px_per_world_unit = (viewport_height_px * 0.5) / (distance as f64 * half_fov_tan);
-        let expected = snap_to_nice_step(GRID_TARGET_SCREEN_PX / px_per_world_unit);
-        assert_eq!(grid_step_for_scale(distance, fov_y, viewport_height_px), expected);
+        let config = Graph3DGridConfig::default();
+        let expected = snap_to_nice_step(config.target_screen_px / px_per_world_unit);
+        assert_eq!(grid_step_for_scale(distance, fov_y, viewport_height_px, &config), expected);
     }
 
     #[test]
     fn grid_step_for_scale_produces_apparent_spacing_within_the_target_band() {
         let fov_y = 60_f32.to_radians();
         let viewport_height_px = 900.0_f64;
+        let config = Graph3DGridConfig::default();
         for distance in [10.0_f32, 100.0, 500.0, 5_000.0, 50_000.0] {
-            let step = grid_step_for_scale(distance, fov_y, viewport_height_px);
+            let step = grid_step_for_scale(distance, fov_y, viewport_height_px, &config);
             let half_fov_tan = (fov_y * 0.5).tan() as f64;
             let px_per_world_unit = (viewport_height_px * 0.5) / (distance as f64 * half_fov_tan);
             let apparent_px = step * px_per_world_unit;
@@ -1409,13 +1622,27 @@ mod tests {
         }
     }
 
+    /// Wave G2b configurability gate: a caller-supplied `target_screen_px`
+    /// must actually shift the snapped step, not just exist as an unread
+    /// field.
+    #[test]
+    fn grid_step_for_scale_shifts_with_a_caller_supplied_target_screen_px() {
+        let distance = 500.0_f32;
+        let fov_y = 60_f32.to_radians();
+        let viewport_height_px = 900.0_f64;
+        let default_step = grid_step_for_scale(distance, fov_y, viewport_height_px, &Graph3DGridConfig::default());
+        let wide_config = Graph3DGridConfig { target_screen_px: 400.0, ..Graph3DGridConfig::default() };
+        let wide_step = grid_step_for_scale(distance, fov_y, viewport_height_px, &wide_config);
+        assert!(wide_step > default_step, "a larger target_screen_px must produce a coarser (larger) step: default={default_step} wide={wide_step}");
+    }
+
     #[test]
     fn build_grid_plan_line_count_matches_x_and_z_tick_counts_for_a_known_aabb_and_step() {
         let min = Vec3::new(-12.0, -3.0, -7.0);
         let max = Vec3::new(22.0, 5.0, 18.0);
         let step = 10.0;
 
-        let plan = build_grid_plan(min, max, step);
+        let plan = build_grid_plan(min, max, step, &Graph3DGridConfig::default());
 
         let expected_x_ticks = ((min.x as f64 / step).floor() as i64..=(max.x as f64 / step).ceil() as i64).count();
         let expected_z_ticks = ((min.z as f64 / step).floor() as i64..=(max.z as f64 / step).ceil() as i64).count();
@@ -1425,12 +1652,13 @@ mod tests {
 
     #[test]
     fn build_grid_plan_marks_every_5th_tick_from_world_origin_as_strong() {
-        let plan = build_grid_plan(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 10.0);
+        let config = Graph3DGridConfig::default();
+        let plan = build_grid_plan(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 10.0, &config);
         // A degenerate point AABB still yields exactly one x-tick and one
         // z-tick, both at world coordinate 0 — index 0 is always strong.
         assert!(plan.lines.iter().all(|l| l.strong), "tick index 0 (world origin) must always be a strong line");
 
-        let plan = build_grid_plan(Vec3::new(0.0, 0.0, -5.0), Vec3::new(50.0, 0.0, 5.0), 10.0);
+        let plan = build_grid_plan(Vec3::new(0.0, 0.0, -5.0), Vec3::new(50.0, 0.0, 5.0), 10.0, &config);
         let x_strong: Vec<f64> = plan.lines.iter().filter(|l| l.strong && l.to.z != l.from.z).map(|l| l.tick_value).collect();
         for value in &x_strong {
             let index = (value / 10.0).round() as i64;
@@ -1438,18 +1666,48 @@ mod tests {
         }
     }
 
+    /// Wave G2b configurability gate: a caller-supplied `strong_line_every`
+    /// must actually change which ticks are marked strong.
+    #[test]
+    fn build_grid_plan_honors_a_caller_supplied_strong_line_every() {
+        let config = Graph3DGridConfig { strong_line_every: 3, ..Graph3DGridConfig::default() };
+        let plan = build_grid_plan(Vec3::new(0.0, 0.0, -30.0), Vec3::new(0.0, 0.0, 30.0), 10.0, &config);
+        for line in &plan.lines {
+            let index = (line.tick_value / 10.0).round() as i64;
+            assert_eq!(line.strong, index.rem_euclid(3) == 0, "tick {} strong={} must follow strong_line_every=3", line.tick_value, line.strong);
+        }
+    }
+
     #[test]
     fn build_grid_instances_emits_one_node_per_planned_line_tinted_by_strong_alpha() {
-        let plan = build_grid_plan(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, 10.0), 10.0);
+        let config = Graph3DGridConfig::default();
+        let plan = build_grid_plan(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, 10.0), 10.0, &config);
         let mesh = unit_edge_quad_mesh();
 
-        let nodes = build_grid_instances(&plan, &mesh);
+        let nodes = build_grid_instances(&plan, &mesh, &config);
 
         assert_eq!(nodes.len(), plan.lines.len());
         for (node, line) in nodes.iter().zip(plan.lines.iter()) {
             assert!(matches!(node.geometry, uzor_urx_3d::NodeMesh::Line(_)));
-            let expected_alpha = if line.strong { GRID_STRONG_LINE_ALPHA } else { GRID_LINE_ALPHA };
+            let expected_alpha = if line.strong { config.strong_line_alpha } else { config.line_alpha };
             assert!((node.color_tint[3] - expected_alpha).abs() < 1e-6);
+        }
+    }
+
+    /// Wave G2b configurability gate: a caller-supplied grid tint/alpha
+    /// must actually paint the grid lines.
+    #[test]
+    fn build_grid_instances_uses_the_caller_supplied_tint_and_alpha() {
+        let config = Graph3DGridConfig::default();
+        let plan = build_grid_plan(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, 10.0), 10.0, &config);
+        let mesh = unit_edge_quad_mesh();
+        let custom = Graph3DGridConfig { tint_rgb: [1.0, 0.0, 1.0], line_alpha: 0.9, strong_line_alpha: 0.99, ..Graph3DGridConfig::default() };
+
+        let nodes = build_grid_instances(&plan, &mesh, &custom);
+
+        for (node, line) in nodes.iter().zip(plan.lines.iter()) {
+            let expected_alpha = if line.strong { 0.99 } else { 0.9 };
+            assert_eq!(node.color_tint, [1.0, 0.0, 1.0, expected_alpha]);
         }
     }
 
@@ -1457,7 +1715,7 @@ mod tests {
     fn build_grid_instances_skips_a_degenerate_zero_length_line() {
         let plan = GridPlan { lines: vec![GridLine { from: Vec3::ZERO, to: Vec3::ZERO, tick_value: 0.0, strong: true }], step: 1.0 };
         let mesh = unit_edge_quad_mesh();
-        assert!(build_grid_instances(&plan, &mesh).is_empty());
+        assert!(build_grid_instances(&plan, &mesh, &Graph3DGridConfig::default()).is_empty());
     }
 
     #[test]

@@ -16,13 +16,13 @@ use crate::particle::Particle;
 use super::layering::{compute_layering, Layering};
 use super::{Layout, LayoutTickResult};
 
-/// How much of a ring's angular budget is distributed by subtree
-/// leaf-count vs. split uniformly. `1.0` would let a single giant
-/// subtree squeeze a lone sibling down to (near) zero width; `0.0`
-/// would ignore leaf-count entirely. `0.7` keeps a real minimum
-/// (`(1 - BLEND) / ring_len` of the full circle) for every node while
-/// still favoring bigger subtrees.
-const LEAF_WEIGHT_BLEND: f32 = 0.7;
+/// Default for [`RadialParams::leaf_weight_blend`] — how much of a ring's
+/// angular budget is distributed by subtree leaf-count vs. split
+/// uniformly. `1.0` would let a single giant subtree squeeze a lone
+/// sibling down to (near) zero width; `0.0` would ignore leaf-count
+/// entirely. `0.7` keeps a real minimum (`(1 - blend) / ring_len` of the
+/// full circle) for every node while still favoring bigger subtrees.
+const DEFAULT_LEAF_WEIGHT_BLEND: f32 = 0.7;
 
 #[derive(Debug, Clone)]
 pub struct RadialParams {
@@ -36,11 +36,17 @@ pub struct RadialParams {
     /// Explicit root nodes; empty = auto-detect (see
     /// [`super::layering::compute_layering`]).
     pub roots: Vec<NodeIndex>,
+    /// How much of a ring's angular budget [`assign_ring_angles`]
+    /// distributes by subtree leaf-count vs. split uniformly — see
+    /// [`DEFAULT_LEAF_WEIGHT_BLEND`]'s own doc comment for the exact
+    /// blend semantics (Wave G2b configurability — was the private
+    /// `LEAF_WEIGHT_BLEND` constant, with no matching field before this).
+    pub leaf_weight_blend: f32,
 }
 
 impl Default for RadialParams {
     fn default() -> Self {
-        Self { base_radius: 60.0, ring_spacing: 90.0, roots: Vec::new() }
+        Self { base_radius: 60.0, ring_spacing: 90.0, roots: Vec::new(), leaf_weight_blend: DEFAULT_LEAF_WEIGHT_BLEND }
     }
 }
 
@@ -88,9 +94,9 @@ fn leaf_counts(layering: &Layering) -> Vec<u32> {
 }
 
 /// Allocate each node in `ring` (already slot-ordered) a contiguous
-/// angular span blending a uniform floor (`(1 - LEAF_WEIGHT_BLEND) /
+/// angular span blending a uniform floor (`(1 - leaf_weight_blend) /
 /// ring.len()`) with a leaf-count-proportional share
-/// (`LEAF_WEIGHT_BLEND * leaf[node] / total`), then returns each node's
+/// (`leaf_weight_blend * leaf[node] / total`), then returns each node's
 /// angle at the MIDPOINT of its span.
 ///
 /// Because the two blended terms individually sum to `1.0` over the
@@ -101,18 +107,18 @@ fn leaf_counts(layering: &Layering) -> Vec<u32> {
 /// (an all-siblings-are-leaves ring still gets non-degenerate spacing;
 /// a `ring.len() == 1` ring degenerates to the whole circle, which is
 /// correct — a single node has no sibling to collide with).
-fn assign_ring_angles(ring: &[usize], leaf: &[u32]) -> Vec<f32> {
+fn assign_ring_angles(ring: &[usize], leaf: &[u32], leaf_weight_blend: f32) -> Vec<f32> {
     let len = ring.len();
     if len == 0 {
         return Vec::new();
     }
     let total: f32 = ring.iter().map(|&n| leaf[n] as f32).sum::<f32>().max(1.0);
-    let uniform_share = (1.0 - LEAF_WEIGHT_BLEND) / len as f32;
+    let uniform_share = (1.0 - leaf_weight_blend) / len as f32;
 
     let mut angles = Vec::with_capacity(len);
     let mut offset = 0.0f32;
     for &node in ring {
-        let weighted_share = LEAF_WEIGHT_BLEND * (leaf[node] as f32) / total;
+        let weighted_share = leaf_weight_blend * (leaf[node] as f32) / total;
         let width = TAU * (uniform_share + weighted_share);
         angles.push(offset + width * 0.5);
         offset += width;
@@ -129,7 +135,7 @@ impl Layout for RadialLayout {
         let leaf = leaf_counts(&layering);
 
         for row in &layering.layers {
-            let angles = assign_ring_angles(row, &leaf);
+            let angles = assign_ring_angles(row, &leaf, self.params.leaf_weight_blend);
             for (&node, &angle) in row.iter().zip(angles.iter()) {
                 let Some(p) = particles.get_mut(node) else { continue };
                 if let (Some(fx), Some(fy)) = (p.fx, p.fy) {
@@ -230,12 +236,45 @@ mod tests {
         angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         // Guaranteed hard floor per this ring (5 siblings, no leaf-count
-        // skew among them since they're all leaves): (1 - BLEND) / len.
-        let min_expected_gap = (1.0 - LEAF_WEIGHT_BLEND) / 5.0 * TAU;
+        // skew among them since they're all leaves): (1 - blend) / len.
+        let min_expected_gap = (1.0 - DEFAULT_LEAF_WEIGHT_BLEND) / 5.0 * TAU;
         for pair in angles.windows(2) {
             let gap = pair[1] - pair[0];
             assert!(gap >= min_expected_gap - 1e-4, "adjacent siblings too close: gap {gap} < floor {min_expected_gap}");
         }
+    }
+
+    /// Wave G2b configurability gate: a caller-tuned `leaf_weight_blend`
+    /// must actually change the ring's angular allocation, not just exist
+    /// as an unread field. `0.0` (pure uniform split) must produce a
+    /// LARGER minimum gap than the default `0.7` blend does, for a ring
+    /// with real leaf-count skew (`0` disables the uniform-floor's own
+    /// leaf-count-proportional erosion entirely).
+    #[test]
+    fn leaf_weight_blend_of_zero_widens_the_uniform_floor_for_a_skewed_ring() {
+        // Node 1 has a large subtree (5 leaves via nodes 6..=10), nodes
+        // 2..=5 are bare leaves — real leaf-count skew within one ring.
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5), e(1, 6), e(1, 7), e(1, 8), e(1, 9), e(1, 10)];
+        let t = topo(11, &edges);
+
+        let mut default_particles = vec![Particle::default(); 11];
+        let mut default_layout = RadialLayout::default();
+        default_layout.tick(&t, &mut default_particles, 1.0 / 60.0);
+        let mut default_angles: Vec<f32> = (1..=5).map(|i| angle_of(&default_particles[i])).collect();
+        default_angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let default_min_gap = default_angles.windows(2).map(|p| p[1] - p[0]).fold(f32::MAX, f32::min);
+
+        let mut uniform_particles = vec![Particle::default(); 11];
+        let mut uniform_layout = RadialLayout::new(RadialParams { leaf_weight_blend: 0.0, ..RadialParams::default() });
+        uniform_layout.tick(&t, &mut uniform_particles, 1.0 / 60.0);
+        let mut uniform_angles: Vec<f32> = (1..=5).map(|i| angle_of(&uniform_particles[i])).collect();
+        uniform_angles.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let uniform_min_gap = uniform_angles.windows(2).map(|p| p[1] - p[0]).fold(f32::MAX, f32::min);
+
+        assert!(
+            uniform_min_gap > default_min_gap + 1e-4,
+            "leaf_weight_blend=0.0 must widen the minimum sibling gap vs. the default 0.7 blend on a leaf-skewed ring: uniform={uniform_min_gap} default={default_min_gap}"
+        );
     }
 
     #[test]

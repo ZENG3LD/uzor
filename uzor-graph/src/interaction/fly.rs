@@ -33,7 +33,10 @@ use crate::camera3d::Camera3D;
 /// Legacy-arrow-step convention, matching the source app's own comment:
 /// velocity is expressed as "steps per second" so the resulting distance
 /// math (which multiplies by `camera.distance`, not a fixed world unit)
-/// keeps working across wildly different scene scales.
+/// keeps working across wildly different scene scales. Mirrored into
+/// [`FlyControlConfig`]'s own `Default` below (graph-strengthening arc
+/// Wave G2b — the 3D audit's own configurability inventory flagged every
+/// one of these as having no caller-facing override).
 const NAVIGATION_BASE_STEPS_PER_SECOND: f32 = 4.0;
 const NAVIGATION_ACCEL_RESPONSE: f32 = 18.0;
 const NAVIGATION_DECEL_RESPONSE: f32 = 22.0;
@@ -54,6 +57,64 @@ pub const KEYBOARD_SENSITIVITY_MIN: f32 = 0.25;
 pub const KEYBOARD_SENSITIVITY_MAX: f32 = 2.5;
 pub const MOUSE_SENSITIVITY_MIN: f32 = 0.2;
 pub const MOUSE_SENSITIVITY_MAX: f32 = 2.5;
+
+/// Every fly-navigation "feel" constant this controller owns, bundled
+/// into one caller-configurable struct (graph-strengthening arc Wave
+/// G2b) — mirrors [`crate::engine::GraphInteractionConfig`]'s own "bundle
+/// every constant belonging to one interaction subsystem" shape.
+/// [`Default`] reproduces the module constants above byte-identically.
+/// One `config: FlyControlConfig` field on [`FlyController`] with a
+/// [`FlyController::config`]/[`FlyController::set_config`] accessor pair
+/// — the same established shape [`crate::engine::GraphEngine::label_halo`]/
+/// `set_label_halo` already use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlyControlConfig {
+    /// Base inertial-velocity target, "legacy arrow steps per second" —
+    /// was [`NAVIGATION_BASE_STEPS_PER_SECOND`].
+    pub base_steps_per_second: f32,
+    /// Exponential ease-IN response rate while a key is held — was
+    /// [`NAVIGATION_ACCEL_RESPONSE`].
+    pub accel_response: f32,
+    /// Exponential ease-OUT response rate once a key releases — was
+    /// [`NAVIGATION_DECEL_RESPONSE`].
+    pub decel_response: f32,
+    /// Velocity snap-to-zero floor — was [`NAVIGATION_STOP_EPSILON`].
+    pub stop_epsilon: f32,
+    /// [`FlyController::tick`]'s own `dt` clamp — was [`MAX_TICK_DT`].
+    pub max_tick_dt: f32,
+    /// Strafe (local-right) distance-per-tick scale — was
+    /// [`STRAFE_DISTANCE_SCALE`].
+    pub strafe_distance_scale: f32,
+    /// Forward/back (local-forward) distance-per-tick scale — was
+    /// [`FORWARD_DISTANCE_SCALE`].
+    pub forward_distance_scale: f32,
+    /// [`FlyController::set_keyboard_sensitivity`]'s own clamp range —
+    /// were [`KEYBOARD_SENSITIVITY_MIN`]/[`KEYBOARD_SENSITIVITY_MAX`].
+    pub keyboard_sensitivity_min: f32,
+    pub keyboard_sensitivity_max: f32,
+    /// [`FlyController::set_mouse_sensitivity`]'s own clamp range — were
+    /// [`MOUSE_SENSITIVITY_MIN`]/[`MOUSE_SENSITIVITY_MAX`].
+    pub mouse_sensitivity_min: f32,
+    pub mouse_sensitivity_max: f32,
+}
+
+impl Default for FlyControlConfig {
+    fn default() -> Self {
+        Self {
+            base_steps_per_second: NAVIGATION_BASE_STEPS_PER_SECOND,
+            accel_response: NAVIGATION_ACCEL_RESPONSE,
+            decel_response: NAVIGATION_DECEL_RESPONSE,
+            stop_epsilon: NAVIGATION_STOP_EPSILON,
+            max_tick_dt: MAX_TICK_DT,
+            strafe_distance_scale: STRAFE_DISTANCE_SCALE,
+            forward_distance_scale: FORWARD_DISTANCE_SCALE,
+            keyboard_sensitivity_min: KEYBOARD_SENSITIVITY_MIN,
+            keyboard_sensitivity_max: KEYBOARD_SENSITIVITY_MAX,
+            mouse_sensitivity_min: MOUSE_SENSITIVITY_MIN,
+            mouse_sensitivity_max: MOUSE_SENSITIVITY_MAX,
+        }
+    }
+}
 
 /// Held-key state for WASD/arrow-key navigation — generic left/right +
 /// forward/backward axis tracking, lifted verbatim from the source app's
@@ -108,6 +169,10 @@ pub struct FlyController {
     velocity: [f32; 2],
     keyboard_sensitivity: f32,
     mouse_sensitivity: f32,
+    /// Every "feel" constant this controller ticks against (graph-
+    /// strengthening arc Wave G2b) — see [`FlyController::config`]/
+    /// [`FlyController::set_config`].
+    config: FlyControlConfig,
 }
 
 impl Default for FlyController {
@@ -118,6 +183,7 @@ impl Default for FlyController {
             velocity: [0.0; 2],
             keyboard_sensitivity: 1.0,
             mouse_sensitivity: 1.0,
+            config: FlyControlConfig::default(),
         }
     }
 }
@@ -147,7 +213,7 @@ impl FlyController {
     }
 
     pub fn set_keyboard_sensitivity(&mut self, sensitivity: f32) {
-        self.keyboard_sensitivity = sensitivity.clamp(KEYBOARD_SENSITIVITY_MIN, KEYBOARD_SENSITIVITY_MAX);
+        self.keyboard_sensitivity = sensitivity.clamp(self.config.keyboard_sensitivity_min, self.config.keyboard_sensitivity_max);
     }
 
     pub fn mouse_sensitivity(&self) -> f32 {
@@ -155,7 +221,25 @@ impl FlyController {
     }
 
     pub fn set_mouse_sensitivity(&mut self, sensitivity: f32) {
-        self.mouse_sensitivity = sensitivity.clamp(MOUSE_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX);
+        self.mouse_sensitivity = sensitivity.clamp(self.config.mouse_sensitivity_min, self.config.mouse_sensitivity_max);
+    }
+
+    /// Current fly-control "feel" config (graph-strengthening arc Wave
+    /// G2b) — see [`FlyControlConfig`]'s own doc comment. Default:
+    /// [`FlyControlConfig::default`], byte-identical to this controller's
+    /// pre-existing hardcoded constants.
+    pub fn config(&self) -> &FlyControlConfig {
+        &self.config
+    }
+
+    /// Replace this controller's fly-control config — re-clamps the
+    /// current keyboard/mouse sensitivity against the NEW bounds
+    /// immediately (a caller narrowing the range must not leave a
+    /// stale, now out-of-range sensitivity value in place).
+    pub fn set_config(&mut self, config: FlyControlConfig) {
+        self.config = config;
+        self.keyboard_sensitivity = self.keyboard_sensitivity.clamp(self.config.keyboard_sensitivity_min, self.config.keyboard_sensitivity_max);
+        self.mouse_sensitivity = self.mouse_sensitivity.clamp(self.config.mouse_sensitivity_min, self.config.mouse_sensitivity_max);
     }
 
     /// Track a held WASD/arrow key and fold it into the current 2D
@@ -211,17 +295,13 @@ impl FlyController {
     /// app's `NavigationFrame::Viewport`) — see the module doc for why a
     /// different semantic mapping stays entirely the caller's concern.
     pub fn tick(&mut self, dt: f32, camera: &mut Camera3D) {
-        let dt = dt.clamp(0.0, MAX_TICK_DT);
+        let dt = dt.clamp(0.0, self.config.max_tick_dt);
         for axis in 0..2 {
-            let target = self.input[axis] * NAVIGATION_BASE_STEPS_PER_SECOND * self.keyboard_sensitivity;
-            let response = if self.input[axis].abs() > f32::EPSILON {
-                NAVIGATION_ACCEL_RESPONSE
-            } else {
-                NAVIGATION_DECEL_RESPONSE
-            };
+            let target = self.input[axis] * self.config.base_steps_per_second * self.keyboard_sensitivity;
+            let response = if self.input[axis].abs() > f32::EPSILON { self.config.accel_response } else { self.config.decel_response };
             let blend = 1.0 - (-response * dt).exp();
             self.velocity[axis] += (target - self.velocity[axis]) * blend;
-            if target == 0.0 && self.velocity[axis].abs() < NAVIGATION_STOP_EPSILON {
+            if target == 0.0 && self.velocity[axis].abs() < self.config.stop_epsilon {
                 self.velocity[axis] = 0.0;
             }
         }
@@ -229,8 +309,8 @@ impl FlyController {
         let strafe_step = self.velocity[0] * dt;
         let forward_step = self.velocity[1] * dt;
         if strafe_step != 0.0 || forward_step != 0.0 {
-            let strafe_distance = strafe_step * camera.distance * STRAFE_DISTANCE_SCALE;
-            let forward_distance = forward_step * camera.distance * FORWARD_DISTANCE_SCALE;
+            let strafe_distance = strafe_step * camera.distance * self.config.strafe_distance_scale;
+            let forward_distance = forward_step * camera.distance * self.config.forward_distance_scale;
             camera.translate_local(strafe_distance, 0.0, forward_distance);
         }
     }
@@ -413,6 +493,60 @@ mod tests {
         let target_before = camera.target;
         controller.tick(1.0 / 60.0, &mut camera);
         assert_eq!(camera.target, target_before, "a tick after stop() with no held keys must not move the camera");
+    }
+
+    #[test]
+    fn fly_control_config_defaults_to_the_prior_hardcoded_constants() {
+        let config = FlyControlConfig::default();
+        assert_eq!(config.base_steps_per_second, NAVIGATION_BASE_STEPS_PER_SECOND);
+        assert_eq!(config.accel_response, NAVIGATION_ACCEL_RESPONSE);
+        assert_eq!(config.decel_response, NAVIGATION_DECEL_RESPONSE);
+        assert_eq!(config.stop_epsilon, NAVIGATION_STOP_EPSILON);
+        assert_eq!(config.max_tick_dt, MAX_TICK_DT);
+        assert_eq!(config.strafe_distance_scale, STRAFE_DISTANCE_SCALE);
+        assert_eq!(config.forward_distance_scale, FORWARD_DISTANCE_SCALE);
+        assert_eq!(config.keyboard_sensitivity_min, KEYBOARD_SENSITIVITY_MIN);
+        assert_eq!(config.keyboard_sensitivity_max, KEYBOARD_SENSITIVITY_MAX);
+        assert_eq!(config.mouse_sensitivity_min, MOUSE_SENSITIVITY_MIN);
+        assert_eq!(config.mouse_sensitivity_max, MOUSE_SENSITIVITY_MAX);
+        assert_eq!(*FlyController::new().config(), config, "a fresh controller must start on the default config");
+    }
+
+    #[test]
+    fn set_config_changes_the_converged_steady_state_velocity() {
+        let mut default_controller = FlyController::new();
+        let mut default_camera = Camera3D::default();
+        default_controller.set_key(KeyCode::W, true);
+        converge(&mut default_controller, &mut default_camera, 2.0);
+
+        let mut fast_controller = FlyController::new();
+        fast_controller.set_config(FlyControlConfig { base_steps_per_second: 8.0, ..FlyControlConfig::default() });
+        let mut fast_camera = Camera3D::default();
+        fast_controller.set_key(KeyCode::W, true);
+        converge(&mut fast_controller, &mut fast_camera, 2.0);
+
+        let ratio = fast_controller.velocity()[1] / default_controller.velocity()[1];
+        assert!((ratio - 2.0).abs() < 1e-2, "doubling base_steps_per_second must double the converged steady-state velocity, got ratio {ratio}");
+    }
+
+    #[test]
+    fn set_config_re_clamps_the_current_sensitivity_against_the_new_bounds() {
+        let mut controller = FlyController::new();
+        controller.set_keyboard_sensitivity(2.0);
+        assert_eq!(controller.keyboard_sensitivity(), 2.0);
+
+        controller.set_config(FlyControlConfig { keyboard_sensitivity_max: 1.0, ..FlyControlConfig::default() });
+        assert_eq!(controller.keyboard_sensitivity(), 1.0, "a narrowed max must re-clamp the already-set sensitivity, not leave it stale and out of range");
+    }
+
+    #[test]
+    fn set_keyboard_sensitivity_clamps_against_a_custom_configs_own_bounds() {
+        let mut controller = FlyController::new();
+        controller.set_config(FlyControlConfig { keyboard_sensitivity_min: 0.5, keyboard_sensitivity_max: 3.0, ..FlyControlConfig::default() });
+        controller.set_keyboard_sensitivity(10.0);
+        assert_eq!(controller.keyboard_sensitivity(), 3.0);
+        controller.set_keyboard_sensitivity(0.0);
+        assert_eq!(controller.keyboard_sensitivity(), 0.5);
     }
 
     #[test]

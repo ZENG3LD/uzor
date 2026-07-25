@@ -38,24 +38,27 @@ use crate::particle::Particle;
 
 use super::{Layout, LayoutTickResult};
 
-/// Irrational golden-angle increment (`TAU / phi^2`, `phi` = the golden
-/// ratio) — the standard Fibonacci-spiral azimuth step: applying it
-/// `sibling_index` times spreads any number of siblings around a circle
-/// without ever repeating or clustering, and without needing to know the
-/// total sibling count upfront.
-const GOLDEN_ANGLE: f32 = 2.399_963_2;
+/// Default for [`RadialParams3D::golden_angle`] — irrational golden-angle
+/// increment (`TAU / phi^2`, `phi` = the golden ratio), the standard
+/// Fibonacci-spiral azimuth step: applying it `sibling_index` times
+/// spreads any number of siblings around a circle without ever repeating
+/// or clustering, and without needing to know the total sibling count
+/// upfront.
+const DEFAULT_GOLDEN_ANGLE: f32 = 2.399_963_2;
 
-/// Half-angle of the cone multiple roots (treated as siblings of a
-/// virtual center) fan around world-`Y` by — only visible when more than
-/// one root exists; a single root's own seed direction is still
-/// deterministic but otherwise meaningless (the root itself renders at
-/// the literal origin regardless).
-const ROOT_SPREAD_HALF_ANGLE: f32 = 1.047_198; // 60 degrees, radians
+/// Default for [`RadialParams3D::root_spread_half_angle`] — half-angle of
+/// the cone multiple roots (treated as siblings of a virtual center) fan
+/// around world-`Y` by — only visible when more than one root exists; a
+/// single root's own seed direction is still deterministic but otherwise
+/// meaningless (the root itself renders at the literal origin
+/// regardless).
+const DEFAULT_ROOT_SPREAD_HALF_ANGLE: f32 = 1.047_198; // 60 degrees, radians
 
-/// Half-angle of the cone a node's children fan around ITS OWN direction
-/// by — narrow enough that a subtree reads as branches continuing
-/// outward from the trunk rather than doubling back on themselves.
-const CHILD_CONE_HALF_ANGLE: f32 = 0.698_132; // 40 degrees, radians
+/// Default for [`RadialParams3D::child_cone_half_angle`] — half-angle of
+/// the cone a node's children fan around ITS OWN direction by — narrow
+/// enough that a subtree reads as branches continuing outward from the
+/// trunk rather than doubling back on themselves.
+const DEFAULT_CHILD_CONE_HALF_ANGLE: f32 = 0.698_132; // 40 degrees, radians
 
 #[derive(Debug, Clone)]
 pub struct RadialParams3D {
@@ -66,11 +69,31 @@ pub struct RadialParams3D {
     /// node as a root, same convention as [`super::layering::compute_layering`]
     /// (a fully-cyclic graph with no such node falls back to node `0`).
     pub roots: Vec<NodeIndex>,
+    /// Sibling azimuth fan increment [`child_direction`] applies —
+    /// see [`DEFAULT_GOLDEN_ANGLE`]'s own doc comment (Wave G2b
+    /// configurability — was the private `GOLDEN_ANGLE` constant).
+    pub golden_angle: f32,
+    /// Half-angle of the cone multiple roots fan around world-`Y` by —
+    /// see [`DEFAULT_ROOT_SPREAD_HALF_ANGLE`]'s own doc comment (Wave G2b
+    /// configurability — was the private `ROOT_SPREAD_HALF_ANGLE`
+    /// constant).
+    pub root_spread_half_angle: f32,
+    /// Half-angle of the cone a node's children fan around its own
+    /// direction by — see [`DEFAULT_CHILD_CONE_HALF_ANGLE`]'s own doc
+    /// comment (Wave G2b configurability — was the private
+    /// `CHILD_CONE_HALF_ANGLE` constant).
+    pub child_cone_half_angle: f32,
 }
 
 impl Default for RadialParams3D {
     fn default() -> Self {
-        Self { shell_spacing: 90.0, roots: Vec::new() }
+        Self {
+            shell_spacing: 90.0,
+            roots: Vec::new(),
+            golden_angle: DEFAULT_GOLDEN_ANGLE,
+            root_spread_half_angle: DEFAULT_ROOT_SPREAD_HALF_ANGLE,
+            child_cone_half_angle: DEFAULT_CHILD_CONE_HALF_ANGLE,
+        }
     }
 }
 
@@ -200,13 +223,13 @@ fn orthonormal_basis(dir: Vec3) -> (Vec3, Vec3) {
 }
 
 /// One child's direction: `parent_dir` tilted by `cone_half_angle` toward
-/// an azimuth of `sibling_index * GOLDEN_ANGLE` around `parent_dir`'s own
+/// an azimuth of `sibling_index * golden_angle` around `parent_dir`'s own
 /// axis. Always unit-length by construction (`{parent_dir, u, v}` is
 /// orthonormal, so `cos(theta)^2 + sin(theta)^2 * (cos(phi)^2 +
 /// sin(phi)^2) == 1` exactly).
-fn child_direction(parent_dir: Vec3, sibling_index: usize, cone_half_angle: f32) -> Vec3 {
+fn child_direction(parent_dir: Vec3, sibling_index: usize, cone_half_angle: f32, golden_angle: f32) -> Vec3 {
     let (u, v) = orthonormal_basis(parent_dir);
-    let phi = sibling_index as f32 * GOLDEN_ANGLE;
+    let phi = sibling_index as f32 * golden_angle;
     let (sin_c, cos_c) = cone_half_angle.sin_cos();
     let (sin_p, cos_p) = phi.sin_cos();
     let dir = parent_dir * cos_c + (u * cos_p + v * sin_p) * sin_c;
@@ -219,16 +242,16 @@ fn child_direction(parent_dir: Vec3, sibling_index: usize, cone_half_angle: f32)
 /// via [`child_direction`]. Processed in BFS order (roots first, then
 /// each node's own children only once its own direction is known) so a
 /// child's fan always has a real parent direction to nudge.
-fn assign_directions(tree: &BfsTree) -> Vec<Vec3> {
+fn assign_directions(tree: &BfsTree, golden_angle: f32, root_spread_half_angle: f32, child_cone_half_angle: f32) -> Vec<Vec3> {
     let n = tree.depth.len();
     let mut dir = vec![Vec3::Y; n];
     for (i, &r) in tree.roots.iter().enumerate() {
-        dir[r] = child_direction(Vec3::Y, i, ROOT_SPREAD_HALF_ANGLE);
+        dir[r] = child_direction(Vec3::Y, i, root_spread_half_angle, golden_angle);
     }
     let mut queue: VecDeque<usize> = tree.roots.iter().copied().collect();
     while let Some(u) = queue.pop_front() {
         for (i, &v) in tree.children[u].iter().enumerate() {
-            dir[v] = child_direction(dir[u], i, CHILD_CONE_HALF_ANGLE);
+            dir[v] = child_direction(dir[u], i, child_cone_half_angle, golden_angle);
             queue.push_back(v);
         }
     }
@@ -241,7 +264,7 @@ impl Layout for RadialLayout3D {
             return LayoutTickResult { alpha: 0.0, max_displacement: 0.0, settled: true };
         }
         let tree = compute_bfs_tree(topo, &self.params.roots);
-        let dir = assign_directions(&tree);
+        let dir = assign_directions(&tree, self.params.golden_angle, self.params.root_spread_half_angle, self.params.child_cone_half_angle);
 
         for i in 0..tree.depth.len() {
             let Some(p) = particles.get_mut(i) else { continue };
@@ -422,5 +445,51 @@ mod tests {
         let mut layout = RadialLayout3D::default();
         let result = layout.tick(&t, &mut particles, 1.0 / 60.0);
         assert!(result.settled);
+    }
+
+    /// Wave G2b configurability gate: [`RadialParams3D::default`] must
+    /// equal the prior hardcoded constants exactly.
+    #[test]
+    fn radial_params_3d_default_matches_the_prior_hardcoded_constants() {
+        let p = RadialParams3D::default();
+        assert_eq!(p.golden_angle, 2.399_963_2);
+        assert!((p.root_spread_half_angle - 1.047_198).abs() < 1e-6);
+        assert!((p.child_cone_half_angle - 0.698_132).abs() < 1e-6);
+    }
+
+    /// Wave G2b configurability gate: a caller-tuned `child_cone_half_angle`
+    /// must actually change sibling spread, not just exist as an unread
+    /// field — a wider cone must place two same-depth siblings FARTHER
+    /// apart (larger chord distance) than the narrower default cone does.
+    #[test]
+    fn a_wider_child_cone_half_angle_spreads_same_depth_siblings_farther_apart() {
+        let edges = [e(0, 1), e(0, 2)];
+        let t = topo(3, &edges);
+
+        let mut default_particles = vec![Particle::default(); 3];
+        let mut default_layout = RadialLayout3D::default();
+        default_layout.tick(&t, &mut default_particles, 1.0 / 60.0);
+        let default_gap = {
+            let dx = default_particles[1].x - default_particles[2].x;
+            let dy = default_particles[1].y - default_particles[2].y;
+            let dz = default_particles[1].z - default_particles[2].z;
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        };
+
+        let mut wide_particles = vec![Particle::default(); 3];
+        let mut wide_layout =
+            RadialLayout3D::new(RadialParams3D { child_cone_half_angle: std::f32::consts::FRAC_PI_2, ..RadialParams3D::default() });
+        wide_layout.tick(&t, &mut wide_particles, 1.0 / 60.0);
+        let wide_gap = {
+            let dx = wide_particles[1].x - wide_particles[2].x;
+            let dy = wide_particles[1].y - wide_particles[2].y;
+            let dz = wide_particles[1].z - wide_particles[2].z;
+            (dx * dx + dy * dy + dz * dz).sqrt()
+        };
+
+        assert!(
+            wide_gap > default_gap,
+            "a wider child_cone_half_angle must spread same-depth siblings farther apart: default={default_gap} wide={wide_gap}"
+        );
     }
 }

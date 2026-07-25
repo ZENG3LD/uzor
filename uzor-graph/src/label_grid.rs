@@ -86,10 +86,10 @@ const DEGREE_ALPHA_SHIFT: f64 = 0.3;
 /// with a `label_lod()`/`set_label_lod()` accessor pair, the same
 /// established shape as [`crate::engine::GraphEngine::label_halo`]/
 /// `set_label_halo`. `crate::render::DrawContext::label_lod` threads it
-/// into [`select_labels`]/[`label_alpha`] every frame;
-/// `crate::engine3d::GraphEngine3D` (out of this 2D-only wave's scope)
-/// keeps calling both functions with `LabelLodConfig::default()`, so its
-/// own label-LOD behavior is unchanged.
+/// into [`select_labels`]/[`label_alpha`] every frame. Graph-strengthening
+/// arc Wave G2b gave `crate::engine3d::GraphEngine3D` the SAME field/
+/// accessor pair (was, until then, an unconditional
+/// `LabelLodConfig::default()` placeholder at both call sites).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LabelLodConfig {
     /// Grid cell edge length, in screen px — was

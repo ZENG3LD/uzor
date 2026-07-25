@@ -416,7 +416,15 @@ fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuo
 
     let node_mesh = Arc::new(MeshLit::sphere(1.0, 8, 8, [1.0, 1.0, 1.0, 1.0]));
     let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
-    let scene = render3d::build_scene(&graph, &particles, &node_mesh, &edge_mesh, &HashSet::new());
+    let scene = render3d::build_scene(
+        &graph,
+        &particles,
+        &node_mesh,
+        &edge_mesh,
+        &HashSet::new(),
+        &render3d::Graph3DLighting::default(),
+        &render3d::Graph3DEdgeStyle::default(),
+    );
 
     let d = 500.0f32;
     let mut camera = PerspectiveCamera::new(Vec3::new(0.0, 0.0, d), Vec3::ZERO, W as f32 / H as f32);
@@ -550,7 +558,7 @@ fn edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step() 
     graph.push_edge(a, b, 1.0, ());
     let particles = vec![Particle::at3(-10.0, 0.0, 0.0), Particle::at3(10.0, 0.0, 0.0)];
     let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
-    let edges = render3d::build_edge_instances(&graph, &particles, &edge_mesh, &HashSet::new());
+    let edges = render3d::build_edge_instances(&graph, &particles, &edge_mesh, &HashSet::new(), &render3d::Graph3DEdgeStyle::default());
     assert_eq!(edges.len(), 1, "exactly one edge, no node spheres, in this scene");
     let mut scene = Scene3D::new();
     scene.nodes = edges;
@@ -674,7 +682,8 @@ fn per_instance_edge_width_makes_a_higher_weight_edge_read_wider_in_pixels() {
     let tb = thin_graph.push_node((), "b", "cat-b", 1.0);
     thin_graph.push_edge(ta, tb, 1.0, ());
     let thin_particles = vec![Particle::at3(-10.0, -6.0, 0.0), Particle::at3(10.0, -6.0, 0.0)];
-    let thin_edges = render3d::build_edge_instances(&thin_graph, &thin_particles, &edge_mesh, &HashSet::new());
+    let thin_edges =
+        render3d::build_edge_instances(&thin_graph, &thin_particles, &edge_mesh, &HashSet::new(), &render3d::Graph3DEdgeStyle::default());
     assert_eq!(thin_edges.len(), 1);
 
     // Solve for the weight `render3d::edge_width_scale`'s own formula
@@ -690,7 +699,8 @@ fn per_instance_edge_width_makes_a_higher_weight_edge_read_wider_in_pixels() {
     let cb = thick_graph.push_node((), "b", "cat-b", 1.0);
     thick_graph.push_edge(ca, cb, thick_weight, ());
     let thick_particles = vec![Particle::at3(-10.0, 6.0, 0.0), Particle::at3(10.0, 6.0, 0.0)];
-    let thick_edges = render3d::build_edge_instances(&thick_graph, &thick_particles, &edge_mesh, &HashSet::new());
+    let thick_edges =
+        render3d::build_edge_instances(&thick_graph, &thick_particles, &edge_mesh, &HashSet::new(), &render3d::Graph3DEdgeStyle::default());
     assert_eq!(thick_edges.len(), 1);
 
     let mut scene = Scene3D::new();

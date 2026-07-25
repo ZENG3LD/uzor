@@ -60,6 +60,21 @@ pub struct ForceParams3D {
     /// [`super::force_directed::ForceParams::seed_degenerate_positions`].
     /// See that field's own doc comment.
     pub seed_degenerate_positions: bool,
+    /// Repulsion/link-force softening floor — 3D mirror of
+    /// [`super::force_directed::ForceParams::min_dist2`] (Wave G2b
+    /// configurability — was the private [`barnes_hut_3d::MIN_DIST2`]
+    /// constant).
+    pub min_dist2: f32,
+    /// Octree coincident-point merge threshold — 3D mirror of
+    /// [`super::force_directed::ForceParams::min_split_dist2`] (Wave G2b
+    /// configurability — was the private [`barnes_hut_3d::MIN_SPLIT_DIST2`]
+    /// constant).
+    pub min_split_dist2: f32,
+    /// Octree subdivision floor — 3D mirror of
+    /// [`super::force_directed::ForceParams::min_cell_size`] (Wave G2b
+    /// configurability — was the private [`barnes_hut_3d::MIN_CELL_SIZE`]
+    /// constant).
+    pub min_cell_size: f32,
 }
 
 impl Default for ForceParams3D {
@@ -81,6 +96,9 @@ impl Default for ForceParams3D {
             max_step: 4.0,
             settle_displacement_eps: 0.05,
             seed_degenerate_positions: true,
+            min_dist2: barnes_hut_3d::MIN_DIST2,
+            min_split_dist2: barnes_hut_3d::MIN_SPLIT_DIST2,
+            min_cell_size: barnes_hut_3d::MIN_CELL_SIZE,
         }
     }
 }
@@ -97,8 +115,8 @@ const SEED_RADIUS_SCALE: f32 = 10.0;
 
 /// Golden-angle azimuth increment — same value as
 /// `super::force_directed::SEED_GOLDEN_ANGLE`/
-/// [`super::radial_3d::GOLDEN_ANGLE`] (both private in their own modules,
-/// re-declared here).
+/// [`super::radial_3d::RadialParams3D::golden_angle`]'s own default (both
+/// private in their own modules, re-declared here).
 const SEED_GOLDEN_ANGLE: f32 = 2.399_963_2;
 
 /// Whether EVERY particle in `particles` sits on the exact same 3D point.
@@ -205,11 +223,11 @@ impl Layout for ForceDirectedLayout3D {
         // can reuse it below instead of either being disabled or building
         // a second tree.
         let ot = if n > self.params.brute_force_threshold {
-            let ot = Octree::build(particles);
-            ot.accumulate_forces(particles, self.params.theta, self.params.charge_strength, &mut force);
+            let ot = Octree::build(particles, self.params.min_split_dist2, self.params.min_cell_size);
+            ot.accumulate_forces(particles, self.params.theta, self.params.charge_strength, self.params.min_dist2, &mut force);
             Some(ot)
         } else {
-            barnes_hut_3d::apply_repulsion_brute_force_3d(particles, self.params.charge_strength, &mut force);
+            barnes_hut_3d::apply_repulsion_brute_force_3d(particles, self.params.charge_strength, self.params.min_dist2, &mut force);
             None
         };
 
@@ -564,5 +582,39 @@ mod tests {
         assert_eq!(p.max_step, 4.0);
         assert_eq!(p.settle_displacement_eps, 0.05);
         assert!(p.seed_degenerate_positions);
+        assert_eq!(p.min_dist2, barnes_hut_3d::MIN_DIST2);
+        assert_eq!(p.min_split_dist2, barnes_hut_3d::MIN_SPLIT_DIST2);
+        assert_eq!(p.min_cell_size, barnes_hut_3d::MIN_CELL_SIZE);
+    }
+
+    /// Wave G2b configurability gate — 3D mirror of `force_directed::tests::
+    /// a_larger_min_dist2_caps_repulsion_between_near_coincident_particles_more_aggressively`.
+    #[test]
+    fn a_larger_min_dist2_caps_repulsion_between_near_coincident_particles_more_aggressively() {
+        let degree = vec![0u32; 2];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(2, &edges, &degree, vec![0.001; 2]);
+
+        let mut default_particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(1e-4, 0.0, 0.0)];
+        let mut default_layout =
+            ForceDirectedLayout3D::new(ForceParams3D { seed_degenerate_positions: false, collision: false, ..ForceParams3D::default() });
+        default_layout.tick(&t, &mut default_particles, 1.0 / 60.0);
+
+        let mut softened_particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(1e-4, 0.0, 0.0)];
+        let mut softened_layout = ForceDirectedLayout3D::new(ForceParams3D {
+            seed_degenerate_positions: false,
+            collision: false,
+            min_dist2: barnes_hut_3d::MIN_DIST2 * 100.0,
+            ..ForceParams3D::default()
+        });
+        softened_layout.tick(&t, &mut softened_particles, 1.0 / 60.0);
+
+        let default_speed = (default_particles[0].vx.powi(2) + default_particles[0].vy.powi(2) + default_particles[0].vz.powi(2)).sqrt();
+        let softened_speed =
+            (softened_particles[0].vx.powi(2) + softened_particles[0].vy.powi(2) + softened_particles[0].vz.powi(2)).sqrt();
+        assert!(
+            softened_speed < default_speed,
+            "a larger min_dist2 softening floor must cap the resulting velocity lower: default={default_speed} softened={softened_speed}"
+        );
     }
 }

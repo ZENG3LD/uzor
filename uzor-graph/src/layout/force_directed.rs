@@ -75,6 +75,20 @@ pub struct ForceParams {
     /// un-seeded case this guards is the actual Wave G1 defect fix, not a
     /// debatable default.
     pub seed_degenerate_positions: bool,
+    /// Repulsion/link-force softening floor — avoids a divide-by-zero
+    /// singularity for coincident/near-coincident particles (Wave G2b
+    /// configurability — was the private [`barnes_hut::MIN_DIST2`]
+    /// constant, read directly by every call site below).
+    pub min_dist2: f32,
+    /// Quadtree coincident-point merge threshold — two points closer
+    /// (squared) than this can't be meaningfully separated by
+    /// subdividing (Wave G2b configurability — was the private
+    /// [`barnes_hut::MIN_SPLIT_DIST2`] constant).
+    pub min_split_dist2: f32,
+    /// Quadtree subdivision floor — a cell this small is never split
+    /// further (Wave G2b configurability — was the private
+    /// [`barnes_hut::MIN_CELL_SIZE`] constant).
+    pub min_cell_size: f32,
 }
 
 impl Default for ForceParams {
@@ -96,6 +110,9 @@ impl Default for ForceParams {
             max_step: 4.0,
             settle_displacement_eps: 0.05,
             seed_degenerate_positions: true,
+            min_dist2: barnes_hut::MIN_DIST2,
+            min_split_dist2: barnes_hut::MIN_SPLIT_DIST2,
+            min_cell_size: barnes_hut::MIN_CELL_SIZE,
         }
     }
 }
@@ -112,10 +129,10 @@ const DEGENERACY_EPS: f32 = 1e-6;
 const SEED_RADIUS_SCALE: f32 = 10.0;
 
 /// Golden-angle azimuth increment (`TAU / phi^2`, `phi` = the golden
-/// ratio) — same value as [`super::radial_3d::GOLDEN_ANGLE`] (private
-/// there, re-declared here; d3-force's own `initialAngle = PI * (3 -
-/// sqrt(5))`, the identical irrational constant under a different
-/// derivation). See [`seed_phyllotaxis_positions`].
+/// ratio) — same value as [`super::radial_3d::RadialParams3D::golden_angle`]'s
+/// own default (private there, re-declared here; d3-force's own
+/// `initialAngle = PI * (3 - sqrt(5))`, the identical irrational constant
+/// under a different derivation). See [`seed_phyllotaxis_positions`].
 const SEED_GOLDEN_ANGLE: f32 = 2.399_963_2;
 
 /// Whether EVERY particle in `particles` sits on the exact same point —
@@ -214,11 +231,11 @@ impl Layout for ForceDirectedLayout {
         // below instead of either being disabled or building a second
         // tree.
         let qt = if n > self.params.brute_force_threshold {
-            let qt = Quadtree::build(particles);
-            qt.accumulate_forces(particles, self.params.theta, self.params.charge_strength, &mut force);
+            let qt = Quadtree::build(particles, self.params.min_split_dist2, self.params.min_cell_size);
+            qt.accumulate_forces(particles, self.params.theta, self.params.charge_strength, self.params.min_dist2, &mut force);
             Some(qt)
         } else {
-            barnes_hut::apply_repulsion_brute_force(particles, self.params.charge_strength, &mut force);
+            barnes_hut::apply_repulsion_brute_force(particles, self.params.charge_strength, self.params.min_dist2, &mut force);
             None
         };
 
@@ -417,7 +434,7 @@ mod tests {
         let mut brute = vec![(0f32, 0f32); n];
         apply_collision(&particles, &radii, strength, &mut brute);
 
-        let qt = Quadtree::build(&particles);
+        let qt = Quadtree::build(&particles, barnes_hut::MIN_SPLIT_DIST2, barnes_hut::MIN_CELL_SIZE);
         let mut tree = vec![(0f32, 0f32); n];
         qt.apply_collision(&particles, &radii, strength, &mut tree);
 
@@ -451,7 +468,7 @@ mod tests {
         let mut brute = vec![(0f32, 0f32); n];
         apply_collision(&particles, &radii, strength, &mut brute);
 
-        let qt = Quadtree::build(&particles);
+        let qt = Quadtree::build(&particles, barnes_hut::MIN_SPLIT_DIST2, barnes_hut::MIN_CELL_SIZE);
         let mut tree = vec![(0f32, 0f32); n];
         qt.apply_collision(&particles, &radii, strength, &mut tree);
 
@@ -558,5 +575,43 @@ mod tests {
         assert_eq!(p.max_step, 4.0);
         assert_eq!(p.settle_displacement_eps, 0.05);
         assert!(p.seed_degenerate_positions);
+        assert_eq!(p.min_dist2, barnes_hut::MIN_DIST2);
+        assert_eq!(p.min_split_dist2, barnes_hut::MIN_SPLIT_DIST2);
+        assert_eq!(p.min_cell_size, barnes_hut::MIN_CELL_SIZE);
+    }
+
+    /// Wave G2b configurability gate: a caller-tuned `min_dist2` must
+    /// actually change the softening applied at NEAR (not exact)
+    /// coincidence — proof, not just a default-equality assertion. Two
+    /// particles a tiny, nonzero distance apart have a real (nonzero)
+    /// direction, so the softening floor `d2 = max(dist2, min_dist2)`
+    /// governs the force MAGNITUDE (`f = strength / d2`) without hitting
+    /// the exact-zero-direction singularity a truly coincident pair would.
+    #[test]
+    fn a_larger_min_dist2_caps_repulsion_between_near_coincident_particles_more_aggressively() {
+        let degree = vec![0u32; 2];
+        let edges: Vec<SimEdge> = Vec::new();
+        let t = topo(2, &edges, &degree, vec![0.001; 2]);
+
+        let mut default_particles = vec![Particle::at(0.0, 0.0), Particle::at(1e-4, 0.0)];
+        let mut default_layout =
+            ForceDirectedLayout::new(ForceParams { seed_degenerate_positions: false, collision: false, ..ForceParams::default() });
+        default_layout.tick(&t, &mut default_particles, 1.0 / 60.0);
+
+        let mut softened_particles = vec![Particle::at(0.0, 0.0), Particle::at(1e-4, 0.0)];
+        let mut softened_layout = ForceDirectedLayout::new(ForceParams {
+            seed_degenerate_positions: false,
+            collision: false,
+            min_dist2: barnes_hut::MIN_DIST2 * 100.0,
+            ..ForceParams::default()
+        });
+        softened_layout.tick(&t, &mut softened_particles, 1.0 / 60.0);
+
+        let default_speed = (default_particles[0].vx.powi(2) + default_particles[0].vy.powi(2)).sqrt();
+        let softened_speed = (softened_particles[0].vx.powi(2) + softened_particles[0].vy.powi(2)).sqrt();
+        assert!(
+            softened_speed < default_speed,
+            "a larger min_dist2 softening floor must cap the resulting velocity lower: default={default_speed} softened={softened_speed}"
+        );
     }
 }

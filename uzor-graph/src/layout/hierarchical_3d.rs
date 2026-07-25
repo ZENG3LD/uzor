@@ -18,8 +18,9 @@
 //! Within a ring, nodes keep the same barycenter slot order 2D
 //! hierarchical/radial already compute, spread at evenly-spaced angles;
 //! the ring's own radius grows with how many nodes share it (`radius =
-//! ring_spacing * count / TAU`, floored at [`MIN_RING_RADIUS`]) so a
-//! crowded layer doesn't overlap itself. One-shot: [`Layout::tick`]
+//! ring_spacing * count / TAU`, floored at
+//! [`HierarchicalParams3D::min_ring_radius`]) so a crowded layer doesn't
+//! overlap itself. One-shot: [`Layout::tick`]
 //! computes positions once then reports settled forever;
 //! [`Layout::reheat`] forces a recompute — same freeze semantics as
 //! [`super::hierarchical::HierarchicalLayout`].
@@ -32,11 +33,12 @@ use crate::particle::Particle;
 use super::layering::compute_layering;
 use super::{Layout, LayoutTickResult};
 
-/// Floor on a ring's own radius (see this module's own `r = ring_spacing
-/// * count / TAU` formula) — keeps even a single-node layer visibly off
-/// the central vertical axis instead of collapsing toward it at a small
+/// Default for [`HierarchicalParams3D::min_ring_radius`] — floor on a
+/// ring's own radius (see this module's own `r = ring_spacing * count /
+/// TAU` formula) — keeps even a single-node layer visibly off the
+/// central vertical axis instead of collapsing toward it at a small
 /// `ring_spacing`.
-const MIN_RING_RADIUS: f32 = 20.0;
+const DEFAULT_MIN_RING_RADIUS: f32 = 20.0;
 
 #[derive(Debug, Clone)]
 pub struct HierarchicalParams3D {
@@ -45,17 +47,22 @@ pub struct HierarchicalParams3D {
     pub layer_spacing: f32,
     /// World-unit circumferential spacing per ring member — a ring
     /// holding `count` nodes gets radius `ring_spacing * count / TAU`
-    /// (clamped to [`MIN_RING_RADIUS`]), i.e. roughly `ring_spacing`
-    /// world units of arc length per sibling.
+    /// (clamped to [`HierarchicalParams3D::min_ring_radius`]), i.e.
+    /// roughly `ring_spacing` world units of arc length per sibling.
     pub ring_spacing: f32,
     /// Explicit root nodes; empty = auto-detect every zero-in-degree
     /// node as a root (see [`super::layering::compute_layering`]).
     pub roots: Vec<NodeIndex>,
+    /// Floor on a layer-ring's own radius — see
+    /// [`DEFAULT_MIN_RING_RADIUS`]'s own doc comment (Wave G2b
+    /// configurability — was the private `MIN_RING_RADIUS` constant, with
+    /// no matching field before this).
+    pub min_ring_radius: f32,
 }
 
 impl Default for HierarchicalParams3D {
     fn default() -> Self {
-        Self { layer_spacing: 220.0, ring_spacing: 70.0, roots: Vec::new() }
+        Self { layer_spacing: 220.0, ring_spacing: 70.0, roots: Vec::new(), min_ring_radius: DEFAULT_MIN_RING_RADIUS }
     }
 }
 
@@ -89,7 +96,7 @@ impl Layout for HierarchicalLayout3D {
         let layering = compute_layering(topo, &self.params.roots);
         for (layer_idx, row) in layering.layers.iter().enumerate() {
             let count = row.len().max(1) as f32;
-            let radius = (self.params.ring_spacing * count / TAU).max(MIN_RING_RADIUS);
+            let radius = (self.params.ring_spacing * count / TAU).max(self.params.min_ring_radius);
             let y = -(layer_idx as f32 * self.params.layer_spacing);
             for (slot, &node) in row.iter().enumerate() {
                 let Some(p) = particles.get_mut(node) else { continue };
@@ -230,6 +237,40 @@ mod tests {
         let mut layout = HierarchicalLayout3D::default();
         layout.tick(&t, &mut particles, 1.0 / 60.0);
         assert_eq!((particles[1].x, particles[1].y, particles[1].z), (42.0, -7.0, 13.0));
+    }
+
+    /// Wave G2b configurability gate: [`HierarchicalParams3D::default`]
+    /// must equal the prior hardcoded constant exactly, and a
+    /// caller-tuned `min_ring_radius` must actually raise a crowded-ring
+    /// radius above the default floor when `ring_spacing` alone would
+    /// have landed below it.
+    #[test]
+    fn min_ring_radius_defaults_to_the_prior_constant_and_a_larger_override_raises_a_small_rings_radius() {
+        assert_eq!(HierarchicalParams3D::default().min_ring_radius, 20.0);
+
+        let edges = [e(0, 1)];
+        let t = topo(2, &edges);
+        let mut particles = vec![Particle::default(); 2];
+        // A tiny ring_spacing means `ring_spacing * count / TAU` sits well
+        // under both the default and the raised floor — the raised floor
+        // must dominate `.max(...)` either way, and a bigger floor must
+        // produce a bigger actual radius.
+        let mut default_layout =
+            HierarchicalLayout3D::new(HierarchicalParams3D { ring_spacing: 0.01, ..HierarchicalParams3D::default() });
+        default_layout.tick(&t, &mut particles, 1.0 / 60.0);
+        let default_r2 = particles[0].x * particles[0].x + particles[0].z * particles[0].z;
+
+        let mut particles2 = vec![Particle::default(); 2];
+        let mut raised_layout =
+            HierarchicalLayout3D::new(HierarchicalParams3D { ring_spacing: 0.01, min_ring_radius: 200.0, ..HierarchicalParams3D::default() });
+        raised_layout.tick(&t, &mut particles2, 1.0 / 60.0);
+        let raised_r2 = particles2[0].x * particles2[0].x + particles2[0].z * particles2[0].z;
+
+        assert!((default_r2 - 20.0f32 * 20.0).abs() < 1e-2, "the default floor (20.0) must govern when ring_spacing alone is tiny");
+        assert!(
+            raised_r2 > default_r2,
+            "a larger min_ring_radius override must raise the actual ring radius above the default floor: default_r2={default_r2} raised_r2={raised_r2}"
+        );
     }
 
     #[test]

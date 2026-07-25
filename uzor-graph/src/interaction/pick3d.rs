@@ -75,9 +75,9 @@ pub fn screen_to_ray(camera: &PerspectiveCamera, viewport: Rect, cursor: (f64, f
     (camera.eye, dir)
 }
 
-/// World-space hit slack added to a node's paint radius (plan §1.5's
-/// "HOVER-tolerance analog in world radius terms"). Deliberately NOT a
-/// screen-space pixel tolerance like 2D's `pick::HOVER_TOLERANCE_PX`:
+/// Default world-space hit slack added to a node's paint radius (plan
+/// §1.5's "HOVER-tolerance analog in world radius terms"). Deliberately
+/// NOT a screen-space pixel tolerance like 2D's `pick::HOVER_TOLERANCE_PX`:
 /// converting a fixed pixel slack into world units would need the exact
 /// per-node distance-to-camera at pick time, one more moving part for a
 /// v1 CPU picker that plan §1.5 already scopes as "sub-millisecond up to
@@ -85,7 +85,13 @@ pub fn screen_to_ray(camera: &PerspectiveCamera, viewport: Rect, cursor: (f64, f
 /// world-space margin is simpler and self-consistent: it's more
 /// forgiving (in screen pixels) for a near node than a far one — the
 /// opposite of 2D's viewport-independent tolerance — an accepted v1
-/// tradeoff, not a bug.
+/// tradeoff, not a bug. Graph-strengthening arc Wave G2b: exposed as a
+/// real per-engine override
+/// ([`crate::engine3d::GraphEngine3D::pick_radius_slack_world`]/
+/// [`crate::engine3d::GraphEngine3D::set_pick_radius_slack_world`]) —
+/// this constant is now only the DEFAULT that field starts at. Making it
+/// scale with zoom instead of staying a flat world-space margin is Wave
+/// G3, not this one.
 pub const PICK_RADIUS_SLACK_WORLD: f32 = 1.0;
 
 /// Nearest positive-`t` intersection of the ray (`origin`, unit `dir`)
@@ -116,17 +122,21 @@ fn ray_sphere_hit(origin: Vec3, dir: Vec3, center: Vec3, radius: f32) -> Option<
 }
 
 /// Nearest node among `candidates` whose sphere (`center = particle
-/// position`, `radius = node.radius + PICK_RADIUS_SLACK_WORLD`) the ray
-/// hits at the smallest positive `t`, or `None` if the ray misses every
-/// candidate (plan §1.5) — O(candidates.len()) per call, the CPU
-/// picking v1 cost the caller's own pointer-move-with-movement-guard
-/// (`GraphEngine3D::on_event`) keeps off the hot per-event path.
+/// position`, `radius = node.radius + slack`) the ray hits at the
+/// smallest positive `t`, or `None` if the ray misses every candidate
+/// (plan §1.5) — O(candidates.len()) per call, the CPU picking v1 cost
+/// the caller's own pointer-move-with-movement-guard
+/// (`GraphEngine3D::on_event`) keeps off the hot per-event path. `slack`
+/// was the private [`PICK_RADIUS_SLACK_WORLD`] constant read directly —
+/// now a caller-supplied parameter (graph-strengthening arc Wave G2b,
+/// via [`crate::engine3d::GraphEngine3D::pick_radius_slack_world`]).
 pub fn nearest_node_3d<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     ray_origin: Vec3,
     ray_dir: Vec3,
     candidates: &[NodeIndex],
+    slack: f32,
 ) -> Option<NodeIndex> {
     let dir = ray_dir.normalize_or_zero();
     if dir == Vec3::ZERO {
@@ -137,7 +147,7 @@ pub fn nearest_node_3d<N, E>(
         let Some(p) = particles.get(id.index()) else { continue };
         let Some(node) = graph.get_node(id) else { continue };
         let center = Vec3::new(p.x, p.y, p.z);
-        let radius = node.radius + PICK_RADIUS_SLACK_WORLD;
+        let radius = node.radius + slack;
         if let Some(t) = ray_sphere_hit(ray_origin, dir, center, radius) {
             match best {
                 Some((_, best_t)) if best_t <= t => {}
@@ -472,7 +482,7 @@ mod tests {
         let particles = vec![Particle::at3(50.0, 50.0, 0.0)]; // well off the ray below
         let candidates = [NodeIndex(0)];
 
-        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates);
+        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates, PICK_RADIUS_SLACK_WORLD);
         assert_eq!(hit, None);
     }
 
@@ -482,7 +492,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0)];
         let candidates = [NodeIndex(0)];
 
-        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates);
+        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates, PICK_RADIUS_SLACK_WORLD);
         assert_eq!(hit, Some(NodeIndex(0)));
     }
 
@@ -494,7 +504,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 5.0), Particle::at3(0.0, 0.0, -5.0)];
         let candidates = [NodeIndex(0), NodeIndex(1)];
 
-        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates);
+        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates, PICK_RADIUS_SLACK_WORLD);
         assert_eq!(hit, Some(NodeIndex(0)), "the nearer sphere along the ray must win, not just any hit");
     }
 
@@ -509,8 +519,35 @@ mod tests {
         // engine restricts picking to its own visible/candidate set.
         let candidates = [NodeIndex(0)];
 
-        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates);
+        let hit = nearest_node_3d(&graph, &particles, Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), &candidates, PICK_RADIUS_SLACK_WORLD);
         assert_eq!(hit, None, "a real hit outside the candidate slice must not be returned");
+    }
+
+    /// Wave G2b configurability gate: a caller-supplied `slack` must
+    /// actually widen (or narrow) the hit-test radius, not just exist as
+    /// an unread parameter — a ray that clears the node's bare radius but
+    /// falls inside a widened slack must hit with a larger slack and miss
+    /// with a `0.0` one.
+    #[test]
+    fn nearest_node_3d_slack_widens_or_narrows_the_hit_test_radius() {
+        let graph = one_node_graph(1.0);
+        // Ray offset 1.5 world units from the sphere's own center along Y
+        // — misses the bare radius-1.0 sphere by 0.5 units.
+        let particles = vec![Particle::at3(0.0, 1.5, 0.0)];
+        let candidates = [NodeIndex(0)];
+        let ray_origin = Vec3::new(0.0, 0.0, 10.0);
+        let ray_dir = Vec3::new(0.0, 0.0, -1.0);
+
+        assert_eq!(
+            nearest_node_3d(&graph, &particles, ray_origin, ray_dir, &candidates, 0.0),
+            None,
+            "zero slack must miss — the ray clears the bare radius by 0.5 units"
+        );
+        assert_eq!(
+            nearest_node_3d(&graph, &particles, ray_origin, ray_dir, &candidates, 1.0),
+            Some(NodeIndex(0)),
+            "a slack of 1.0 must cover the 0.5-unit gap and hit"
+        );
     }
 
     /// Wave 3 gate: project a node's world position to screen, then
@@ -528,7 +565,7 @@ mod tests {
 
         let screen = project_world_to_screen(&camera, world, viewport).expect("the fixture node sits in front of the eye");
         let (origin, dir) = screen_to_ray(&camera, viewport, screen);
-        let hit = nearest_node_3d(&graph, &particles, origin, dir, &candidates);
+        let hit = nearest_node_3d(&graph, &particles, origin, dir, &candidates, PICK_RADIUS_SLACK_WORLD);
 
         assert_eq!(hit, Some(NodeIndex(0)), "projecting a node then ray-picking at its own screen position must recover it");
     }
