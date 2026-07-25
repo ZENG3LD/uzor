@@ -22,6 +22,7 @@ use crate::layout::force_directed::ForceDirectedLayout;
 use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutTickResult};
 use crate::particle::Particle;
 use crate::render as gr_render;
+use crate::theme::GraphTheme;
 
 /// Screen-space distance a `PointerDown`->`PointerUp` pair may travel
 /// while panning the camera and still count as a click-to-deselect.
@@ -90,6 +91,69 @@ const KEY_PAN_SPEED_PX_PER_S: f64 = 480.0;
 /// (e.g. holding zoom-in for 1s multiplies zoom by roughly `1.0 +
 /// KEY_ZOOM_RATE_PER_S`).
 const KEY_ZOOM_RATE_PER_S: f64 = 1.2;
+/// `on_scroll`'s per-event zoom-factor clamp — bounds how much a single
+/// wheel tick can zoom in/out regardless of `dy`'s own magnitude.
+const SCROLL_ZOOM_FACTOR_MIN: f64 = 0.8;
+const SCROLL_ZOOM_FACTOR_MAX: f64 = 1.25;
+
+/// Every keyboard/scroll/drag "feel" constant this engine owns, bundled
+/// into one caller-configurable struct (graph-strengthening arc Wave G2 —
+/// the 2D audit's own configurability inventory flagged every one of
+/// these `✗`, no override anywhere). [`Default`] reproduces the
+/// pre-existing module constants byte-identically.
+///
+/// One `interaction: GraphInteractionConfig` field on [`GraphEngine`] with
+/// an `interaction_config()`/`set_interaction_config()` accessor pair —
+/// the same established shape [`GraphEngine::label_halo`]/
+/// `set_label_halo` already use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GraphInteractionConfig {
+    /// Screen-space distance a `PointerDown`->`PointerUp` pair may travel
+    /// while panning the camera and still count as a click-to-deselect —
+    /// was [`CLICK_DRAG_THRESHOLD_PX`].
+    pub click_drag_threshold_px: f64,
+    /// Scroll-wheel zoom speed multiplier — was [`ZOOM_SENSITIVITY`].
+    pub zoom_sensitivity: f64,
+    /// `on_scroll`'s per-event zoom-factor clamp bounds — were the inline
+    /// literal `.clamp(0.8, 1.25)`.
+    pub scroll_zoom_factor_min: f64,
+    pub scroll_zoom_factor_max: f64,
+    /// Keyboard-nav pan speed, screen px/sec — was [`KEY_PAN_SPEED_PX_PER_S`].
+    pub key_pan_speed_px_per_s: f64,
+    /// Keyboard-nav zoom rate, multiplicative fraction/sec — was
+    /// [`KEY_ZOOM_RATE_PER_S`].
+    pub key_zoom_rate_per_s: f64,
+    /// One-shot reheat alpha on unpin/filter-change — was
+    /// [`DRAG_REHEAT_ALPHA`].
+    pub drag_reheat_alpha: f32,
+    /// Sustained alpha target held for the whole duration of an active
+    /// node drag — was [`DRAG_ALPHA_TARGET`].
+    pub drag_alpha_target: f32,
+    /// Screen-space distance the pointer must travel since the last hover
+    /// pick before re-picking — was [`HOVER_PICK_MIN_MOVE_PX`].
+    pub hover_pick_min_move_px: f64,
+}
+
+impl Default for GraphInteractionConfig {
+    fn default() -> Self {
+        Self {
+            click_drag_threshold_px: CLICK_DRAG_THRESHOLD_PX,
+            zoom_sensitivity: ZOOM_SENSITIVITY,
+            scroll_zoom_factor_min: SCROLL_ZOOM_FACTOR_MIN,
+            scroll_zoom_factor_max: SCROLL_ZOOM_FACTOR_MAX,
+            key_pan_speed_px_per_s: KEY_PAN_SPEED_PX_PER_S,
+            key_zoom_rate_per_s: KEY_ZOOM_RATE_PER_S,
+            drag_reheat_alpha: DRAG_REHEAT_ALPHA,
+            drag_alpha_target: DRAG_ALPHA_TARGET,
+            hover_pick_min_move_px: HOVER_PICK_MIN_MOVE_PX,
+        }
+    }
+}
+
+/// Default viewport-cull world-space margin — was `render::cull_visible`'s
+/// own local `const MARGIN: f64 = 64.0`. See
+/// [`GraphEngine::cull_margin_world`]/[`GraphEngine::set_cull_margin_world`].
+pub(crate) const DEFAULT_CULL_MARGIN_WORLD: f64 = 64.0;
 
 /// Wave 2.5 keyboard nav — logical pan/zoom directions, decoupled from
 /// the specific physical [`KeyCode`] that triggers them (several
@@ -497,6 +561,20 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     /// Wave 2.6 query filter — `None` shows every node. See
     /// [`GraphEngine::set_filter`].
     filter: Option<FilterSpec>,
+    /// Every paint color/font `crate::render`'s draw functions read (graph-
+    /// strengthening arc Wave G2). See [`GraphEngine::theme`]/
+    /// [`GraphEngine::set_theme`].
+    theme: GraphTheme,
+    /// Label-LOD tuning (grid cell size, zoom fade window, degree shift —
+    /// Wave G2). See [`GraphEngine::label_lod`]/[`GraphEngine::set_label_lod`].
+    label_lod: label_grid::LabelLodConfig,
+    /// Keyboard/scroll/drag "feel" constants (Wave G2). See
+    /// [`GraphEngine::interaction_config`]/[`GraphEngine::set_interaction_config`].
+    interaction: GraphInteractionConfig,
+    /// Viewport-cull world-space margin (Wave G2 — was `render::
+    /// cull_visible`'s own fixed `MARGIN` constant). See
+    /// [`GraphEngine::cull_margin_world`]/[`GraphEngine::set_cull_margin_world`].
+    cull_margin_world: f64,
     pub(crate) agent_slot_id: String,
 }
 
@@ -536,6 +614,10 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             held_nav_keys: HashSet::new(),
             local_root: None,
             filter: None,
+            theme: GraphTheme::dark(),
+            label_lod: label_grid::LabelLodConfig::default(),
+            interaction: GraphInteractionConfig::default(),
+            cull_margin_world: DEFAULT_CULL_MARGIN_WORLD,
             agent_slot_id: "graph".to_owned(),
         }
     }
@@ -673,7 +755,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             return;
         }
         let dt = dt.max(0.0) as f64;
-        let pan_step = KEY_PAN_SPEED_PX_PER_S * dt;
+        let pan_step = self.interaction.key_pan_speed_px_per_s * dt;
+        let key_zoom_rate = self.interaction.key_zoom_rate_per_s;
         let mut dx = 0.0;
         let mut dy = 0.0;
         let mut zoom_factor = 1.0;
@@ -683,8 +766,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 NavKey::PanDown => dy += pan_step,
                 NavKey::PanLeft => dx -= pan_step,
                 NavKey::PanRight => dx += pan_step,
-                NavKey::ZoomIn => zoom_factor *= 1.0 + KEY_ZOOM_RATE_PER_S * dt,
-                NavKey::ZoomOut => zoom_factor /= 1.0 + KEY_ZOOM_RATE_PER_S * dt,
+                NavKey::ZoomIn => zoom_factor *= 1.0 + key_zoom_rate * dt,
+                NavKey::ZoomOut => zoom_factor /= 1.0 + key_zoom_rate * dt,
             }
         }
         self.camera.pan_x += dx;
@@ -759,7 +842,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     }
 
     fn refresh_visible(&mut self) {
-        let culled = gr_render::cull_visible(&self.graph, &self.particles, &self.camera, self.canvas_rect);
+        let culled = gr_render::cull_visible(&self.graph, &self.particles, &self.camera, self.canvas_rect, self.cull_margin_world);
         let excluded = self.compute_excluded_nodes();
         self.visible =
             if excluded.is_empty() { culled } else { culled.into_iter().filter(|id| !excluded.contains(id)).collect() };
@@ -798,6 +881,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             label_density: self.label_density,
             label_halo: &self.label_halo,
             forced_labels: &forced_labels,
+            label_lod: &self.label_lod,
+            theme: &self.theme,
         };
         gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
         gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
@@ -810,7 +895,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         // surveyed engine's own convention (the selection box is always
         // the topmost overlay while dragging).
         if let Some(rect) = self.box_select_rect() {
-            gr_render::draw_box_select_rect(render, rect);
+            gr_render::draw_box_select_rect(render, rect, &self.theme);
         }
 
         if self.hover_card {
@@ -823,7 +908,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                         degree: facts.degree,
                         pinned: facts.pinned,
                     };
-                    gr_render::draw_hover_card(render, anchor, &info, self.canvas_rect);
+                    gr_render::draw_hover_card(render, anchor, &info, self.canvas_rect, &self.theme.hover_card);
                 }
             }
         }
@@ -925,7 +1010,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// frozen wherever alpha happened to land.
     pub fn set_filter(&mut self, filter: Option<FilterSpec>) {
         self.filter = filter;
-        self.reheat(DRAG_REHEAT_ALPHA);
+        self.reheat(self.interaction.drag_reheat_alpha);
     }
 
     /// Current query filter, if active. See [`GraphEngine::set_filter`].
@@ -1158,6 +1243,62 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.dirty = true;
     }
 
+    /// Every paint color/font `crate::render`'s draw functions read (graph-
+    /// strengthening arc Wave G2 / 2D quality audit A3) — default
+    /// [`GraphTheme::dark`], byte-identical to this crate's pre-existing
+    /// hardcoded literals.
+    pub fn theme(&self) -> &GraphTheme {
+        &self.theme
+    }
+
+    /// Set this engine's own theme — e.g. [`GraphTheme::light`]/
+    /// [`GraphTheme::high_contrast`], or a caller-built [`GraphTheme`]
+    /// (see that struct's own doc comment for a caller wanting the
+    /// colorblind-safe Okabe-Ito categorical palette via
+    /// `GraphTheme { category_palette: ..., ..GraphTheme::dark() }`).
+    pub fn set_theme(&mut self, theme: GraphTheme) {
+        self.theme = theme;
+        self.dirty = true;
+    }
+
+    /// Label-LOD tuning (grid cell size, zoom fade window, degree shift —
+    /// Wave G2) — default [`label_grid::LabelLodConfig::default`],
+    /// byte-identical to this crate's pre-existing module constants.
+    pub fn label_lod(&self) -> &label_grid::LabelLodConfig {
+        &self.label_lod
+    }
+
+    pub fn set_label_lod(&mut self, lod: label_grid::LabelLodConfig) {
+        self.label_lod = lod;
+        self.dirty = true;
+    }
+
+    /// Keyboard/scroll/drag "feel" constants (Wave G2) — default
+    /// [`GraphInteractionConfig::default`], byte-identical to this crate's
+    /// pre-existing module constants.
+    pub fn interaction_config(&self) -> &GraphInteractionConfig {
+        &self.interaction
+    }
+
+    pub fn set_interaction_config(&mut self, config: GraphInteractionConfig) {
+        self.interaction = config;
+    }
+
+    /// Viewport-cull world-space margin (Wave G2 — see [`DEFAULT_CULL_MARGIN_WORLD`]).
+    /// Does NOT scale with zoom (a known, tracked limitation — 2D audit
+    /// B4 — out of this configurability wave's scope, which changes
+    /// nothing about WHAT the margin does, only that it's overridable).
+    pub fn cull_margin_world(&self) -> f64 {
+        self.cull_margin_world
+    }
+
+    /// Negative values clamp to `0.0` (an empty margin — nodes may pop at
+    /// the exact viewport edge).
+    pub fn set_cull_margin_world(&mut self, margin: f64) {
+        self.cull_margin_world = margin.max(0.0);
+        self.dirty = true;
+    }
+
     /// Labels actually drawn on the last [`GraphEngine::draw`] call — a
     /// test/verification aid (Wave 2.3 gate) surfaced in `agent_state`'s
     /// `labels.drawn_last_frame` field.
@@ -1245,7 +1386,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     pub fn expand_cluster(&mut self, id: GroupId) -> bool {
         let ok = self.clusters.expand(id, &mut self.graph, &mut self.particles);
         if ok {
-            self.reheat(DRAG_REHEAT_ALPHA);
+            self.reheat(self.interaction.drag_reheat_alpha);
         }
         ok
     }
@@ -1287,7 +1428,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         if let Some(flag) = self.pinned.get_mut(node.index()) {
             *flag = false;
         }
-        self.reheat(DRAG_REHEAT_ALPHA);
+        self.reheat(self.interaction.drag_reheat_alpha);
     }
 
     /// Current force-model parameters, if the engine's active layout has
@@ -1335,7 +1476,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             }
         };
         if applied {
-            self.reheat(DRAG_REHEAT_ALPHA);
+            self.reheat(self.interaction.drag_reheat_alpha);
         }
         applied
     }
@@ -1503,8 +1644,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             // jumps alpha straight to the target NOW; `set_alpha_target`
             // holds it there every subsequent tick until drag-end clears
             // it back to 0.0.
-            self.layout.set_alpha_target(DRAG_ALPHA_TARGET);
-            self.reheat(DRAG_ALPHA_TARGET);
+            self.layout.set_alpha_target(self.interaction.drag_alpha_target);
+            self.reheat(self.interaction.drag_alpha_target);
         } else {
             // 2D quality audit A1 / graph-strengthening arc G1.5: a
             // background pan is real-time user input, so it wins over any
@@ -1558,7 +1699,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 Some((lx, ly)) => {
                     let dx = x - lx;
                     let dy = y - ly;
-                    (dx * dx + dy * dy).sqrt() >= HOVER_PICK_MIN_MOVE_PX
+                    (dx * dx + dy * dy).sqrt() >= self.interaction.hover_pick_min_move_px
                 }
                 None => true,
             };
@@ -1634,7 +1775,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             }
             PointerMode::PanningCamera { total, .. } => {
                 self.mode = PointerMode::Idle;
-                if total < CLICK_DRAG_THRESHOLD_PX && self.canvas_rect.contains(x, y) {
+                if total < self.interaction.click_drag_threshold_px && self.canvas_rect.contains(x, y) {
                     match pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
                         // A collapsed super-node's designated expand
                         // affordance is a single click on it (this raw-
@@ -1674,7 +1815,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         // must win immediately, not fight the animation for the rest of
         // its duration.
         self.camera_transition = None;
-        let factor = (1.0 + dy * ZOOM_SENSITIVITY).clamp(0.8, 1.25);
+        let factor = (1.0 + dy * self.interaction.zoom_sensitivity)
+            .clamp(self.interaction.scroll_zoom_factor_min, self.interaction.scroll_zoom_factor_max);
         self.camera.zoom_at(self.last_pointer_screen, self.canvas_rect, factor);
         self.dirty = true;
         true
@@ -2074,6 +2216,72 @@ mod tests {
         engine.set_label_halo("#ffffff");
         assert_eq!(engine.label_halo(), "#ffffff");
         assert!(engine.dirty(), "changing label_halo must mark the canvas dirty");
+    }
+
+    // ── Graph-strengthening arc G2: theme/label_lod/interaction_config/
+    // cull_margin_world getter-setter round trips ───────────────────────
+
+    #[test]
+    fn theme_defaults_to_dark_and_set_theme_updates_the_getter_and_marks_dirty() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(engine.theme().selection_ring_color, GraphTheme::dark().selection_ring_color);
+
+        engine.clear_dirty();
+        engine.set_theme(GraphTheme::light());
+        assert_eq!(engine.theme().selection_ring_color, GraphTheme::light().selection_ring_color);
+        assert!(engine.dirty(), "changing theme must mark the canvas dirty");
+    }
+
+    #[test]
+    fn label_lod_defaults_and_set_label_lod_updates_the_getter_and_marks_dirty() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(*engine.label_lod(), label_grid::LabelLodConfig::default());
+
+        engine.clear_dirty();
+        let custom = label_grid::LabelLodConfig { grid_cell_size_px: 50.0, ..label_grid::LabelLodConfig::default() };
+        engine.set_label_lod(custom);
+        assert_eq!(engine.label_lod().grid_cell_size_px, 50.0);
+        assert!(engine.dirty(), "changing label_lod must mark the canvas dirty");
+    }
+
+    #[test]
+    fn interaction_config_defaults_and_set_interaction_config_updates_the_getter() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(*engine.interaction_config(), GraphInteractionConfig::default());
+
+        let custom = GraphInteractionConfig { key_pan_speed_px_per_s: 999.0, ..GraphInteractionConfig::default() };
+        engine.set_interaction_config(custom);
+        assert_eq!(engine.interaction_config().key_pan_speed_px_per_s, 999.0);
+    }
+
+    #[test]
+    fn cull_margin_world_defaults_and_set_cull_margin_world_updates_the_getter_and_marks_dirty() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(engine.cull_margin_world(), DEFAULT_CULL_MARGIN_WORLD);
+
+        engine.clear_dirty();
+        engine.set_cull_margin_world(200.0);
+        assert_eq!(engine.cull_margin_world(), 200.0);
+        assert!(engine.dirty(), "changing cull_margin_world must mark the canvas dirty");
+
+        // Negative values clamp to 0.0 (no popup-hiding margin at all).
+        engine.set_cull_margin_world(-10.0);
+        assert_eq!(engine.cull_margin_world(), 0.0);
+    }
+
+    /// The keyboard-nav "feel" constants must actually be read from
+    /// `self.interaction`, not the old hardcoded module constants —
+    /// proves the Wave G2 wiring is real, not just a stored-but-unused
+    /// config struct. A key-pan-speed set to 0 must produce NO pan at all
+    /// while a `PanRight` key is held.
+    #[test]
+    fn interaction_config_key_pan_speed_actually_changes_apply_held_nav_keys() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        engine.set_interaction_config(GraphInteractionConfig { key_pan_speed_px_per_s: 0.0, ..GraphInteractionConfig::default() });
+        let before = engine.camera.pan_x;
+        engine.on_key_down(KeyCode::ArrowRight);
+        engine.apply_held_nav_keys(1.0);
+        assert_eq!(engine.camera.pan_x, before, "a zeroed key_pan_speed_px_per_s override must produce zero pan");
     }
 
     /// A real `draw()` call (through `uzor-export`'s headless render path,

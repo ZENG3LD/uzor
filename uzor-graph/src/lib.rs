@@ -46,20 +46,24 @@ pub mod layout;
 pub mod particle;
 pub mod render;
 pub mod render3d;
+pub mod theme;
 
 pub use camera::{Aabb, Camera2D};
 pub use camera3d::Camera3D;
 pub use cluster::{AggregatedEdge, ClusterRegistry, ClusterState, GroupId};
-pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, NodeFacts, SelectMode};
+pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, GraphInteractionConfig, NodeFacts, SelectMode};
 pub use engine3d::{GraphEngine3D, TransitionDirection};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
+pub use label_grid::LabelLodConfig;
 pub use layout::{
     ForceDirectedLayout, ForceDirectedLayout3D, ForceParams, ForceParams3D, GraphLayoutMode, GraphLayoutMode3D,
     HierarchicalLayout, HierarchicalLayout3D, HierarchicalParams, HierarchicalParams3D, Layout, LayoutKind,
     LayoutTickResult, RadialLayout, RadialLayout3D, RadialParams, RadialParams3D,
 };
 pub use particle::Particle;
+pub use theme::GraphTheme;
 pub use uzor_figures::interact::FocusSet;
+pub use uzor_figures::scale::color::CategoricalScale;
 
 #[cfg(test)]
 mod proof_tests {

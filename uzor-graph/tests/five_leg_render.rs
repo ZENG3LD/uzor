@@ -39,11 +39,12 @@ use uzor::types::Rect;
 use uzor_graph::camera::Camera2D;
 use uzor_graph::cluster::ClusterRegistry;
 use uzor_graph::graph::{Graph, NodeIndex};
-use uzor_graph::label_grid::DEFAULT_LABEL_DENSITY;
+use uzor_graph::label_grid::{LabelLodConfig, DEFAULT_LABEL_DENSITY};
 use uzor_graph::particle::Particle;
 use uzor_graph::render::{
     draw_box_select_rect, draw_cluster_edges, draw_cluster_supernodes, draw_edges, draw_hover_card, draw_nodes, DrawContext, HoverCardInfo,
 };
+use uzor_graph::theme::GraphTheme;
 use uzor_graph::FocusSet;
 use uzor_proof_harness::{ChannelTolerance, MultiLegDiff, MultiLegRender, RenderContext};
 
@@ -153,6 +154,8 @@ fn draw_baseline_scene(ctx: &mut dyn RenderContext, graph: &G, particles: &[Part
     let selection = empty_selection();
     let hidden = empty_node_set();
     let forced = empty_node_set();
+    let lod = LabelLodConfig::default();
+    let theme = GraphTheme::dark();
     let dctx = DrawContext {
         camera,
         viewport: viewport(),
@@ -164,6 +167,8 @@ fn draw_baseline_scene(ctx: &mut dyn RenderContext, graph: &G, particles: &[Part
         label_density: 0.0,
         label_halo: LABEL_HALO,
         forced_labels: &forced,
+        label_lod: &lod,
+        theme: &theme,
     };
     draw_edges(ctx, graph, particles, &dctx);
     draw_nodes(ctx, graph, particles, &dctx);
@@ -213,6 +218,8 @@ fn graph_focus_dimming() {
         let selection = empty_selection();
         let hidden = empty_node_set();
         let forced = empty_node_set();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
         let dctx = DrawContext {
             camera: &camera,
             viewport: viewport(),
@@ -224,6 +231,8 @@ fn graph_focus_dimming() {
             label_density: DEFAULT_LABEL_DENSITY,
             label_halo: LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         draw_edges(ctx, &graph, &particles, &dctx);
         draw_nodes(ctx, &graph, &particles, &dctx);
@@ -292,6 +301,8 @@ fn graph_labels() {
         let selection = empty_selection();
         let hidden = empty_node_set();
         let forced = empty_node_set();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
         let dctx = DrawContext {
             camera: &camera,
             viewport: viewport(),
@@ -306,6 +317,8 @@ fn graph_labels() {
             label_density: 20.0,
             label_halo: LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         draw_edges(ctx, &graph, &particles, &dctx);
         draw_nodes(ctx, &graph, &particles, &dctx);
@@ -328,6 +341,8 @@ fn graph_selection_and_box_select() {
         let focus = empty_focus();
         let hidden = empty_node_set();
         let forced = empty_node_set();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
         let dctx = DrawContext {
             camera: &camera,
             viewport: viewport(),
@@ -339,10 +354,12 @@ fn graph_selection_and_box_select() {
             label_density: 0.0,
             label_halo: LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         draw_edges(ctx, &graph, &particles, &dctx);
         draw_nodes(ctx, &graph, &particles, &dctx);
-        draw_box_select_rect(ctx, Rect::new(150.0, 150.0, 320.0, 220.0));
+        draw_box_select_rect(ctx, Rect::new(150.0, 150.0, 320.0, 220.0), &theme);
     });
     let diff = run_proof("graph_selection_and_box_select", &render);
     assert!(diff.all_within_budget(), "graph_selection_and_box_select: structural backend divergence detected");
@@ -368,6 +385,8 @@ fn graph_hover_card() {
         let selection = empty_selection();
         let hidden = empty_node_set();
         let forced = empty_node_set();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
         let dctx = DrawContext {
             camera: &camera,
             viewport: viewport(),
@@ -379,10 +398,12 @@ fn graph_hover_card() {
             label_density: 0.0,
             label_halo: LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         draw_edges(ctx, &graph, &particles, &dctx);
         draw_nodes(ctx, &graph, &particles, &dctx);
-        draw_hover_card(ctx, anchor, &info, viewport());
+        draw_hover_card(ctx, anchor, &info, viewport(), &theme.hover_card);
     });
     let diff = run_proof("graph_hover_card", &render);
     assert!(diff.all_within_budget(), "graph_hover_card: structural backend divergence detected");
@@ -423,6 +444,8 @@ fn graph_cluster_supernodes() {
         let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).filter(|id| !hidden.contains(id)).collect();
         let focus = empty_focus();
         let selection = empty_selection();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
         let dctx = DrawContext {
             camera: &camera,
             viewport: viewport(),
@@ -434,6 +457,8 @@ fn graph_cluster_supernodes() {
             label_density: 6.0,
             label_halo: LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         draw_edges(ctx, &graph, &particles, &dctx);
         draw_cluster_edges(ctx, &particles, &dctx, &clusters);

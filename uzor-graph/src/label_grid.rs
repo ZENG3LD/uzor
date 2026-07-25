@@ -75,6 +75,48 @@ pub const LOD_LABEL_FADE_HIGH: f64 = 0.9;
 /// [`label_alpha`]'s doc comment for the full rationale.
 const DEGREE_ALPHA_SHIFT: f64 = 0.3;
 
+/// Every label-LOD tuning constant this module owns, bundled into one
+/// caller-configurable struct (graph-strengthening arc Wave G2 — the 2D
+/// audit's own configurability inventory flagged all four as `✗`, no
+/// override anywhere). [`Default`] reproduces the pre-existing module
+/// constants byte-identically — see
+/// `select_labels_with_the_default_lod_config_matches_the_pre_existing_constants`.
+///
+/// `crate::engine::GraphEngine` owns one `label_lod: LabelLodConfig` field
+/// with a `label_lod()`/`set_label_lod()` accessor pair, the same
+/// established shape as [`crate::engine::GraphEngine::label_halo`]/
+/// `set_label_halo`. `crate::render::DrawContext::label_lod` threads it
+/// into [`select_labels`]/[`label_alpha`] every frame;
+/// `crate::engine3d::GraphEngine3D` (out of this 2D-only wave's scope)
+/// keeps calling both functions with `LabelLodConfig::default()`, so its
+/// own label-LOD behavior is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LabelLodConfig {
+    /// Grid cell edge length, in screen px — was
+    /// [`LABEL_GRID_CELL_SIZE_PX`].
+    pub grid_cell_size_px: f64,
+    /// Zoom at/above which a degree-0 leaf's label starts fading in — was
+    /// [`LOD_LABEL_FADE_LOW`].
+    pub fade_low: f64,
+    /// Zoom at/above which a degree-0 leaf's label is fully opaque — was
+    /// [`LOD_LABEL_FADE_HIGH`].
+    pub fade_high: f64,
+    /// How far (zoom units) the maximum-degree node's fade window shifts
+    /// down relative to a leaf's — was the private `DEGREE_ALPHA_SHIFT`.
+    pub degree_alpha_shift: f64,
+}
+
+impl Default for LabelLodConfig {
+    fn default() -> Self {
+        Self {
+            grid_cell_size_px: LABEL_GRID_CELL_SIZE_PX,
+            fade_low: LOD_LABEL_FADE_LOW,
+            fade_high: LOD_LABEL_FADE_HIGH,
+            degree_alpha_shift: DEGREE_ALPHA_SHIFT,
+        }
+    }
+}
+
 /// One label candidate for the grid pass. `screen_pos`/`screen_radius`
 /// are already camera-projected (the SAME `Camera2D::world_to_screen`/
 /// `node_screen_radius` helpers every other draw/pick path in this crate
@@ -87,11 +129,11 @@ pub struct LabelCandidate {
     pub screen_radius: f64,
 }
 
-fn cell_index(pos: (f64, f64), viewport: Rect, cols: u32) -> u32 {
+fn cell_index(pos: (f64, f64), viewport: Rect, cols: u32, cell_size_px: f64) -> u32 {
     let local_x = (pos.0 - viewport.x).max(0.0);
     let local_y = (pos.1 - viewport.y).max(0.0);
-    let col = (local_x / LABEL_GRID_CELL_SIZE_PX).floor() as u32;
-    let row = (local_y / LABEL_GRID_CELL_SIZE_PX).floor() as u32;
+    let col = (local_x / cell_size_px).floor() as u32;
+    let row = (local_y / cell_size_px).floor() as u32;
     row * cols + col
 }
 
@@ -124,22 +166,26 @@ fn cmp_by_importance(a: &LabelCandidate, b: &LabelCandidate) -> Ordering {
 /// order never affects the result (every cell re-sorts its own bucket
 /// before taking the top-`quota` slice; `HashMap` bucketing order is
 /// irrelevant since the final `shown` set only ever grows via `extend`,
-/// never depends on cell processing order).
+/// never depends on cell processing order). `lod.grid_cell_size_px` is
+/// floored at `1.0` (a non-positive/degenerate override would otherwise
+/// divide by zero or manufacture an absurd cell count).
 pub fn select_labels(
     candidates: &[LabelCandidate],
     viewport: Rect,
     zoom: f64,
     density: f64,
     forced: &HashSet<NodeIndex>,
+    lod: &LabelLodConfig,
 ) -> HashSet<NodeIndex> {
     if viewport.width <= 0.0 || viewport.height <= 0.0 {
         return forced.clone();
     }
-    let cols = ((viewport.width / LABEL_GRID_CELL_SIZE_PX).ceil() as u32).max(1);
+    let cell_size_px = lod.grid_cell_size_px.max(1.0);
+    let cols = ((viewport.width / cell_size_px).ceil() as u32).max(1);
 
     let mut cells: HashMap<u32, Vec<&LabelCandidate>> = HashMap::new();
     for c in candidates {
-        cells.entry(cell_index(c.screen_pos, viewport, cols)).or_default().push(c);
+        cells.entry(cell_index(c.screen_pos, viewport, cols, cell_size_px)).or_default().push(c);
     }
 
     let quota = quota_per_cell(zoom, density);
@@ -172,10 +218,13 @@ pub fn select_labels(
 /// and only reaches zero opacity at a correspondingly lower zoom on the
 /// way back out ("fades later" when zooming away). A pure function,
 /// monotonically non-decreasing in both `zoom` and `normalized_degree`.
-pub fn label_alpha(zoom: f64, normalized_degree: f64) -> f64 {
-    let shift = normalized_degree.clamp(0.0, 1.0) * DEGREE_ALPHA_SHIFT;
-    let low = (LOD_LABEL_FADE_LOW - shift).max(0.0);
-    let high = (LOD_LABEL_FADE_HIGH - shift).max(low + 1e-6);
+/// `lod`'s fields replace what used to be the module constants
+/// [`LOD_LABEL_FADE_LOW`]/[`LOD_LABEL_FADE_HIGH`]/`DEGREE_ALPHA_SHIFT` —
+/// `LabelLodConfig::default()` reproduces them exactly.
+pub fn label_alpha(zoom: f64, normalized_degree: f64, lod: &LabelLodConfig) -> f64 {
+    let shift = normalized_degree.clamp(0.0, 1.0) * lod.degree_alpha_shift;
+    let low = (lod.fade_low - shift).max(0.0);
+    let high = (lod.fade_high - shift).max(low + 1e-6);
     ((zoom - low) / (high - low)).clamp(0.0, 1.0)
 }
 
@@ -203,7 +252,7 @@ mod tests {
             .map(|i| candidate(i, (10.0 + i as f64, 10.0 + i as f64), i % 7, 4.0))
             .collect();
         let zoom = 0.1; // quota = ceil(1.0 * 0.1^2) = ceil(0.01) = 1
-        let shown = select_labels(&candidates, viewport(), zoom, DEFAULT_LABEL_DENSITY, &HashSet::new());
+        let shown = select_labels(&candidates, viewport(), zoom, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
 
         assert!(shown.len() < candidates.len(), "LOD must cull most of a 40-candidate single-cell cluster: {} shown", shown.len());
         // All 40 candidates land in the same single cell (10..50 px in
@@ -225,7 +274,7 @@ mod tests {
             winner,
             candidate(2, (40.0, 40.0), 10, 4.0),
         ];
-        let shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new());
+        let shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
         assert_eq!(shown, HashSet::from([NodeIndex(3)]), "the degree-99 candidate must win the cell's single quota slot");
     }
 
@@ -239,7 +288,7 @@ mod tests {
         let forced_node = NodeIndex(15); // degree 1, would never win the crowded cell's slot on its own
         let forced: HashSet<NodeIndex> = HashSet::from([forced_node]);
 
-        let shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &forced);
+        let shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &forced, &LabelLodConfig::default());
         assert!(shown.contains(&forced_node), "a forced candidate must show regardless of the grid quota");
     }
 
@@ -254,9 +303,9 @@ mod tests {
             .collect();
         let forced: HashSet<NodeIndex> = HashSet::from([NodeIndex(2), NodeIndex(41)]);
 
-        let first = select_labels(&candidates, viewport(), 0.6, DEFAULT_LABEL_DENSITY, &forced);
+        let first = select_labels(&candidates, viewport(), 0.6, DEFAULT_LABEL_DENSITY, &forced, &LabelLodConfig::default());
         for _ in 0..5 {
-            let again = select_labels(&candidates, viewport(), 0.6, DEFAULT_LABEL_DENSITY, &forced);
+            let again = select_labels(&candidates, viewport(), 0.6, DEFAULT_LABEL_DENSITY, &forced, &LabelLodConfig::default());
             assert_eq!(first, again, "identical inputs must yield an identical label set on every repeated call");
         }
     }
@@ -269,8 +318,8 @@ mod tests {
         let candidates: Vec<LabelCandidate> =
             (0..30).map(|i| candidate(i, (10.0 + i as f64 * 2.0, 10.0), i, 4.0)).collect();
 
-        let low_zoom_shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new());
-        let high_zoom_shown = select_labels(&candidates, viewport(), 3.0, DEFAULT_LABEL_DENSITY, &HashSet::new());
+        let low_zoom_shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
+        let high_zoom_shown = select_labels(&candidates, viewport(), 3.0, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
 
         assert!(
             high_zoom_shown.len() > low_zoom_shown.len(),
@@ -295,20 +344,81 @@ mod tests {
     /// faded fully out.
     #[test]
     fn label_alpha_is_boosted_by_degree_appearing_earlier_and_fading_later() {
-        let leaf_alpha_at_low_edge = label_alpha(LOD_LABEL_FADE_LOW, 0.0);
-        let hub_alpha_at_low_edge = label_alpha(LOD_LABEL_FADE_LOW, 1.0);
+        let leaf_alpha_at_low_edge = label_alpha(LOD_LABEL_FADE_LOW, 0.0, &LabelLodConfig::default());
+        let hub_alpha_at_low_edge = label_alpha(LOD_LABEL_FADE_LOW, 1.0, &LabelLodConfig::default());
         assert_eq!(leaf_alpha_at_low_edge, 0.0, "a degree-0 leaf must be exactly invisible at the unshifted low edge");
         assert!(hub_alpha_at_low_edge > 0.0, "a max-degree hub must already be partially visible at the leaf's low edge");
 
         let below_leaf_window = LOD_LABEL_FADE_LOW - 0.2;
-        assert_eq!(label_alpha(below_leaf_window, 0.0), 0.0, "a leaf below its own window is still exactly invisible");
-        assert!(label_alpha(below_leaf_window, 1.0) > 0.0, "a hub must stay partially visible below a leaf's fade-in zoom");
+        assert_eq!(label_alpha(below_leaf_window, 0.0, &LabelLodConfig::default()), 0.0, "a leaf below its own window is still exactly invisible");
+        assert!(label_alpha(below_leaf_window, 1.0, &LabelLodConfig::default()) > 0.0, "a hub must stay partially visible below a leaf's fade-in zoom");
 
         // Monotonic in zoom for a fixed degree.
-        assert!(label_alpha(LOD_LABEL_FADE_HIGH, 0.5) >= label_alpha(LOD_LABEL_FADE_LOW, 0.5));
+        assert!(label_alpha(LOD_LABEL_FADE_HIGH, 0.5, &LabelLodConfig::default()) >= label_alpha(LOD_LABEL_FADE_LOW, 0.5, &LabelLodConfig::default()));
         // Monotonic in degree for a fixed zoom sitting inside the shifted window.
         let mid_zoom = LOD_LABEL_FADE_LOW - 0.1;
-        assert!(label_alpha(mid_zoom, 1.0) >= label_alpha(mid_zoom, 0.5));
-        assert!(label_alpha(mid_zoom, 0.5) >= label_alpha(mid_zoom, 0.0));
+        assert!(label_alpha(mid_zoom, 1.0, &LabelLodConfig::default()) >= label_alpha(mid_zoom, 0.5, &LabelLodConfig::default()));
+        assert!(label_alpha(mid_zoom, 0.5, &LabelLodConfig::default()) >= label_alpha(mid_zoom, 0.0, &LabelLodConfig::default()));
+    }
+
+    // ── Graph-strengthening arc G2: `LabelLodConfig` configurability ───
+
+    #[test]
+    fn label_lod_config_default_matches_the_pre_existing_module_constants() {
+        let lod = LabelLodConfig::default();
+        assert_eq!(lod.grid_cell_size_px, LABEL_GRID_CELL_SIZE_PX);
+        assert_eq!(lod.fade_low, LOD_LABEL_FADE_LOW);
+        assert_eq!(lod.fade_high, LOD_LABEL_FADE_HIGH);
+    }
+
+    #[test]
+    fn select_labels_with_the_default_lod_config_matches_the_pre_existing_constants() {
+        // Same fixture as `grid_quota_limits_labels_per_cell_below_total_node_count`
+        // — proves the new `lod` parameter's default reproduces the
+        // pre-Wave-G2 hardcoded-constant behavior byte-for-byte.
+        let candidates: Vec<LabelCandidate> = (0..40)
+            .map(|i| candidate(i, (10.0 + i as f64, 10.0 + i as f64), i % 7, 4.0))
+            .collect();
+        let via_default = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
+        assert_eq!(via_default.len(), 1);
+    }
+
+    /// A caller-supplied SMALLER grid cell must never DECREASE the shown
+    /// label count for an unchanged candidate set — smaller cells mean
+    /// more, smaller buckets, each still keeping its own `quota` (Wave G2:
+    /// the grid cell size governs visible output and must be a real,
+    /// caller-observable knob, not just a plumbed-through no-op).
+    #[test]
+    fn a_smaller_grid_cell_size_never_shows_fewer_labels_than_the_default() {
+        let candidates: Vec<LabelCandidate> = (0..40)
+            .map(|i| candidate(i, (10.0 + i as f64 * 4.0, 10.0), i % 7, 4.0))
+            .collect();
+        let default_shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new(), &LabelLodConfig::default());
+        let small_cell_lod = LabelLodConfig { grid_cell_size_px: 20.0, ..LabelLodConfig::default() };
+        let small_cell_shown = select_labels(&candidates, viewport(), 0.1, DEFAULT_LABEL_DENSITY, &HashSet::new(), &small_cell_lod);
+        assert!(
+            small_cell_shown.len() >= default_shown.len(),
+            "smaller grid cells must split the same candidates into more/smaller buckets, never fewer labels: default {} vs small-cell {}",
+            default_shown.len(),
+            small_cell_shown.len()
+        );
+        assert!(small_cell_shown.len() > default_shown.len(), "this fixture's candidates are spread wide enough that a 20px cell must actually split them into more buckets than the 100px default");
+    }
+
+    /// A caller-supplied fade window shifted entirely above the default's
+    /// own must produce a STRICTLY lower alpha at the SAME zoom — proves
+    /// `label_alpha` actually reads `lod`, not just accepts and ignores it.
+    #[test]
+    fn a_caller_supplied_fade_window_actually_changes_label_alpha() {
+        let default_alpha = label_alpha(LOD_LABEL_FADE_LOW, 0.0, &LabelLodConfig::default());
+        let shifted = LabelLodConfig { fade_low: LOD_LABEL_FADE_LOW + 0.3, fade_high: LOD_LABEL_FADE_HIGH + 0.3, ..LabelLodConfig::default() };
+        let shifted_alpha = label_alpha(LOD_LABEL_FADE_LOW, 0.0, &shifted);
+        assert_eq!(default_alpha, 0.0, "at the leaf's own unshifted low edge, alpha starts at exactly 0");
+        assert_eq!(shifted_alpha, 0.0, "the SAME zoom is now even further below the shifted-up window, still exactly 0");
+        // Move further into the shifted window's own low edge instead.
+        let alpha_at_shifted_low_edge = label_alpha(shifted.fade_low, 0.0, &shifted);
+        let default_alpha_at_same_zoom = label_alpha(shifted.fade_low, 0.0, &LabelLodConfig::default());
+        assert_eq!(alpha_at_shifted_low_edge, 0.0, "the shifted window's own low edge is still exactly the fade-in threshold");
+        assert!(default_alpha_at_same_zoom > 0.0, "at the SAME zoom, the unshifted default window is already past its own low edge");
     }
 }

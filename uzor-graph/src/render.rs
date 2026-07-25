@@ -13,66 +13,85 @@
 //! real batching); swapping in the instanced path later doesn't change
 //! this module's public shape.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
 use uzor_figures::guide::text_protect::fill_text_with_halo;
 use uzor_figures::guide::tooltip::draw_tooltip;
 use uzor_figures::interact::FocusSet;
+use uzor_figures::scale::color::CategoricalScale;
 use uzor_figures::theme::FigureTheme;
 
 use crate::camera::Camera2D;
 use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
-use crate::label_grid::{self, LabelCandidate};
+use crate::label_grid::{self, LabelCandidate, LabelLodConfig};
 use crate::particle::Particle;
+use crate::theme::{default_category_palette, GraphTheme};
 
 /// Re-exported from `label_grid` (Wave 2.3 moved the constants there —
 /// every label-LOD number lives in one module) so any existing
 /// `crate::render::LOD_LABEL_FADE_{LOW,HIGH}` path keeps resolving.
 pub use crate::label_grid::{LOD_LABEL_FADE_HIGH, LOD_LABEL_FADE_LOW};
 
-const DIM_ALPHA: f64 = 0.15;
-
-/// Deterministic category -> color mapping. No per-app configuration
-/// needed for the default palette; category is an opaque string tag
-/// (see [`crate::graph::GraphNode::category`]).
-pub fn category_color(category: &str) -> &'static str {
-    const PALETTE: &[&str] = &[
-        "#4d90fe", "#e0703c", "#5cb87a", "#c94f7c", "#d9b64e",
-        "#7e6bd9", "#3fb6c9", "#e0555a", "#8fbf5f", "#c78bd9",
-    ];
+/// Deterministic category -> color mapping, hashed into `palette` (FNV-1a
+/// over the category's own UTF-8 bytes, modulo the palette length — the
+/// SAME algorithm this crate used before graph-strengthening arc Wave G2,
+/// just against a caller-supplied [`CategoricalScale`] instead of a fixed
+/// baked-in 10-color array). Returns an OWNED `String`, not `&'static
+/// str` — the pre-Wave-G2 signature could only ever return that because
+/// its palette was a compile-time constant; a caller-supplied
+/// [`CategoricalScale`] holds runtime `String`s, so there is no `'static`
+/// reference this function could hand back without leaking (explicitly
+/// ruled out — see `uzor-graph/CLAUDE.md`'s graph-strengthening-arc entry
+/// for the constraint this was weighed against). The extra per-call
+/// allocation is accepted under this crate's own pre-existing "small
+/// per-frame allocations are acceptable" convention (`engine3d.rs`'s
+/// `compute_excluded_nodes_3d`'s own `HashSet`s already established it).
+pub fn category_color(category: &str, palette: &CategoricalScale) -> String {
     let mut hash: u32 = 2166136261;
     for b in category.as_bytes() {
         hash ^= *b as u32;
         hash = hash.wrapping_mul(16777619);
     }
-    PALETTE[(hash as usize) % PALETTE.len()]
+    palette.color_for(hash as usize).to_owned()
+}
+
+/// [`category_color`] against this crate's own pre-existing default
+/// 10-color palette (byte-identical to the pre-Wave-G2 hardcoded
+/// mapping) — the convenience wrapper `render3d::category_tint` (3D, out
+/// of this 2D-only wave's scope) keeps calling so its own node-tint
+/// colors are unaffected by this wave.
+pub fn category_color_default(category: &str) -> String {
+    category_color(category, &default_category_palette())
 }
 
 /// Viewport-culled node list — `Graph`'s node positions intersected with
-/// `camera.visible_world_aabb(viewport)` plus a world-unit margin so
-/// nodes don't pop at the edge. Shared by render, the agent's
+/// `camera.visible_world_aabb(viewport)` plus a world-unit `margin` (was
+/// the fixed `const MARGIN: f64 = 64.0`, now caller-supplied — see
+/// `crate::engine::GraphEngine::cull_margin_world`/`set_cull_margin_world`)
+/// so nodes don't pop at the edge. Shared by render, the agent's
 /// `visible_node_count`, and the pick candidate set.
 pub fn cull_visible<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     camera: &Camera2D,
     viewport: Rect,
+    margin: f64,
 ) -> Vec<NodeIndex> {
     if viewport.width <= 0.0 || viewport.height <= 0.0 {
         return Vec::new();
     }
     let aabb = camera.visible_world_aabb(viewport);
-    const MARGIN: f64 = 64.0;
+    let margin = margin.max(0.0);
     graph
         .nodes()
         .filter_map(|(id, node)| {
             let p = particles.get(id.index())?;
             let x = p.x as f64;
             let y = p.y as f64;
-            let r = node.radius as f64 + MARGIN;
+            let r = node.radius as f64 + margin;
             if x >= aabb.min_x - r && x <= aabb.max_x + r && y >= aabb.min_y - r && y <= aabb.max_y + r {
                 Some(id)
             } else {
@@ -128,6 +147,16 @@ pub struct DrawContext<'a> {
     /// in [`labels_to_draw`] from `focus`, which already carries the
     /// full neighborhood key set.
     pub forced_labels: &'a HashSet<NodeIndex>,
+    /// Label-LOD tuning (grid cell size, zoom fade window, degree shift —
+    /// graph-strengthening arc Wave G2). See [`crate::engine::GraphEngine::
+    /// label_lod`]/[`crate::engine::GraphEngine::set_label_lod`].
+    pub label_lod: &'a LabelLodConfig,
+    /// Every paint color/font this module's draw functions use (graph-
+    /// strengthening arc Wave G2 / 2D quality audit A3) — see
+    /// [`crate::theme::GraphTheme`]'s own doc comment, and
+    /// [`crate::engine::GraphEngine::theme`]/[`crate::engine::GraphEngine::
+    /// set_theme`] for the owning field this is read from every frame.
+    pub theme: &'a GraphTheme,
 }
 
 /// Draw every visible edge, dimming any edge outside an active
@@ -179,12 +208,12 @@ pub fn draw_edges<N, E>(
     // reason.
     render.set_line_cap("round");
     if !dim_segments.is_empty() {
-        render.set_global_alpha(DIM_ALPHA);
-        render.draw_line_batch(&dim_segments, "#5a6070", 1.3);
+        render.set_global_alpha(ctx.theme.dim_alpha);
+        render.draw_line_batch(&dim_segments, &ctx.theme.edge_dim_color, ctx.theme.edge_dim_width);
         render.set_global_alpha(1.0);
     }
     if !segments.is_empty() {
-        render.draw_line_batch(&segments, "#7c8496", 1.7);
+        render.draw_line_batch(&segments, &ctx.theme.edge_color, ctx.theme.edge_width);
     }
     render.set_line_cap("butt");
     render.restore();
@@ -240,7 +269,7 @@ fn labels_to_draw<N, E>(graph: &Graph<N, E>, particles: &[Particle], ctx: &DrawC
         })
         .collect();
 
-    label_grid::select_labels(&candidates, ctx.viewport, ctx.camera.zoom, ctx.label_density, ctx.forced_labels)
+    label_grid::select_labels(&candidates, ctx.viewport, ctx.camera.zoom, ctx.label_density, ctx.forced_labels, ctx.label_lod)
 }
 
 /// Draw every visible node as a circle (radius from `Camera2D::node_screen_radius`,
@@ -277,7 +306,7 @@ pub fn draw_nodes<N, E>(
     ctx: &DrawContext<'_>,
 ) -> NodeDrawStats {
     render.save();
-    let mut by_color: HashMap<&'static str, Vec<CircleBatch>> = HashMap::new();
+    let mut by_color: HashMap<String, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
     let mut nodes_drawn = 0usize;
 
@@ -293,13 +322,13 @@ pub fn draw_nodes<N, E>(
         if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id)) {
             dim.push(circle);
         } else {
-            by_color.entry(category_color(&node.category)).or_default().push(circle);
+            by_color.entry(category_color(&node.category, &ctx.theme.category_palette)).or_default().push(circle);
         }
     }
 
     if !dim.is_empty() {
-        render.set_global_alpha(DIM_ALPHA);
-        render.draw_circle_batch(&dim, "#6b7280");
+        render.set_global_alpha(ctx.theme.dim_alpha);
+        render.draw_circle_batch(&dim, &ctx.theme.dim_node_fill);
         render.set_global_alpha(1.0);
     }
     // Deterministic paint order (graph-strengthening arc G1.3, five-leg
@@ -319,7 +348,7 @@ pub fn draw_nodes<N, E>(
     // which is what the harness/pixel-proof gate actually needs; it is
     // not claimed to be a meaningful z-order (e.g. "important categories
     // on top").
-    let by_color: std::collections::BTreeMap<&'static str, Vec<CircleBatch>> = by_color.into_iter().collect();
+    let by_color: BTreeMap<String, Vec<CircleBatch>> = by_color.into_iter().collect();
     for (color, circles) in &by_color {
         render.draw_circle_batch(circles, color);
     }
@@ -341,16 +370,16 @@ pub fn draw_nodes<N, E>(
         let r = ctx.camera.node_screen_radius(node.radius);
 
         if ctx.selection.contains(&id) {
-            render.set_stroke_color("#ffffff");
-            render.set_stroke_width(2.0);
+            render.set_stroke_color(&ctx.theme.selection_ring_color);
+            render.set_stroke_width(ctx.theme.selection_ring_width);
             render.begin_path();
-            render.arc(sx, sy, r + 2.0, 0.0, std::f64::consts::TAU);
+            render.arc(sx, sy, r + ctx.theme.selection_ring_offset_px, 0.0, std::f64::consts::TAU);
             render.stroke();
         } else if Some(id) == ctx.hovered {
-            render.set_stroke_color("#ffd76a");
-            render.set_stroke_width(1.5);
+            render.set_stroke_color(&ctx.theme.hover_ring_color);
+            render.set_stroke_width(ctx.theme.hover_ring_width);
             render.begin_path();
-            render.arc(sx, sy, r + 1.5, 0.0, std::f64::consts::TAU);
+            render.arc(sx, sy, r + ctx.theme.hover_ring_offset_px, 0.0, std::f64::consts::TAU);
             render.stroke();
         }
 
@@ -369,16 +398,23 @@ pub fn draw_nodes<N, E>(
             1.0
         } else {
             let normalized_degree = graph.degree(id) as f64 / max_degree as f64;
-            label_grid::label_alpha(ctx.camera.zoom, normalized_degree)
+            label_grid::label_alpha(ctx.camera.zoom, normalized_degree, ctx.label_lod)
         };
 
         if alpha > 0.01 {
             render.set_global_alpha(alpha);
-            render.set_font("11px sans-serif");
+            render.set_font(&ctx.theme.label_font);
             // Halo (owner defect report: thin edge strokes crossing node
             // label text made it unreadable) — a 4-direction offset-fill
-            // in `ctx.label_halo` under the real `"#e6e6ea"` label fill.
-            fill_text_with_halo(render, &node.label, sx + r + 4.0, sy + 4.0, "#e6e6ea", ctx.label_halo);
+            // in `ctx.label_halo` under the real `ctx.theme.label_fill`.
+            fill_text_with_halo(
+                render,
+                &node.label,
+                sx + r + ctx.theme.label_offset_x,
+                sy + ctx.theme.label_offset_y,
+                &ctx.theme.label_fill,
+                ctx.label_halo,
+            );
             render.set_global_alpha(1.0);
             labels_drawn += 1;
         }
@@ -387,8 +423,6 @@ pub fn draw_nodes<N, E>(
     render.restore();
     NodeDrawStats { nodes_drawn, labels_drawn }
 }
-
-const CLUSTER_ACCENT: &str = "#c9a94e";
 
 /// Draw the aggregated cross-cluster edges for every collapsed cluster —
 /// one synthetic line per outside neighbor (summed weight, thicker line
@@ -413,8 +447,8 @@ pub fn draw_cluster_edges(
         for edge in cluster.aggregated_edges() {
             let Some(other) = particles.get(edge.outside.index()) else { continue };
             let (ox, oy) = ctx.camera.world_to_screen((other.x as f64, other.y as f64), ctx.viewport);
-            let width = (1.0 + (edge.weight as f64).sqrt()).min(6.0);
-            render.draw_line_batch(&[LineSegment { x1: rx, y1: ry, x2: ox, y2: oy }], CLUSTER_ACCENT, width);
+            let width = (1.0 + (edge.weight as f64).sqrt()).min(ctx.theme.cluster_edge_width_cap);
+            render.draw_line_batch(&[LineSegment { x1: rx, y1: ry, x2: ox, y2: oy }], &ctx.theme.cluster_accent, width);
             drawn += 1;
         }
     }
@@ -446,17 +480,24 @@ pub fn draw_cluster_supernodes<N, E>(
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
 
-        render.set_stroke_color(CLUSTER_ACCENT);
-        render.set_stroke_width(2.0);
+        render.set_stroke_color(&ctx.theme.cluster_accent);
+        render.set_stroke_width(ctx.theme.cluster_ring_width);
         render.begin_path();
-        render.arc(sx, sy, r + 3.0, 0.0, std::f64::consts::TAU);
+        render.arc(sx, sy, r + ctx.theme.cluster_ring_inner_offset_px, 0.0, std::f64::consts::TAU);
         render.stroke();
         render.begin_path();
-        render.arc(sx, sy, r + 7.0, 0.0, std::f64::consts::TAU);
+        render.arc(sx, sy, r + ctx.theme.cluster_ring_outer_offset_px, 0.0, std::f64::consts::TAU);
         render.stroke();
 
-        render.set_font("11px sans-serif");
-        fill_text_with_halo(render, &format!("×{}", cluster.member_count()), sx + r + 10.0, sy + 4.0, "#f0e6c0", ctx.label_halo);
+        render.set_font(&ctx.theme.label_font);
+        fill_text_with_halo(
+            render,
+            &format!("×{}", cluster.member_count()),
+            sx + r + ctx.theme.cluster_label_offset_x,
+            sy + ctx.theme.cluster_label_offset_y,
+            &ctx.theme.cluster_label_color,
+            ctx.label_halo,
+        );
         drawn += 1;
     }
     render.restore();
@@ -485,7 +526,11 @@ pub struct HoverCardInfo<'a> {
 /// suite, not a second one invented here) already does for figures'
 /// hover tooltips; `bounds` is the graph canvas's own viewport, so the
 /// card never clips past the canvas edge even in a multi-panel layout.
-pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), info: &HoverCardInfo<'_>, bounds: Rect) {
+/// `theme` picks the hover card's own `FigureTheme` (graph-strengthening
+/// arc Wave G2 / 2D quality audit A3 — was an unconditional
+/// `FigureTheme::dark()` literal with no override; see
+/// [`crate::theme::GraphTheme::hover_card`]).
+pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), info: &HoverCardInfo<'_>, bounds: Rect, theme: &FigureTheme) {
     // `draw_tooltip` itself already brackets its own state (font/text-
     // align/baseline) in `save()`/`restore()` — this bracket is
     // additionally applied here so every public entry point in this
@@ -499,32 +544,30 @@ pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), in
         ("degree".to_owned(), info.degree.to_string()),
         ("pinned".to_owned(), info.pinned.to_string()),
     ];
-    draw_tooltip(render, &FigureTheme::dark(), anchor_px, &lines, bounds);
+    draw_tooltip(render, theme, anchor_px, &lines, bounds);
     render.restore();
 }
-
-const BOX_SELECT_FILL: &str = "#4d90fe";
-const BOX_SELECT_FILL_ALPHA: f64 = 0.15;
-const BOX_SELECT_BORDER: &str = "#7fb2ff";
-const BOX_SELECT_BORDER_WIDTH: f64 = 1.0;
 
 /// Live rubber-band overlay for an in-progress box-select drag (Wave 2.4
 /// — oss doc §2.3: "a translucent rectangle overlay drawn from
 /// `select[0..3]` each frame"). `rect` is already corner-normalized
 /// screen-space (see [`crate::engine::GraphEngine::box_select_rect`]) —
-/// this function is pure paint, no selection logic of its own.
-pub fn draw_box_select_rect(render: &mut dyn RenderContext, rect: Rect) {
+/// this function is pure paint, no selection logic of its own. `theme`
+/// supplies the fill/border colors (graph-strengthening arc Wave G2 — was
+/// four hardcoded module constants; see [`crate::theme::GraphTheme::
+/// box_select_fill`] and its sibling fields).
+pub fn draw_box_select_rect(render: &mut dyn RenderContext, rect: Rect, theme: &GraphTheme) {
     // 2D quality audit A5 / graph-strengthening arc G1.3 — this function
     // leaves stroke color/width behind with no restore of its own
     // (`set_global_alpha` is the one property it already reset back to
     // `1.0` unprompted).
     render.save();
-    render.set_global_alpha(BOX_SELECT_FILL_ALPHA);
-    render.set_fill_color(BOX_SELECT_FILL);
+    render.set_global_alpha(theme.box_select_fill_alpha);
+    render.set_fill_color(&theme.box_select_fill);
     render.fill_rect(rect.x, rect.y, rect.width, rect.height);
     render.set_global_alpha(1.0);
-    render.set_stroke_color(BOX_SELECT_BORDER);
-    render.set_stroke_width(BOX_SELECT_BORDER_WIDTH);
+    render.set_stroke_color(&theme.box_select_border);
+    render.set_stroke_width(theme.box_select_border_width);
     render.stroke_rect(rect.x, rect.y, rect.width, rect.height);
     render.restore();
 }
@@ -592,6 +635,8 @@ mod tests {
         let hidden = HashSet::new();
         let forced = HashSet::new();
         let empty_selection = BTreeSet::new();
+        let theme = GraphTheme::dark();
+        let lod = LabelLodConfig::default();
 
         let ctx_no_focus = DrawContext {
             camera: &camera,
@@ -604,6 +649,8 @@ mod tests {
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
             label_halo: crate::engine::DEFAULT_LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
         let shown_no_focus = labels_to_draw(&graph, &particles, &ctx_no_focus);
         assert_eq!(shown_no_focus.len(), 4, "the quota's 4 slots all go to the degree-14 noise clique");
@@ -647,6 +694,8 @@ mod tests {
         let hidden = HashSet::new();
         let forced = HashSet::new();
         let empty_selection = BTreeSet::new();
+        let theme = GraphTheme::dark();
+        let lod = LabelLodConfig::default();
         let ctx = DrawContext {
             camera: &camera,
             viewport,
@@ -658,6 +707,8 @@ mod tests {
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
             label_halo: crate::engine::DEFAULT_LABEL_HALO,
             forced_labels: &forced,
+            label_lod: &lod,
+            theme: &theme,
         };
 
         let first = labels_to_draw(&graph, &particles, &ctx);
@@ -839,6 +890,8 @@ mod tests {
         hovered: Option<NodeIndex>,
         hidden: &'a HashSet<NodeIndex>,
         forced: &'a HashSet<NodeIndex>,
+        lod: &'a LabelLodConfig,
+        theme: &'a GraphTheme,
     ) -> DrawContext<'a> {
         DrawContext {
             camera,
@@ -851,6 +904,8 @@ mod tests {
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
             label_halo: crate::engine::DEFAULT_LABEL_HALO,
             forced_labels: forced,
+            label_lod: lod,
+            theme,
         }
     }
 
@@ -872,7 +927,9 @@ mod tests {
         selection.insert(a);
         let hidden: HashSet<NodeIndex> = HashSet::new();
         let forced: HashSet<NodeIndex> = HashSet::new();
-        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, Some(b), &hidden, &forced);
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, Some(b), &hidden, &forced, &lod, &theme);
 
         let mut render = StateTrackingContext::new();
         // A caller-set state distinct from every default this module's own
@@ -904,10 +961,10 @@ mod tests {
         assert_eq!(render.state, caller_state, "draw_cluster_supernodes must not leak paint state past its own call");
 
         let info = HoverCardInfo { label: "b", category: "blue", degree: 1, pinned: false };
-        draw_hover_card(&mut render, (400.0, 300.0), &info, viewport);
+        draw_hover_card(&mut render, (400.0, 300.0), &info, viewport, &theme.hover_card);
         assert_eq!(render.state, caller_state, "draw_hover_card must not leak paint state past its own call");
 
-        draw_box_select_rect(&mut render, Rect::new(10.0, 10.0, 50.0, 50.0));
+        draw_box_select_rect(&mut render, Rect::new(10.0, 10.0, 50.0, 50.0), &theme);
         assert_eq!(render.state, caller_state, "draw_box_select_rect must not leak paint state past its own call");
     }
 
@@ -928,6 +985,12 @@ mod tests {
         state: PaintState,
         stack: Vec<PaintState>,
         circle_batch_colors: Vec<String>,
+        /// Every `set_stroke_color` call, in order — unlike `state.stroke_color`
+        /// (which a `save()`/`restore()` bracket resets away by the time a
+        /// caller can observe it), this survives past the call so a test can
+        /// assert WHAT was painted mid-function, not just the final restored
+        /// state (Wave G2 theme-swap test).
+        stroke_colors: Vec<String>,
     }
     impl uzor::render::Painter for ColorOrderRecorder {
         fn save(&mut self) {
@@ -949,6 +1012,7 @@ mod tests {
         }
         fn set_stroke_color(&mut self, color: &str) {
             self.state.stroke_color = color.to_owned();
+            self.stroke_colors.push(color.to_owned());
         }
         fn set_stroke_width(&mut self, width: f64) {
             self.state.stroke_width = width;
@@ -1030,7 +1094,9 @@ mod tests {
         let selection = BTreeSet::new();
         let hidden = HashSet::new();
         let forced = HashSet::new();
-        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced);
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
 
         let mut first_order: Option<Vec<String>> = None;
         for _ in 0..5 {
@@ -1063,12 +1129,166 @@ mod tests {
         let selection = BTreeSet::new();
         let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
         let forced = HashSet::new();
-        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced);
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
 
         let mut render = ColorOrderRecorder::default();
         let stats = draw_nodes(&mut render, &graph, &particles, &ctx);
 
         assert_eq!(stats.nodes_drawn, 1, "the hidden node must not be counted as drawn");
         assert_eq!(render.circle_batch_colors.len(), 1, "the hidden node's category batch must never be issued");
+    }
+
+    // ── Graph-strengthening arc G2: `category_color`/`cull_visible`
+    // configurability + theme-preset render smoke tests ─────────────────
+
+    /// `category_color` against the crate's own default palette must
+    /// reproduce the pre-Wave-G2 hardcoded hash -> palette-index mapping
+    /// exactly (same FNV-1a hash, same 10-color set, same modulo).
+    #[test]
+    fn category_color_against_the_default_palette_matches_the_pre_existing_hash_mapping() {
+        for category in ["alpha", "beta", "gamma", "delta", ""] {
+            assert_eq!(category_color(category, &default_category_palette()), category_color_default(category));
+        }
+    }
+
+    /// A caller-supplied categorical palette must actually be honoured —
+    /// `category_color` must NOT silently fall back to the default
+    /// palette when given a real, non-empty caller palette.
+    #[test]
+    fn category_color_honours_a_caller_supplied_palette() {
+        let custom = CategoricalScale::new(vec!["#111111".to_owned(), "#222222".to_owned()]);
+        for category in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"] {
+            let got = category_color(category, &custom);
+            assert!(got == "#111111" || got == "#222222", "category '{category}' resolved to {got}, outside the caller's 2-color palette");
+        }
+    }
+
+    /// The Okabe-Ito colorblind-safe palette must be selectable through
+    /// the exact same `category_color` entry point a caller already uses
+    /// for the default palette.
+    #[test]
+    fn category_color_can_select_the_okabe_ito_palette() {
+        let okabe_ito = CategoricalScale::default_palette();
+        // Every value `category_color` can possibly return against this
+        // palette must be one of okabe-ito's own 8 entries — never a
+        // leftover default-palette color.
+        for category in ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa"] {
+            let got = category_color(category, &okabe_ito);
+            assert!((0..8).any(|i| okabe_ito.color_for(i) == got), "category '{category}' resolved to {got}, not one of okabe-ito's own 8 entries");
+        }
+    }
+
+    /// `cull_visible`'s margin must be a real, caller-observable knob — a
+    /// node just outside the viewport but within a widened margin must be
+    /// culled at the default margin and NOT culled at a wider one.
+    #[test]
+    fn cull_visible_margin_is_a_real_override() {
+        let mut graph = G::new();
+        let far_node = graph.push_node((), "far", "x", 4.0);
+        let mut particles = vec![Particle::default(); graph.node_count()];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // 100 world units past the right edge — outside the default 64.0
+        // margin, inside a widened 200.0 margin.
+        particles[far_node.index()] = Particle::at(900.0, 300.0);
+
+        let default_visible = cull_visible(&graph, &particles, &camera, viewport, 64.0);
+        let widened_visible = cull_visible(&graph, &particles, &camera, viewport, 200.0);
+        assert!(!default_visible.contains(&far_node), "at the default margin this node must be culled");
+        assert!(widened_visible.contains(&far_node), "at a widened caller-supplied margin this node must survive culling");
+    }
+
+    /// Every [`GraphTheme`] preset must render a full scene (edges, nodes,
+    /// selection ring, hover ring, labels, cluster overlay, hover card,
+    /// box-select rect) without panicking — the deliverable's own basic
+    /// "does this actually work" gate, per each preset.
+    #[test]
+    fn every_theme_preset_renders_a_full_scene_without_panicking() {
+        for theme in [GraphTheme::dark(), GraphTheme::light(), GraphTheme::high_contrast()] {
+            let (graph, particles, clusters, _cluster_id, a, b, _c) = overlap_fixture();
+            let camera = Camera2D::default();
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+            let focus = FocusSet::empty();
+            let mut selection = BTreeSet::new();
+            selection.insert(a);
+            let hidden: HashSet<NodeIndex> = HashSet::new();
+            let forced: HashSet<NodeIndex> = HashSet::new();
+            let lod = LabelLodConfig::default();
+            let ctx = DrawContext {
+                camera: &camera,
+                viewport,
+                visible: &visible,
+                focus: &focus,
+                selection: &selection,
+                hovered: Some(b),
+                hidden: &hidden,
+                label_density: 5.0,
+                label_halo: "#0d0f14",
+                forced_labels: &forced,
+                label_lod: &lod,
+                theme: &theme,
+            };
+
+            let mut render = ColorOrderRecorder::default();
+            draw_edges(&mut render, &graph, &particles, &ctx);
+            draw_nodes(&mut render, &graph, &particles, &ctx);
+            draw_cluster_edges(&mut render, &particles, &ctx, &clusters);
+            draw_cluster_supernodes(&mut render, &graph, &particles, &ctx, &clusters);
+            let info = HoverCardInfo { label: "b", category: "blue", degree: 1, pinned: false };
+            draw_hover_card(&mut render, (400.0, 300.0), &info, viewport, &theme.hover_card);
+            draw_box_select_rect(&mut render, Rect::new(10.0, 10.0, 50.0, 50.0), &theme);
+        }
+    }
+
+    /// [`GraphTheme::light`]'s own selection ring must actually paint a
+    /// different color from [`GraphTheme::dark`]'s — proves a theme swap
+    /// changes what `draw_nodes` actually issues to the renderer, not
+    /// just that the struct fields differ.
+    #[test]
+    fn swapping_the_theme_changes_the_selection_ring_color_draw_nodes_issues() {
+        let (graph, particles, _clusters, _cluster_id, a, _b, _c) = overlap_fixture();
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+        let focus = FocusSet::empty();
+        let mut selection = BTreeSet::new();
+        selection.insert(a);
+        let hidden: HashSet<NodeIndex> = HashSet::new();
+        let forced: HashSet<NodeIndex> = HashSet::new();
+        let lod = LabelLodConfig::default();
+
+        // `draw_nodes` is bracketed in `save()`/`restore()` (G1.3) — the
+        // final `render.state.stroke_color` is deliberately restored back
+        // to whatever the caller had BEFORE the call, so it can't observe
+        // what was painted mid-function. `ColorOrderRecorder::stroke_colors`
+        // records every `set_stroke_color` call as it happens instead.
+        let stroke_color_for = |theme: &GraphTheme| {
+            let ctx = DrawContext {
+                camera: &camera,
+                viewport,
+                visible: &visible,
+                focus: &focus,
+                selection: &selection,
+                hovered: None,
+                hidden: &hidden,
+                label_density: 0.0,
+                label_halo: "#0d0f14",
+                forced_labels: &forced,
+                label_lod: &lod,
+                theme,
+            };
+            let mut render = ColorOrderRecorder::default();
+            draw_nodes(&mut render, &graph, &particles, &ctx);
+            render.stroke_colors.first().cloned().unwrap_or_default()
+        };
+
+        let dark_ring = stroke_color_for(&GraphTheme::dark());
+        let light_ring = stroke_color_for(&GraphTheme::light());
+        assert_eq!(dark_ring, "#ffffff");
+        assert_eq!(light_ring, "#1a1a2e");
+        assert_ne!(dark_ring, light_ring, "a caller-supplied theme swap must actually change what draw_nodes paints");
     }
 }

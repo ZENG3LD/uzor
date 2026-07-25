@@ -1894,7 +1894,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         }
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
         let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
-        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &forced);
+        // 2D-only graph-strengthening arc Wave G2 threaded a caller-
+        // configurable `LabelLodConfig` into `select_labels`/`label_alpha`
+        // — this 3D engine is out of that wave's scope, so it keeps
+        // calling both with the default config (byte-identical to the
+        // pre-Wave-G2 module constants), preserving its own behavior
+        // unchanged.
+        let lod = label_grid::LabelLodConfig::default();
+        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &forced, &lod);
         shown.into_iter().filter_map(|id| screen_positions.get(&id).map(|&(x, y)| (id, x, y))).collect()
     }
 
@@ -2000,7 +2007,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 1.0
             } else {
                 let normalized_degree = self.graph.degree(id) as f64 / max_degree as f64;
-                label_grid::label_alpha(zoom_analog, normalized_degree)
+                label_grid::label_alpha(zoom_analog, normalized_degree, &label_grid::LabelLodConfig::default())
             };
             if alpha <= 0.01 {
                 continue;
@@ -2057,7 +2064,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 let world = Vec3::new(p.x, p.y, p.z * scale);
                 if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
                     let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
-                    draw_hover_card(render, anchor, &info, viewport);
+                    // 2D-only graph-strengthening arc Wave G2 made the
+                    // hover card's `FigureTheme` caller-configurable; this
+                    // 3D overlay is out of that wave's scope, so it keeps
+                    // the SAME `FigureTheme::dark()` this call site always
+                    // hardcoded, preserving its own behavior unchanged.
+                    draw_hover_card(render, anchor, &info, viewport, &uzor_figures::theme::FigureTheme::dark());
                     hover_card_drawn = true;
                 }
             }
@@ -2068,7 +2080,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // `GraphEngine::draw`, which paints `draw_box_select_rect`
         // after nodes/labels/hover card).
         if let Some(rect) = self.box_select_rect() {
-            crate::render::draw_box_select_rect(render, rect);
+            // Same out-of-scope-for-3D reasoning as `draw_hover_card`
+            // above — keeps the pre-Wave-G2 `GraphTheme::dark()` colors.
+            crate::render::draw_box_select_rect(render, rect, &crate::theme::GraphTheme::dark());
         }
 
         render.restore();

@@ -13,7 +13,7 @@
 //! **Nodes**: one `uzor_urx_3d::Node::new_lit` per graph node, sharing
 //! the caller-supplied unit-sphere `node_mesh` — translated to the
 //! node's simulated `(x, y, z)`, scaled by its `radius`, tinted by its
-//! category (reuses [`crate::render::category_color`]'s existing
+//! category (reuses [`crate::render::category_color_default`]'s existing
 //! deterministic hash-palette, converted from the 2D hex-string
 //! convention to the `[f32; 4]` `uzor_urx_3d::Node::color_tint` needs).
 //!
@@ -228,7 +228,7 @@ use uzor_urx_3d::{Light, Mesh, MeshLit, Node, PhongMaterial, Scene3D, Vertex};
 use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
 use crate::particle::Particle;
-use crate::render::category_color;
+use crate::render::category_color_default;
 
 /// Edge line tint (RGB) — the SAME desaturated blue-gray as the 2D
 /// engine's own default edge stroke (`crate::render::draw_edges`'s
@@ -294,23 +294,24 @@ pub fn edge_width_scale(weight: f32) -> f32 {
 }
 
 /// Aggregated cross-cluster synthetic-edge tint (cluster-collapse wave) —
-/// the SAME warm gold accent the 2D engine's own `render::CLUSTER_ACCENT`
-/// (`"#c9a94e"`) uses for its cluster affordances, converted to a
-/// `[f32; 4]` tint (opaque — unlike the desaturated, alpha-blended
-/// [`EDGE_TINT`], a cluster's cross-edges are meant to read as a
-/// distinct, more prominent accent, mirroring 2D's own opaque
-/// `CLUSTER_ACCENT` stroke).
+/// the SAME warm gold accent the 2D engine's own default
+/// `GraphTheme::dark().cluster_accent` (`"#c9a94e"`) uses for its cluster
+/// affordances, converted to a `[f32; 4]` tint (opaque — unlike the
+/// desaturated, alpha-blended [`EDGE_TINT`], a cluster's cross-edges are
+/// meant to read as a distinct, more prominent accent, mirroring 2D's own
+/// opaque `cluster_accent` stroke).
 pub const CLUSTER_EDGE_TINT: [f32; 4] = [0.788, 0.663, 0.306, 1.0];
 
-/// Convert [`category_color`]'s fixed `"#rrggbb"` palette into an opaque
-/// `[f32; 4]` tint — `Node::color_tint` takes floats, not a CSS-style hex
-/// string, and there's no shared hex-parser in this crate to reuse
-/// (`uzor::ui::widgets::atomic::slider` has one, but it's `u8`-typed and
-/// private to that module) — small enough to own here rather than reach
-/// into an unrelated widget's internals for four `u8::from_str_radix`
-/// calls.
+/// Convert [`category_color_default`]'s fixed `"#rrggbb"` palette into an
+/// opaque `[f32; 4]` tint — `Node::color_tint` takes floats, not a
+/// CSS-style hex string, and there's no shared hex-parser in this crate
+/// to reuse (`uzor::ui::widgets::atomic::slider` has one, but it's
+/// `u8`-typed and private to that module) — small enough to own here
+/// rather than reach into an unrelated widget's internals for four
+/// `u8::from_str_radix` calls.
 fn category_tint(category: &str) -> [f32; 4] {
-    let hex = category_color(category).trim_start_matches('#');
+    let color = category_color_default(category);
+    let hex = color.trim_start_matches('#');
     if hex.len() != 6 {
         return [1.0, 1.0, 1.0, 1.0];
     }
