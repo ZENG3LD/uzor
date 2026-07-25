@@ -131,11 +131,15 @@ pub struct ForceParams {
     /// `weight.max(0.0)` (weight `1.0` — the implicit weight every
     /// pre-existing edge carries — is the identity multiplier, so a
     /// uniformly-weighted graph is byte-identical whether this is `true`
-    /// or `false`). Default `false` — this CHANGES layout output for any
-    /// graph with non-uniform edge weights, so per doctrine it ships as
-    /// an opt-in, not a silent behavior flip; see
-    /// `uzor-graph/CLAUDE.md`'s Wave G4 entry for the before/after
-    /// description reported to the owner.
+    /// or `false`). Default `true` (graph-strengthening arc, owner-
+    /// approved flip, 2026-07-26 — was `false` at Wave G4 introduction):
+    /// the render layer ALREADY treats `edge.weight` as meaningful
+    /// (`render3d.rs`'s `edge_width_scale`), so leaving this `false`
+    /// meant the picture claimed a relationship the simulation didn't
+    /// model — the image lied about the model. A caller can still pass
+    /// `weighted_links: false` explicitly to recover the old discard-the-
+    /// weight behavior; see `uzor-graph/CLAUDE.md`'s Wave G4 entry for the
+    /// original before/after description and the flip's own report.
     pub weighted_links: bool,
     /// Wave G4 fix — [`crate::graph::SimTopology::degree`] is computed
     /// (`Graph::degree`) but was never read by any layout; tree insertion
@@ -182,7 +186,7 @@ impl Default for ForceParams {
             min_split_dist2: barnes_hut::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut::MIN_CELL_SIZE,
             max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK,
-            weighted_links: false,
+            weighted_links: true,
             mass_from_degree: false,
         }
     }
@@ -946,18 +950,63 @@ mod tests {
         assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
     }
 
-    // ── Wave G4 item 2 — `weighted_links` ──
+    // ── Wave G4 item 2 — `weighted_links` (flipped to default `true`,
+    // graph-strengthening arc, owner-approved, 2026-07-26) ──
 
-    /// Wave G4 gate: `weighted_links` defaults to `false` — an edge's own
-    /// `weight` must have ZERO effect on the sim unless a caller opts in,
-    /// preserving today's behavior (the audit's own finding: the render
-    /// layer treats `edge.weight` as meaningful, the layout layer
-    /// silently discarded it — this default keeps that discard as the
-    /// out-of-the-box behavior, doctrine 1).
+    /// Graph-strengthening arc gate: `weighted_links` now defaults to
+    /// `true` — `ForceParams::default()`, untouched, must ALREADY make a
+    /// heavier edge pull harder than a lighter one, with no caller opt-in
+    /// required. Closes the render/simulation inconsistency the layout
+    /// audit flagged (`render3d.rs`'s `edge_width_scale` already treated
+    /// `edge.weight` as meaningful; the layout layer silently discarded
+    /// it at Wave G4 introduction). Same isolated single-edge,
+    /// no-repulsion/no-center fixture as the explicit-`true` test below,
+    /// but built from a bare `ForceParams::default()` plus only the
+    /// force-isolation overrides — `weighted_links` itself is never
+    /// touched here, proving the DEFAULT itself does the work.
     #[test]
-    fn weighted_links_default_false_ignores_edge_weight_variance() {
+    fn weighted_links_defaults_to_true_and_a_default_layout_already_scales_link_strength_by_edge_weight() {
+        assert!(ForceParams::default().weighted_links, "weighted_links must default to true — graph-strengthening arc flip");
+
         let degree = vec![1u32; 2];
         let params = ForceParams { charge_strength: 0.0, center_strength: 0.0, collision: false, seed_degenerate_positions: false, ..ForceParams::default() };
+
+        let mut particles_light = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+        layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+
+        let mut particles_heavy = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+        layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+
+        let speed_light = (particles_light[0].vx.powi(2) + particles_light[0].vy.powi(2)).sqrt();
+        let speed_heavy = (particles_heavy[0].vx.powi(2) + particles_heavy[0].vy.powi(2)).sqrt();
+        assert!(speed_light > 1e-6, "sanity: the light edge must produce SOME motion to compare against");
+        assert!(
+            (speed_heavy - 5.0 * speed_light).abs() < speed_light * 0.01,
+            "with weighted_links at its default (true), a 5x-heavier edge must pull ~5x harder: light={speed_light} heavy={speed_heavy}"
+        );
+    }
+
+    /// Wave G4 gate, preserved: `weighted_links: false` (an explicit
+    /// caller opt-OUT, now that the default flipped to `true`) must still
+    /// make edge weight variance a complete no-op — the escape hatch for
+    /// a caller who wants the pre-flip discard-the-weight behavior.
+    #[test]
+    fn weighted_links_explicitly_disabled_ignores_edge_weight_variance() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams {
+            charge_strength: 0.0,
+            center_strength: 0.0,
+            collision: false,
+            seed_degenerate_positions: false,
+            weighted_links: false,
+            ..ForceParams::default()
+        };
 
         let mut particles_light = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
         let mut layout_light = ForceDirectedLayout::new(params);
@@ -973,7 +1022,7 @@ mod tests {
             layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
             layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
         }
-        assert_eq!(particles_light, particles_heavy, "weighted_links defaults to false — edge weight must have zero effect on the sim");
+        assert_eq!(particles_light, particles_heavy, "weighted_links: false must still fully ignore edge weight variance");
     }
 
     /// Wave G4 gate: `weighted_links: true` actually modulates the link

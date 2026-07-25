@@ -189,7 +189,7 @@ fn head_on_engine() -> GraphEngine3D<(), (), ForceDirectedLayout3D> {
     let mut engine = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
     engine.particles[0] = Particle::at3(-6.0, 0.0, 0.0);
     engine.particles[1] = Particle::at3(6.0, 0.0, 0.0);
-    engine.camera = Camera3D { target: Vec3::ZERO, distance: 20.0, yaw: 0.0, pitch: 0.0 };
+    engine.camera = Camera3D { target: Vec3::ZERO, distance: 20.0, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
     engine
 }
 

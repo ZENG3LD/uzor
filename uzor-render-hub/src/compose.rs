@@ -318,7 +318,21 @@ pub fn submit_urx_composed(
             // automatically for any scene `Renderer3D::render_inner`'s
             // own MSAA gate doesn't cover (transparent/textured/pbr
             // content) — never a crash, just no AA for that frame.
-            r3d.set_sample_count(&device, 4);
+            //
+            // Graph-strengthening arc item 5: the sample count is now
+            // `state.urx_compose_msaa_sample_count`
+            // ([`WindowRenderState::set_compose_msaa_sample_count`]) —
+            // was a bare literal `4` here. Default is still exactly `4`
+            // for any consumer that never calls the setter, so this is a
+            // configurability addition, not a behavior change.
+            r3d.set_sample_count(&device, state.urx_compose_msaa_sample_count);
+            // Same item — an already-`pub` `Renderer3D::set_edge_width_px`
+            // that nothing at this lazy-init call site ever invoked.
+            // `None` (the default) leaves `Renderer3D::new`'s own default
+            // untouched.
+            if let Some(px) = state.urx_compose_edge_width_px {
+                r3d.set_edge_width_px(px);
+            }
             state.urx_renderer_3d = Some(r3d);
         }
         if state.urx_scene_3d.is_none() {

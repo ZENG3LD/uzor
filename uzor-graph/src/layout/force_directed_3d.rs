@@ -87,7 +87,8 @@ pub struct ForceParams3D {
     /// Wave G4 fix — 3D mirror of
     /// [`super::force_directed::ForceParams::weighted_links`]. See that
     /// field's own doc comment for the render/simulation-inconsistency
-    /// rationale and the doctrine-preserving default.
+    /// rationale and the graph-strengthening arc's owner-approved flip to
+    /// `true` (2026-07-26).
     pub weighted_links: bool,
     /// Wave G4 fix — 3D mirror of
     /// [`super::force_directed::ForceParams::mass_from_degree`]. See that
@@ -123,7 +124,7 @@ impl Default for ForceParams3D {
             min_split_dist2: barnes_hut_3d::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut_3d::MIN_CELL_SIZE,
             max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK_3D,
-            weighted_links: false,
+            weighted_links: true,
             mass_from_degree: false,
         }
     }
@@ -732,18 +733,56 @@ mod tests {
         assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
     }
 
-    // ── Wave G4 item 2 — `weighted_links` (3D mirror) ──
+    // ── Wave G4 item 2 — `weighted_links` (3D mirror, flipped to default
+    // `true`, graph-strengthening arc, owner-approved, 2026-07-26) ──
 
     /// 3D mirror of `force_directed::tests::
-    /// weighted_links_default_false_ignores_edge_weight_variance`.
+    /// weighted_links_defaults_to_true_and_a_default_layout_already_scales_link_strength_by_edge_weight`.
     #[test]
-    fn weighted_links_default_false_ignores_edge_weight_variance() {
+    fn weighted_links_defaults_to_true_and_a_default_layout_already_scales_link_strength_by_edge_weight() {
+        assert!(ForceParams3D::default().weighted_links, "weighted_links must default to true — graph-strengthening arc flip");
+
         let degree = vec![1u32; 2];
         let params = ForceParams3D {
             charge_strength: 0.0,
             center_strength: 0.0,
             collision: false,
             seed_degenerate_positions: false,
+            ..ForceParams3D::default()
+        };
+
+        let mut particles_light = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout3D::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+        layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+
+        let mut particles_heavy = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout3D::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+        layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+
+        let speed_light = (particles_light[0].vx.powi(2) + particles_light[0].vy.powi(2) + particles_light[0].vz.powi(2)).sqrt();
+        let speed_heavy = (particles_heavy[0].vx.powi(2) + particles_heavy[0].vy.powi(2) + particles_heavy[0].vz.powi(2)).sqrt();
+        assert!(speed_light > 1e-6, "sanity: the light edge must produce SOME motion to compare against");
+        assert!(
+            (speed_heavy - 5.0 * speed_light).abs() < speed_light * 0.01,
+            "with weighted_links at its default (true), a 5x-heavier edge must pull ~5x harder: light={speed_light} heavy={speed_heavy}"
+        );
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// weighted_links_explicitly_disabled_ignores_edge_weight_variance`.
+    #[test]
+    fn weighted_links_explicitly_disabled_ignores_edge_weight_variance() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams3D {
+            charge_strength: 0.0,
+            center_strength: 0.0,
+            collision: false,
+            seed_degenerate_positions: false,
+            weighted_links: false,
             ..ForceParams3D::default()
         };
 
@@ -761,7 +800,7 @@ mod tests {
             layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
             layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
         }
-        assert_eq!(particles_light, particles_heavy, "weighted_links defaults to false — edge weight must have zero effect on the sim");
+        assert_eq!(particles_light, particles_heavy, "weighted_links: false must still fully ignore edge weight variance");
     }
 
     /// 3D mirror of `force_directed::tests::

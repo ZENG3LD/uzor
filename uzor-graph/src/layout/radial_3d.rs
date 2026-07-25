@@ -59,8 +59,9 @@
 //! for an arbitrary DAG (Kahn's own `children` can list more than one
 //! parent pointing at the same node).
 //!
-//! **Wave G3 item 3 - `radius_aware_spacing`.** OFF by default (doctrine:
-//! no silent output change) — see [`RadialParams3D::radius_aware_spacing`]'s
+//! **Wave G3 item 3 - `radius_aware_spacing`.** ON by default
+//! (graph-strengthening arc, owner-approved flip, 2026-07-26 — was OFF at
+//! Wave G3 introduction) — see [`RadialParams3D::radius_aware_spacing`]'s
 //! own doc comment. Unlike the other three one-shot layouts (which widen
 //! ANGULAR allocation), this module deliberately pushes a large-radius
 //! node further OUTWARD along its own already-computed fan direction
@@ -160,11 +161,41 @@ pub struct RadialParams3D {
     /// further outward along its own already-computed fan direction —
     /// see this module's own doc comment (Wave G3 item 3) for why this
     /// is a radial push, not an angular-cone widening like the other
-    /// three one-shot layouts. Defaults to `false`: this CHANGES layout
-    /// output for any graph with varying node radii, so today's uniform
-    /// depth-only radius is preserved unless a caller opts in (doctrine:
-    /// no silent output change; recommended to the owner, not flipped
-    /// here).
+    /// three one-shot layouts. Defaults to `true` (graph-strengthening
+    /// arc, owner-approved flip, 2026-07-26 — was `false` at Wave G3
+    /// introduction): with it off, a collapsed-cluster supernode was
+    /// guaranteed to overlap its shell neighbors, since the uniform
+    /// depth-only radius had no knowledge that a particular node renders
+    /// several times larger than a leaf. A caller can still pass
+    /// `radius_aware_spacing: false` explicitly to recover the old
+    /// uniform depth-only radius.
+    ///
+    /// **Surprising-but-intentional, documented per the owner's own
+    /// request (2026-07-26 investigation)**: this field's DEGENERATE
+    /// case is `radii == 0.0` (a true point), NOT merely "every radius
+    /// equal." Its 3 sibling layouts (`hierarchical`/`radial`/
+    /// `hierarchical_3d`) all express "extra room" as an amount ABOVE an
+    /// assumed baseline already implicit in their own uniform spacing
+    /// constant (`slot_spacing`/`ring_spacing`), via a `.max(...)` floor
+    /// — so a graph whose radii stay under that baseline (uniform OR
+    /// varying) is a true no-op for them. THIS layout has no equivalent
+    /// baseline to floor against: `shell_spacing` is depth-to-depth
+    /// spacing, not an assumed per-node footprint (a same-shell sibling's
+    /// separation is entirely angular, via the golden-angle fan, and
+    /// unaffected by this field at all — see this module's own doc
+    /// comment for why an angular treatment here would need a larger
+    /// redesign). So this field instead directly accounts for a node's
+    /// own real physical size — treating it as a sphere rather than a
+    /// point — which is additive at ANY nonzero radius by construction,
+    /// uniform across a shell or not: verified, not merely asserted, by
+    /// `radial_3d_uniform_nonzero_radii_shift_every_node_by_the_same_
+    /// amount_and_never_change_direction` below, which proves the ONLY
+    /// effect at a uniform nonzero radius is a shell-wide radial offset
+    /// — no rotation, no angular redistribution, nothing riding along
+    /// unrelated to the node's own size (the actual defect class the
+    /// owner was checking for, and the one `hierarchical_3d`'s own
+    /// `radius_aware_ring` genuinely had — see that function's own doc
+    /// comment for the fix).
     pub radius_aware_spacing: bool,
 }
 
@@ -178,7 +209,7 @@ impl Default for RadialParams3D {
             child_cone_half_angle: DEFAULT_CHILD_CONE_HALF_ANGLE,
             min_root_ring_radius: DEFAULT_MIN_ROOT_RING_RADIUS,
             depth_metric: DepthMetric::ShortestPath,
-            radius_aware_spacing: false,
+            radius_aware_spacing: true,
         }
     }
 }
@@ -451,7 +482,12 @@ mod tests {
         let edges = [e(0, 1)];
         let t = topo(2, &edges);
         let mut particles = vec![Particle::default(); 2];
-        let mut layout = RadialLayout3D::default();
+        // `radius_aware_spacing` now defaults to `true` and would add
+        // `topo.radii[i]` (1.0 in this fixture) on top of the ring radius
+        // this test measures exactly — explicitly disabled here so the
+        // G3 item 1 root-ring assertion this test is actually about
+        // stays isolated from that unrelated (now-default-on) feature.
+        let mut layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: false, ..RadialParams3D::default() });
         layout.tick(&t, &mut particles, 1.0 / 60.0);
 
         let params = RadialParams3D::default();
@@ -618,9 +654,11 @@ mod tests {
     /// equal the prior hardcoded constants exactly. Extended in Wave G3
     /// for the three new fields — each must default to this module's
     /// own PRE-EXISTING behavior (doctrine: no silent output change for
-    /// items 2/3; item 1's `min_root_ring_radius` is a genuinely new
+    /// item 2; item 1's `min_root_ring_radius` is a genuinely new
     /// field with no prior constant to match, so it's checked against
-    /// its own documented default instead).
+    /// its own documented default instead; item 3's `radius_aware_spacing`
+    /// was OFF at Wave G3 introduction and is now ON — graph-strengthening
+    /// arc, owner-approved flip, 2026-07-26).
     #[test]
     fn radial_params_3d_default_matches_the_prior_hardcoded_constants() {
         let p = RadialParams3D::default();
@@ -629,7 +667,10 @@ mod tests {
         assert!((p.child_cone_half_angle - 0.698_132).abs() < 1e-6);
         assert_eq!(p.min_root_ring_radius, 20.0);
         assert_eq!(p.depth_metric, DepthMetric::ShortestPath, "RadialLayout3D's pre-existing behavior — must not change silently");
-        assert!(!p.radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+        // Graph-strengthening arc, owner-approved flip (2026-07-26): was
+        // `assert!(!p.radius_aware_spacing, ...)` — see
+        // `RadialParams3D::radius_aware_spacing`'s own doc comment.
+        assert!(p.radius_aware_spacing, "must default ON — graph-strengthening arc owner-approved flip");
     }
 
     // ── Wave G3 item 2 — `depth_metric` ─────────────────────────────────
@@ -644,12 +685,21 @@ mod tests {
         let edges = [e(0, 1), e(2, 3), e(3, 4), e(1, 5), e(4, 5)];
         let t = topo(6, &edges);
 
+        // `radius_aware_spacing` now defaults to `true` and would add
+        // `topo.radii[i]` on top of the depth-derived radius this test
+        // measures exactly — explicitly disabled on BOTH layouts so the
+        // depth_metric comparison this test is actually about stays
+        // isolated from that unrelated (now-default-on) feature.
         let mut shortest_particles = vec![Particle::default(); 6];
-        let mut shortest_layout = RadialLayout3D::default(); // ShortestPath default
+        let mut shortest_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: false, ..RadialParams3D::default() }); // ShortestPath default
         shortest_layout.tick(&t, &mut shortest_particles, 1.0 / 60.0);
 
         let mut longest_particles = vec![Particle::default(); 6];
-        let mut longest_layout = RadialLayout3D::new(RadialParams3D { depth_metric: DepthMetric::LongestPath, ..RadialParams3D::default() });
+        let mut longest_layout = RadialLayout3D::new(RadialParams3D {
+            depth_metric: DepthMetric::LongestPath,
+            radius_aware_spacing: false,
+            ..RadialParams3D::default()
+        });
         longest_layout.tick(&t, &mut longest_particles, 1.0 / 60.0);
 
         let r_shortest = radius(&shortest_particles[5]); // D
@@ -678,8 +728,13 @@ mod tests {
         radii[2] = 40.0; // node 2 (depth 2) is a big supernode-like member
         let t = SimTopology { node_count: 3, edges: &edges, degree: &[], radii };
 
+        // `radius_aware_spacing` now defaults to `true` (graph-
+        // strengthening arc, owner-approved flip, 2026-07-26) — this test
+        // still isolates the ON/OFF comparison explicitly on BOTH sides
+        // rather than relying on `RadialLayout3D::default()` for "off",
+        // since that would no longer BE off.
         let mut off_particles = vec![Particle::default(); 3];
-        let mut off_layout = RadialLayout3D::default();
+        let mut off_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: false, ..RadialParams3D::default() });
         off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
 
         let mut on_particles = vec![Particle::default(); 3];
@@ -698,6 +753,80 @@ mod tests {
             (r_on_small - r_off_small - 1.0).abs() < 1e-2,
             "a node at the default topology radius (1.0) must shift by its own small radius only: off={r_off_small} on={r_on_small}"
         );
+    }
+
+    /// Graph-strengthening arc, owner-requested degeneracy gate — the
+    /// TRUE degenerate case for THIS layout (see
+    /// `RadialParams3D::radius_aware_spacing`'s own doc comment for
+    /// precisely why it's `radii == 0.0`, not "uniform," unlike its 3
+    /// sibling layouts): with every `SimTopology::radii` entry
+    /// EXPLICITLY `0.0` (a graph of true points, not the `1.0`
+    /// default-fallback), a full `tick()` must produce byte-identical
+    /// positions whether the flag is on or off.
+    #[test]
+    fn radial_3d_radius_aware_spacing_is_a_true_no_op_when_every_radius_is_exactly_zero() {
+        let edges = [e(0, 1), e(0, 2), e(1, 3), e(1, 4), e(2, 5)];
+        let radii = vec![0.0f32; 6];
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: false, ..RadialParams3D::default() });
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: true, ..RadialParams3D::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        assert_eq!(off_particles, on_particles, "radii of exactly 0.0 must be a true no-op regardless of radius_aware_spacing");
+    }
+
+    /// Graph-strengthening arc, owner-requested investigation gate:
+    /// proves the ACTUAL shape of the change at a uniform NONZERO
+    /// radius is a pure per-node radial offset — never a rotation or
+    /// angular redistribution — which is precisely what distinguishes
+    /// this layout's design (a real, deliberate, per-node physical-size
+    /// accounting) from the genuine defect `hierarchical_3d`'s own
+    /// `radius_aware_ring` had (an accidental angle-convention swap that
+    /// rotated the WHOLE ring even at uniform radii, fixed separately —
+    /// see that function's own doc comment). Every node here shares the
+    /// identical nonzero radius; the ON run must differ from OFF by
+    /// EXACTLY that radius along each node's own UNCHANGED direction —
+    /// same direction, same angle, only the radial distance moves.
+    #[test]
+    fn radial_3d_uniform_nonzero_radii_shift_every_node_by_the_same_amount_and_never_change_direction() {
+        let edges = [e(0, 1), e(0, 2), e(1, 3), e(1, 4), e(2, 5)];
+        const UNIFORM_RADIUS: f32 = 12.0;
+        let radii = vec![UNIFORM_RADIUS; 6];
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: false, ..RadialParams3D::default() });
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout = RadialLayout3D::new(RadialParams3D { radius_aware_spacing: true, ..RadialParams3D::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        for i in 0..6 {
+            let off = off_particles[i];
+            let on = on_particles[i];
+            let r_off = radius(&off);
+            let r_on = radius(&on);
+            assert!(
+                (r_on - r_off - UNIFORM_RADIUS).abs() < 1e-2,
+                "node {i}: radial distance must grow by exactly the uniform radius: off={r_off} on={r_on}"
+            );
+            // Direction (unit vector from the origin) must be IDENTICAL
+            // — proves this is a pure radial push, no angular component.
+            if r_off > 1e-3 && r_on > 1e-3 {
+                let dir_off = (off.x / r_off, off.y / r_off, off.z / r_off);
+                let dir_on = (on.x / r_on, on.y / r_on, on.z / r_on);
+                assert!(
+                    (dir_off.0 - dir_on.0).abs() < 1e-4 && (dir_off.1 - dir_on.1).abs() < 1e-4 && (dir_off.2 - dir_on.2).abs() < 1e-4,
+                    "node {i}: direction must be unchanged — this must be a pure radial push, not a rotation: off_dir={dir_off:?} on_dir={dir_on:?}"
+                );
+            }
+        }
     }
 
     /// Wave G2b configurability gate: a caller-tuned `child_cone_half_angle`

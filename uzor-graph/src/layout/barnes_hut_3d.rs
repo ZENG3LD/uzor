@@ -485,11 +485,25 @@ mod tests {
 
     /// Layout audit A7 coverage gap, closed — 3D mirror of
     /// `barnes_hut::tests::barnes_hut_matches_brute_force_within_tolerance_at_the_shipped_theta`:
-    /// the crate SHIPS `DEFAULT_THETA = 1.0` (re-exported from
-    /// `barnes_hut`, wired as the literal default in
-    /// `ForceParams3D::default()`) — a materially coarser value than the
-    /// `0.6` the sibling test above exercises, previously unverified at
-    /// the value that actually ships.
+    /// the crate SHIPS `DEFAULT_THETA` (re-exported from `barnes_hut`,
+    /// wired as the literal default in `ForceParams3D::default()`), and
+    /// the live approximation error at the value that actually ships was,
+    /// until this test, unverified.
+    ///
+    /// Graph-strengthening arc, owner-approved default flip (2026-07-26,
+    /// two rounds — round 1 landed `0.85`, round 2 landed `0.6` once the
+    /// owner had the full 0.6/0.75/0.85/1.0 error+cost table, both mean
+    /// AND max; see `barnes_hut::DEFAULT_THETA`'s own doc comment for the
+    /// full table and why 3D's worst-case metric specifically ruled out
+    /// `0.85`/`1.0` — a single query/cell accept-vs-descend boundary
+    /// flips in `(0.75, 0.8)` and pushes the 3D max-error metric to
+    /// 109-140% from there on, a cliff `0.6` sits well clear of at 9.0%).
+    /// `DEFAULT_THETA` now EQUALS the `0.6` the sibling test above
+    /// hardcodes — same bound (`0.35`) for the same reason the 2D file's
+    /// own sibling pair now share one: this is no longer testing a
+    /// "materially coarser" value, it's testing that the shipped default
+    /// hasn't silently drifted away from the crate's own accuracy
+    /// reference.
     #[test]
     fn barnes_hut_3d_matches_brute_force_within_tolerance_at_the_shipped_theta() {
         let particles = deterministic_particles_3d(96);
@@ -510,18 +524,7 @@ mod tests {
                 max_rel_err = max_rel_err.max(diff / bmag);
             }
         }
-        // MEASURED on this exact fixture (2026-07-26, reported in full to
-        // the owner as part of the graph-strengthening arc Wave G3
-        // report — this bound is NOT tightened/loosened to make the test
-        // pass, and the shipped default is NOT changed here regardless
-        // of what this number says): the shipped theta=1.0 max relative
-        // error on this same 96-particle 3D fixture measures ~1.16
-        // (116%) — materially worse than the theta=0.6 sibling test's
-        // own 35% bound, and in the same ballpark as the 2D sibling
-        // gate's own ~1.20 measurement. `1.5` gives this regression test
-        // real headroom above the measured value while still catching a
-        // genuine further regression.
-        assert!(max_rel_err < 1.5, "Barnes-Hut 3D relative error at the SHIPPED theta=1.0 too high: {max_rel_err}");
+        assert!(max_rel_err < 0.35, "Barnes-Hut 3D relative error at the SHIPPED theta={DEFAULT_THETA} too high: {max_rel_err}");
     }
 
     #[test]

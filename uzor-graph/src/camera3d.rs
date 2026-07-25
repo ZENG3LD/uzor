@@ -24,6 +24,19 @@ const PITCH_LIMIT: f32 = 1.483_53; // ~85 degrees, radians
 const MIN_DISTANCE: f32 = 1.0;
 const MAX_DISTANCE: f32 = 100_000.0;
 
+/// Default vertical field of view — graph-strengthening arc item 5: a
+/// literal copy of `uzor_urx_3d::PerspectiveCamera::new`'s own hardcoded
+/// `60_f32.to_radians()` (that field is `pub` there already, so it was
+/// technically reachable by mutating a constructed `PerspectiveCamera`
+/// directly — but [`Camera3D::to_perspective`] never exposed a way to
+/// CHANGE it, always producing that one fixed value every frame). Same
+/// "redeclare a small cross-crate constant" convention this crate already
+/// uses for [`super::render3d::EDGE_WIDTH_SCALE_MAX`]'s own mirror of
+/// `uzor_urx_3d::pipeline`'s private `DEFAULT_EDGE_WIDTH_PX` — kept in
+/// sync by direct value copy, not a re-export (`fov_y` isn't a `const` on
+/// the other side to `pub use`).
+const DEFAULT_FOV_Y: f32 = 1.047_197_6; // 60 degrees, radians (60_f32.to_radians())
+
 /// Pan speed scales with `distance` (further from `target` => a screen
 /// pixel spans more world space) — the standard orbit-camera convention
 /// (three.js `OrbitControls`, Blender's own viewport nav) so a shift-drag
@@ -40,11 +53,19 @@ pub struct Camera3D {
     pub distance: f32,
     pub yaw: f32,
     pub pitch: f32,
+    /// Vertical field of view, radians — graph-strengthening arc item 5:
+    /// was hardcoded to `uzor_urx_3d::PerspectiveCamera::new`'s own fixed
+    /// 60° default forever (see [`Camera3D::to_perspective`]'s own doc
+    /// comment). A bare `pub` field, matching every other field on this
+    /// struct — this crate's own established convention for `Camera3D`
+    /// (no getter/setter pair; a caller mutates the field directly, same
+    /// as `target`/`distance`/`yaw`/`pitch` already do).
+    pub fov_y: f32,
 }
 
 impl Default for Camera3D {
     fn default() -> Self {
-        Self { target: Vec3::ZERO, distance: 500.0, yaw: 0.0, pitch: 0.35 }
+        Self { target: Vec3::ZERO, distance: 500.0, yaw: 0.0, pitch: 0.35, fov_y: DEFAULT_FOV_Y }
     }
 }
 
@@ -75,9 +96,9 @@ impl Camera3D {
     }
 
     /// Fresh `PerspectiveCamera` for the current orbit state — `up` stays
-    /// world-`Y` (`PerspectiveCamera::new`'s own default), fov also
-    /// default; `eye`/`target`/`aspect` vary per frame, and so do
-    /// `z_near`/`z_far` (see the divergence note below).
+    /// world-`Y` (`PerspectiveCamera::new`'s own default); `eye`/`target`/
+    /// `aspect` vary per frame, and so do `z_near`/`z_far`/`fov_y` (see
+    /// the divergence notes below).
     ///
     /// **Wave 2 divergence (`uzor-graph/CLAUDE.md`)**: `PerspectiveCamera::new`
     /// hardcodes `z_near = 0.1` / `z_far = 100.0` — tuned for
@@ -92,10 +113,17 @@ impl Camera3D {
     /// `uzor-urx-3d` change: `z_far` comfortably contains the target plus
     /// a margin for nodes spread around it, `z_near` shrinks with `distance`
     /// so dollying in close never clips the target either.
+    ///
+    /// **Graph-strengthening arc item 5**: `fov_y` is likewise overridden
+    /// from `self.fov_y` (default [`DEFAULT_FOV_Y`], byte-identical to
+    /// `PerspectiveCamera::new`'s own hardcoded 60° — a caller that never
+    /// touches [`Camera3D::fov_y`] sees no behavior change) instead of
+    /// silently keeping whatever `PerspectiveCamera::new` happened to set.
     pub fn to_perspective(&self, aspect: f32) -> PerspectiveCamera {
         let mut camera = PerspectiveCamera::new(self.eye(), self.target, aspect);
         camera.z_near = (self.distance * 0.001).max(0.05);
         camera.z_far = (self.distance * 4.0).max(2_000.0);
+        camera.fov_y = self.fov_y;
         camera
     }
 
@@ -175,11 +203,12 @@ impl Camera3D {
         self.target = center;
 
         let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 16.0 / 9.0 };
-        // `PerspectiveCamera::new`'s own hardcoded default (`to_perspective`
-        // never overrides `fov_y`, only `z_near`/`z_far` — see that
-        // method's own doc comment) — reading it back here rather than
-        // duplicating the literal keeps this in lockstep if that default
-        // ever changes.
+        // Reads back THIS camera's own current `fov_y` (`self.fov_y`,
+        // graph-strengthening arc item 5 — was always
+        // `PerspectiveCamera::new`'s hardcoded default before that field
+        // existed) via `to_perspective` rather than duplicating the
+        // value, so a caller-overridden fov automatically fits correctly
+        // too, not just the default one.
         let half_fov_y = (self.to_perspective(aspect).fov_y * 0.5).max(1e-4);
         let tan_half_y = half_fov_y.tan().max(1e-6);
         let tan_half_x = (tan_half_y * aspect).max(1e-6);
@@ -224,10 +253,49 @@ mod tests {
 
     #[test]
     fn to_perspective_places_the_eye_at_distance_from_target_along_the_orbit_offset() {
-        let camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0 };
+        let camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
         let persp = camera.to_perspective(16.0 / 9.0);
         assert!((persp.eye - Vec3::new(0.0, 0.0, 10.0)).length() < 1e-4);
         assert_eq!(persp.target, Vec3::ZERO);
+    }
+
+    // ── Graph-strengthening arc item 5 — `Camera3D::fov_y` ──────────────
+
+    /// A caller that never touches `fov_y` must see byte-identical
+    /// behavior to before this field existed — same value
+    /// `uzor_urx_3d::PerspectiveCamera::new` hardcodes.
+    #[test]
+    fn fov_y_defaults_to_the_prior_hardcoded_perspective_camera_value() {
+        let default_camera = Camera3D::default();
+        assert_eq!(default_camera.fov_y, DEFAULT_FOV_Y);
+        let baseline = PerspectiveCamera::new(Vec3::ZERO, Vec3::ZERO, 1.0);
+        assert!((default_camera.to_perspective(1.0).fov_y - baseline.fov_y).abs() < 1e-7);
+    }
+
+    /// A caller-overridden `fov_y` must actually reach the produced
+    /// `PerspectiveCamera` — the graph-strengthening arc's actual fix
+    /// (previously always the hardcoded 60° regardless of this field,
+    /// since this field didn't exist).
+    #[test]
+    fn a_caller_overridden_fov_y_reaches_the_produced_perspective_camera() {
+        let camera = Camera3D { fov_y: 30_f32.to_radians(), ..Camera3D::default() };
+        let persp = camera.to_perspective(16.0 / 9.0);
+        assert!((persp.fov_y - 30_f32.to_radians()).abs() < 1e-6);
+        assert_ne!(persp.fov_y, DEFAULT_FOV_Y, "sanity: the override must actually differ from the default");
+    }
+
+    /// `fit_bounds`'s own distance solve reads back `self.fov_y` (via
+    /// `to_perspective`) — a wider fov needs a SHORTER distance to fit
+    /// the identical box (more of the world is visible per unit
+    /// distance), proving the override reaches that math too, not just
+    /// the raw `PerspectiveCamera` struct.
+    #[test]
+    fn fit_bounds_uses_a_shorter_distance_for_a_wider_overridden_fov() {
+        let mut narrow = Camera3D { fov_y: 20_f32.to_radians(), ..Camera3D::default() };
+        narrow.fit_bounds(Vec3::splat(-10.0), Vec3::splat(10.0), 16.0 / 9.0, 1.1);
+        let mut wide = Camera3D { fov_y: 90_f32.to_radians(), ..Camera3D::default() };
+        wide.fit_bounds(Vec3::splat(-10.0), Vec3::splat(10.0), 16.0 / 9.0, 1.1);
+        assert!(wide.distance < narrow.distance, "a wider fov must fit the same box at a shorter distance: narrow={} wide={}", narrow.distance, wide.distance);
     }
 
     #[test]
@@ -249,6 +317,7 @@ mod tests {
             distance: 25.0,
             yaw: 0.3,
             pitch: -0.2,
+            ..Camera3D::default()
         };
         let eye_before = camera.eye();
         let target_before = camera.target;
@@ -269,6 +338,7 @@ mod tests {
             distance: 18.0,
             yaw: 0.7,
             pitch: 0.25,
+            ..Camera3D::default()
         };
         let eye_before = camera.eye();
         let target_before = camera.target;
@@ -299,7 +369,7 @@ mod tests {
 
     #[test]
     fn pan_moves_the_target_and_leaves_distance_untouched() {
-        let mut camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0 };
+        let mut camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
         camera.pan(50.0, 0.0);
         assert!(camera.target.length() > 0.0);
         assert!((camera.distance - 10.0).abs() < 1e-6);
@@ -309,7 +379,7 @@ mod tests {
 
     #[test]
     fn fit_bounds_centers_the_target_on_the_aabb_and_keeps_every_corner_inside_ndc() {
-        let mut camera = Camera3D { target: Vec3::new(999.0, -50.0, 12.0), distance: 5.0, yaw: 0.6, pitch: -0.3 };
+        let mut camera = Camera3D { target: Vec3::new(999.0, -50.0, 12.0), distance: 5.0, yaw: 0.6, pitch: -0.3, ..Camera3D::default() };
         let min = Vec3::new(-40.0, -10.0, -25.0);
         let max = Vec3::new(60.0, 30.0, 15.0);
         let aspect = 16.0 / 9.0;
@@ -343,7 +413,7 @@ mod tests {
 
     #[test]
     fn fit_bounds_preserves_yaw_and_pitch_a_dolly_and_retarget_only() {
-        let mut camera = Camera3D { target: Vec3::ZERO, distance: 5.0, yaw: 1.2, pitch: -0.4 };
+        let mut camera = Camera3D { target: Vec3::ZERO, distance: 5.0, yaw: 1.2, pitch: -0.4, ..Camera3D::default() };
         camera.fit_bounds(Vec3::new(-10.0, -10.0, -10.0), Vec3::new(10.0, 10.0, 10.0), 1.5, 1.1);
         assert_eq!(camera.yaw, 1.2, "fit_bounds must not re-orient the camera");
         assert_eq!(camera.pitch, -0.4, "fit_bounds must not re-orient the camera");

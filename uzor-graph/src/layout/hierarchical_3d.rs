@@ -26,7 +26,8 @@
 //! [`super::hierarchical::HierarchicalLayout`].
 //!
 //! **Wave G3 item 3 — [`HierarchicalParams3D::radius_aware_spacing`].**
-//! OFF by default (doctrine: no silent output change). When on, a
+//! ON by default (graph-strengthening arc, owner-approved flip,
+//! 2026-07-26 — was OFF at Wave G3 introduction). When on, a
 //! ring's own radius/angular allocation is derived from the SUM of each
 //! member's own diameter (via [`SimTopology::radii`]) instead of a flat
 //! per-member arc budget — see [`radius_aware_ring`]'s own doc comment.
@@ -68,10 +69,18 @@ pub struct HierarchicalParams3D {
     /// both derived from the SUM of each member's own diameter (via
     /// [`SimTopology::radii`]) instead of a flat `ring_spacing`-per-
     /// member arc budget — see [`radius_aware_ring`]'s own doc comment.
-    /// Defaults to `false`: this CHANGES layout output for any graph
-    /// with varying node radii, so today's count-only ring formula is
-    /// preserved unless a caller opts in (doctrine: no silent output
-    /// change — recommended to the owner, not flipped here).
+    /// Defaults to `true` (graph-strengthening arc, owner-approved flip,
+    /// 2026-07-26 — was `false` at Wave G3 introduction): with it off, a
+    /// collapsed-cluster supernode was guaranteed to overlap its ring
+    /// neighbors, since the count-only ring formula had no knowledge
+    /// that a particular node renders several times larger than a leaf.
+    /// A caller can still pass `radius_aware_spacing: false` explicitly
+    /// to recover the old count-only ring formula — the aware and
+    /// non-aware formulas share the SAME slice-start angle convention
+    /// (see [`radius_aware_ring`]'s own doc comment), so toggling this
+    /// flag on a uniform-radius graph changes nothing at all, only a
+    /// graph with real radius variance sees a different (wider-for-
+    /// bigger-members) angular allocation.
     pub radius_aware_spacing: bool,
 }
 
@@ -82,7 +91,7 @@ impl Default for HierarchicalParams3D {
             ring_spacing: 70.0,
             roots: Vec::new(),
             min_ring_radius: DEFAULT_MIN_RING_RADIUS,
-            radius_aware_spacing: false,
+            radius_aware_spacing: true,
         }
     }
 }
@@ -92,14 +101,27 @@ impl Default for HierarchicalParams3D {
 /// `max(ring_spacing, 2 * own_radius)` (its own diameter, floored at the
 /// ordinary `ring_spacing`), the ring's radius is `sum(budgets) / TAU`
 /// (floored at `min_ring_radius`), and each member's angle sits at the
-/// MIDPOINT of its own budget's cumulative span. When every member's
+/// START of its own budget's cumulative span — the SAME convention the
+/// non-aware `slot * TAU / count` formula uses (every non-aware slot IS
+/// the start of an equal-width TAU/count span). When every member's
 /// radius is small enough that `2 * own_radius <= ring_spacing`, every
-/// budget floors to the SAME `ring_spacing` value and this recovers the
-/// non-aware formula's own radius EXACTLY (`sum == count * ring_spacing`,
-/// `radius == ring_spacing * count / TAU`) — angles differ (midpoint of
-/// an equal slice vs. the non-aware formula's own `slot * TAU / count`
-/// slice-START convention), a genuinely different but equally valid
-/// convention, only reachable when this opt-in flag is set.
+/// budget floors to the SAME `ring_spacing` value, so the per-slot width
+/// is identically `TAU / count` too and this recovers the non-aware
+/// formula EXACTLY — both radius AND every single angle, not radius
+/// only.
+///
+/// Graph-strengthening arc, owner-caught defect (2026-07-26): this
+/// function previously placed each angle at its span's MIDPOINT instead
+/// of its start — a second, unrelated behavior riding along on the same
+/// flag: turning `radius_aware_spacing` on rotated the WHOLE ring by
+/// half a slot's own width even when every radius was perfectly uniform
+/// (measured 20-35 world-unit position shifts on a plain uniform-radius
+/// fixture, nothing to do with radius awareness at all). A flag named
+/// "radius-aware spacing" should change nothing when radii don't vary —
+/// fixed to the start convention above, which is both what "spacing"
+/// (not "rotation") means and what the non-aware sibling formula already
+/// does, so the two now degenerate to literally the same output at
+/// uniform radii, not merely the same RADIUS.
 fn radius_aware_ring(row: &[usize], radii: &[f32], ring_spacing: f32, min_ring_radius: f32) -> (f32, Vec<f32>) {
     if row.is_empty() {
         return (min_ring_radius, Vec::new());
@@ -112,8 +134,8 @@ fn radius_aware_ring(row: &[usize], radii: &[f32], ring_spacing: f32, min_ring_r
     let mut angles = Vec::with_capacity(row.len());
     let mut offset = 0.0f32;
     for &budget in &budgets {
+        angles.push(offset);
         let width = TAU * budget / total;
-        angles.push(offset + width * 0.5);
         offset += width;
     }
     (radius, angles)
@@ -351,25 +373,32 @@ mod tests {
 
     // ── Wave G3 item 3 — `radius_aware_spacing` ─────────────────────────
 
+    /// Graph-strengthening arc, owner-approved flip (2026-07-26): was
+    /// `hierarchical_params_3d_radius_aware_spacing_defaults_to_false`,
+    /// asserting the opposite.
     #[test]
-    fn hierarchical_params_3d_radius_aware_spacing_defaults_to_false() {
-        assert!(!HierarchicalParams3D::default().radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+    fn hierarchical_params_3d_radius_aware_spacing_defaults_to_true() {
+        assert!(HierarchicalParams3D::default().radius_aware_spacing, "must default ON — graph-strengthening arc owner-approved flip");
     }
 
     /// When every member's own radius is small (`2 * r <= ring_spacing`),
     /// `radius_aware_ring` must recover the non-aware formula's own
-    /// RADIUS exactly (angles differ by convention — midpoint-of-slice
-    /// vs. slice-start — see the function's own doc comment).
+    /// RADIUS *and* every ANGLE exactly — graph-strengthening arc fix:
+    /// the two formulas now share one slice-start convention, so a
+    /// uniform-radius ring is byte-identical either way, not just
+    /// same-radius-different-rotation.
     #[test]
-    fn radius_aware_ring_with_small_radii_recovers_the_non_aware_radius_exactly() {
+    fn radius_aware_ring_with_small_radii_recovers_the_non_aware_radius_and_angles_exactly() {
         let row: Vec<usize> = (0..5).collect();
         let radii = vec![1.0f32; 5];
         let (radius, angles) = radius_aware_ring(&row, &radii, 70.0, 20.0);
-        let expected = (70.0 * 5.0 / TAU).max(20.0);
-        assert!((radius - expected).abs() < 1e-3, "radius must match the non-aware formula: {radius} vs {expected}");
+        let expected_radius = (70.0 * 5.0 / TAU).max(20.0);
+        assert!((radius - expected_radius).abs() < 1e-3, "radius must match the non-aware formula: {radius} vs {expected_radius}");
         assert_eq!(angles.len(), 5);
-        for a in &angles {
+        for (slot, &a) in angles.iter().enumerate() {
             assert!(a.is_finite());
+            let expected_angle = slot as f32 * TAU / 5.0;
+            assert!((a - expected_angle).abs() < 1e-4, "angle {slot}: {a} vs non-aware slice-start {expected_angle}");
         }
     }
 
@@ -386,6 +415,31 @@ mod tests {
         assert!(radius > baseline, "a large member must widen the ring radius: {radius} vs baseline {baseline}");
     }
 
+    /// Graph-strengthening arc, owner-requested degeneracy gate: on a
+    /// UNIFORM-radius graph (every node the same nonzero radius, a real
+    /// `SimTopology::radii` value, not the `1.0` default-fallback), a
+    /// full `tick()` through the engine-level API must produce IDENTICAL
+    /// positions whether `radius_aware_spacing` is on or off — proves the
+    /// angle-convention defect (fixed above, in `radius_aware_ring`'s own
+    /// doc comment) is actually closed end-to-end, not just at the
+    /// isolated helper-function level the two tests above already cover.
+    #[test]
+    fn radius_aware_spacing_is_a_true_no_op_on_a_uniform_radius_graph_through_a_full_tick() {
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5), e(1, 6), e(1, 7)];
+        let radii = vec![7.5f32; 8];
+        let t = SimTopology { node_count: 8, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 8];
+        let mut off_layout = HierarchicalLayout3D::new(HierarchicalParams3D { radius_aware_spacing: false, ..HierarchicalParams3D::default() });
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 8];
+        let mut on_layout = HierarchicalLayout3D::new(HierarchicalParams3D { radius_aware_spacing: true, ..HierarchicalParams3D::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        assert_eq!(off_particles, on_particles, "a uniform-radius graph must produce byte-identical positions regardless of radius_aware_spacing");
+    }
+
     /// Integration gate: `HierarchicalParams3D::radius_aware_spacing`
     /// must actually reach `tick()`, not just exist as an unread field.
     #[test]
@@ -395,8 +449,14 @@ mod tests {
         radii[3] = 100.0;
         let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
 
+        // `radius_aware_spacing` now defaults to `true` (graph-
+        // strengthening arc, owner-approved flip, 2026-07-26) — this test
+        // still isolates the ON/OFF comparison explicitly on BOTH sides
+        // rather than relying on `HierarchicalLayout3D::default()` for
+        // "off", since that would no longer BE off.
         let mut off_particles = vec![Particle::default(); 6];
-        let mut off_layout = HierarchicalLayout3D::default();
+        let mut off_layout =
+            HierarchicalLayout3D::new(HierarchicalParams3D { radius_aware_spacing: false, ..HierarchicalParams3D::default() });
         off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
 
         let mut on_particles = vec![Particle::default(); 6];
@@ -414,3 +474,4 @@ mod tests {
         }
     }
 }
+

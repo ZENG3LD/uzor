@@ -328,6 +328,33 @@ pub struct WindowRenderState {
     /// pipeline on first request for a window.
     pub(crate) capture_3d_enabled: bool,
 
+    /// `n` passed to `uzor_urx_3d::Renderer3D::set_sample_count` at
+    /// [`crate::compose::submit_urx_composed`]'s lazy `Renderer3D::new`
+    /// (graph-strengthening arc item 5 — was a bare literal `4` at the
+    /// call site). `set_sample_count` itself only ever arms its ONE
+    /// pre-built MSAA variant for any `n > 1` (that crate's own
+    /// `MSAA_SAMPLE_COUNT = 4` — see its doc comment for why an
+    /// arbitrary caller-chosen count isn't supported: a
+    /// `wgpu::RenderPipeline` bakes `sample_count` in at creation), so
+    /// this field is effectively "arm 4x MSAA (any value `> 1`) or
+    /// disable it (`<= 1`)", not a free-form sample count — the field's
+    /// own doc/setter say so explicitly rather than implying a precision
+    /// this crate boundary can't deliver. Default `4` — byte-identical
+    /// to the pre-existing hardcoded call for any consumer that never
+    /// calls [`Self::set_compose_msaa_sample_count`].
+    pub(crate) urx_compose_msaa_sample_count: u32,
+
+    /// `px` passed to `uzor_urx_3d::Renderer3D::set_edge_width_px` at
+    /// [`crate::compose::submit_urx_composed`]'s lazy `Renderer3D::new`,
+    /// when `Some` (graph-strengthening arc item 5 — that setter already
+    /// existed on `Renderer3D`, `pub`, with its own sane default; the
+    /// gap was the SAME shape as the MSAA one above — nothing at the
+    /// lazy-init call site ever called it). `None` (the default) leaves
+    /// `Renderer3D::new`'s own `DEFAULT_EDGE_WIDTH_PX` untouched — a
+    /// consumer that never calls [`Self::set_compose_edge_width_px`]
+    /// sees zero behavior change.
+    pub(crate) urx_compose_edge_width_px: Option<f32>,
+
     /// Retained-cache surface for this window — one instance covering
     /// container/region/fragment scopes uniformly (see
     /// `crate::retained::RetainedCache`). Owned here for the same
@@ -433,6 +460,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
@@ -483,6 +512,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
@@ -561,6 +592,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
@@ -609,6 +642,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             scene: Scene::new(),
@@ -655,6 +690,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             scene: Scene::new(),
@@ -749,6 +786,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
@@ -798,6 +837,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
@@ -866,6 +907,8 @@ impl WindowRenderState {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled: false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
             canvas2d_ctx: Some(ctx),
@@ -1469,6 +1512,49 @@ impl WindowRenderState {
     pub fn set_workload_hint_inputs(&mut self, retained: bool, high_hz: bool) {
         self.urx_retained_hint = retained;
         self.urx_high_hz_hint = high_hz;
+    }
+
+    /// Sets the sample count [`crate::compose::submit_urx_composed`]
+    /// passes to `uzor_urx_3d::Renderer3D::set_sample_count` the NEXT
+    /// time its lazy `Renderer3D` is constructed for this window
+    /// (graph-strengthening arc item 5 — was a hardcoded literal `4` at
+    /// that call site). Any `n > 1` arms `uzor-urx-3d`'s one pre-built
+    /// MSAA variant (fixed at that crate's own `MSAA_SAMPLE_COUNT = 4`,
+    /// regardless of the exact `n` passed — see that crate's own doc
+    /// comment for why an arbitrary count isn't supported); `n <= 1`
+    /// disables MSAA. Has NO effect on an already-lazy-initialized
+    /// `Renderer3D` for this window — call before the window's first
+    /// composed 3D frame to change it from the default. A consumer that
+    /// never calls this keeps the pre-existing hardcoded `4` (MSAA
+    /// armed), unchanged.
+    pub fn set_compose_msaa_sample_count(&mut self, n: u32) {
+        self.urx_compose_msaa_sample_count = n;
+    }
+
+    /// Current value set via [`Self::set_compose_msaa_sample_count`]
+    /// (default `4`, matching the pre-existing hardcoded behavior).
+    pub fn compose_msaa_sample_count(&self) -> u32 {
+        self.urx_compose_msaa_sample_count
+    }
+
+    /// Sets the full on-screen edge-quad line width (device pixels)
+    /// [`crate::compose::submit_urx_composed`] passes to
+    /// `uzor_urx_3d::Renderer3D::set_edge_width_px` the NEXT time its
+    /// lazy `Renderer3D` is constructed for this window (graph-
+    /// strengthening arc item 5 — that setter already existed on
+    /// `Renderer3D`, `pub`, with its own sane default, but nothing at
+    /// this lazy-init call site ever invoked it). `None` (the default)
+    /// leaves `Renderer3D::new`'s own default untouched. Has NO effect
+    /// on an already-lazy-initialized `Renderer3D` for this window —
+    /// call before the window's first composed 3D frame to change it.
+    pub fn set_compose_edge_width_px(&mut self, px: Option<f32>) {
+        self.urx_compose_edge_width_px = px;
+    }
+
+    /// Current value set via [`Self::set_compose_edge_width_px`]
+    /// (default `None` — `Renderer3D::new`'s own default applies).
+    pub fn compose_edge_width_px(&self) -> Option<f32> {
+        self.urx_compose_edge_width_px
     }
 
     /// Call `f` with a `UrxEngineHandle` bound to this window's URX
@@ -2264,5 +2350,45 @@ mod workload_hint_input_tests {
         state.set_workload_hint_inputs(true, false);
         assert!(state.urx_retained_hint);
         assert!(!state.urx_high_hz_hint);
+    }
+}
+
+#[cfg(test)]
+mod compose_msaa_and_edge_width_config_tests {
+    //! Graph-strengthening arc item 5 — `submit_urx_composed`'s lazy
+    //! `Renderer3D::new` used to hardcode `set_sample_count(&device, 4)`
+    //! and never call `set_edge_width_px` at all. Headless (software
+    //! surface, no GPU/window needed): covers the setter round-trips and
+    //! that the pre-existing hardcoded/default behavior is preserved for
+    //! any consumer that never calls either setter.
+
+    use super::*;
+
+    struct NoopPresenter;
+    impl SoftwarePresenter for NoopPresenter {
+        fn present(&mut self, _pixels: &[u8], _width: u32, _height: u32) {}
+        fn resize(&mut self, _width: u32, _height: u32) {}
+    }
+
+    #[test]
+    fn defaults_match_the_pre_existing_hardcoded_msaa_call_and_leave_edge_width_untouched() {
+        let state = WindowRenderState::new_cpu(4, 4, Box::new(NoopPresenter));
+        assert_eq!(state.compose_msaa_sample_count(), 4, "must default to the pre-existing hardcoded literal");
+        assert_eq!(state.compose_edge_width_px(), None, "must default to None — Renderer3D::new's own default applies");
+    }
+
+    #[test]
+    fn setters_round_trip() {
+        let mut state = WindowRenderState::new_cpu(4, 4, Box::new(NoopPresenter));
+
+        state.set_compose_msaa_sample_count(1);
+        assert_eq!(state.compose_msaa_sample_count(), 1);
+        state.set_compose_msaa_sample_count(8);
+        assert_eq!(state.compose_msaa_sample_count(), 8);
+
+        state.set_compose_edge_width_px(Some(3.5));
+        assert_eq!(state.compose_edge_width_px(), Some(3.5));
+        state.set_compose_edge_width_px(None);
+        assert_eq!(state.compose_edge_width_px(), None);
     }
 }

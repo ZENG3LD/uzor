@@ -682,6 +682,8 @@ mod tests {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled:   false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache:       crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
         };
@@ -776,6 +778,8 @@ mod tests {
             urx_compose_overlay_blitter: None,
             urx_native_renderer: None,
             capture_3d_enabled:    false,
+            urx_compose_msaa_sample_count: 4,
+            urx_compose_edge_width_px: None,
             retained_cache:        crate::retained::RetainedCache::new(),
             vello_fragment_store:  Default::default(),
         };

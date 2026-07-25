@@ -1262,7 +1262,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// centered at the origin, if there isn't a single particle yet. Uses
     /// a fixed [`FRONT_ON_ASPECT`] — see that constant's own doc comment.
     fn front_on_camera(&self) -> Camera3D {
-        let mut camera = Camera3D { target: Vec3::ZERO, distance: Camera3D::default().distance, yaw: 0.0, pitch: 0.0 };
+        let mut camera = Camera3D { target: Vec3::ZERO, distance: Camera3D::default().distance, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
         if let Some((min, max)) = particle_aabb(&self.particles) {
             let flat_min = Vec3::new(min.x, min.y, 0.0);
             let flat_max = Vec3::new(max.x, max.y, 0.0);
@@ -3616,7 +3616,7 @@ mod tests {
         graph.push_node((), "a", "x", 1.0);
         let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
         engine.particles[0] = Particle::at3(0.0, 1.5, 0.0);
-        engine.camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0 };
+        engine.camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
         let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
         let ids: Vec<NodeIndex> = engine.graph.nodes().map(|(id, _)| id).collect();
 

@@ -16,9 +16,10 @@
 //! concretely (see [`super::layering::DepthMetric`]'s own doc comment).
 //! [`RadialParams::depth_metric`] lets a caller align the two.
 //!
-//! **Wave G3 — `radius_aware_spacing`**: OFF by default (doctrine: no
-//! silent output change) — see [`RadialParams::radius_aware_spacing`]'s
-//! own doc comment.
+//! **Wave G3 — `radius_aware_spacing`**: ON by default (graph-
+//! strengthening arc, owner-approved flip, 2026-07-26 — was OFF at Wave
+//! G3 introduction) — see [`RadialParams::radius_aware_spacing`]'s own
+//! doc comment.
 
 use std::f32::consts::TAU;
 
@@ -65,11 +66,14 @@ pub struct RadialParams {
     /// collapsed-cluster supernode (sqrt-scaled radius,
     /// `crate::cluster::supernode_radius`) gets proportionally more
     /// angular room than a same-ring leaf — see [`assign_ring_angles`]'s
-    /// own doc comment for the exact renormalization. Defaults to
-    /// `false`: this CHANGES layout output for any graph with varying
-    /// node radii, so today's leaf-only allocation is preserved unless a
-    /// caller opts in (doctrine: no silent output change; Wave G3 item 3
-    /// — recommended to the owner, not flipped here).
+    /// own doc comment for the exact renormalization. Defaults to `true`
+    /// (graph-strengthening arc, owner-approved flip, 2026-07-26 — was
+    /// `false` at Wave G3 introduction): with it off, a collapsed-cluster
+    /// supernode was guaranteed to overlap its ring neighbors, since the
+    /// leaf-only angular allocation had no knowledge that a particular
+    /// node renders several times larger than a leaf. A caller can still
+    /// pass `radius_aware_spacing: false` explicitly to recover the old
+    /// leaf-only allocation.
     pub radius_aware_spacing: bool,
 }
 
@@ -81,7 +85,7 @@ impl Default for RadialParams {
             roots: Vec::new(),
             leaf_weight_blend: DEFAULT_LEAF_WEIGHT_BLEND,
             depth_metric: DepthMetric::LongestPath,
-            radius_aware_spacing: false,
+            radius_aware_spacing: true,
         }
     }
 }
@@ -355,11 +359,14 @@ mod tests {
 
     // ── Wave G3 item 2 — `depth_metric` ─────────────────────────────────
 
+    /// Graph-strengthening arc, owner-approved flip (2026-07-26): was
+    /// `radial_params_default_depth_metric_is_longest_path_and_radius_aware_spacing_is_off`,
+    /// asserting the opposite for `radius_aware_spacing`.
     #[test]
-    fn radial_params_default_depth_metric_is_longest_path_and_radius_aware_spacing_is_off() {
+    fn radial_params_default_depth_metric_is_longest_path_and_radius_aware_spacing_is_on() {
         let p = RadialParams::default();
         assert_eq!(p.depth_metric, DepthMetric::LongestPath, "RadialLayout's pre-existing behavior — must not change silently");
-        assert!(!p.radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+        assert!(p.radius_aware_spacing, "must default ON — graph-strengthening arc owner-approved flip");
     }
 
     /// Wave G3 item 2 gate: the SAME fixture
@@ -415,8 +422,18 @@ mod tests {
             let r2d = radius_of(&particles_2d[5]);
             assert!((r2d - expected_depth).abs() < 1e-3, "2D radial depth mismatch for {metric:?}: got {r2d}, expected {expected_depth}");
 
+            // `radius_aware_spacing` (3D) now defaults to `true` and adds
+            // `topo.radii[i]` on top of the depth-derived radius this
+            // test measures — explicitly disabled here so the exact
+            // depth-number comparison this test is actually about stays
+            // isolated from that unrelated (now-default-on) feature.
             let mut particles_3d = vec![Particle::default(); 6];
-            let mut layout_3d = RadialLayout3D::new(RadialParams3D { shell_spacing: 1.0, depth_metric: metric, ..RadialParams3D::default() });
+            let mut layout_3d = RadialLayout3D::new(RadialParams3D {
+                shell_spacing: 1.0,
+                depth_metric: metric,
+                radius_aware_spacing: false,
+                ..RadialParams3D::default()
+            });
             layout_3d.tick(&t, &mut particles_3d, 1.0 / 60.0);
             let r3d = (particles_3d[5].x.powi(2) + particles_3d[5].y.powi(2) + particles_3d[5].z.powi(2)).sqrt();
             assert!((r3d - expected_depth).abs() < 1e-3, "3D radial depth mismatch for {metric:?}: got {r3d}, expected {expected_depth}");
@@ -474,8 +491,13 @@ mod tests {
         radii[1] = 6.0; // node 1 is a big supernode-like member
         let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
 
+        // `radius_aware_spacing` now defaults to `true` (graph-
+        // strengthening arc, owner-approved flip, 2026-07-26) — this test
+        // still isolates the ON/OFF comparison explicitly on BOTH sides
+        // rather than relying on `RadialLayout::default()` for "off",
+        // since that would no longer BE off.
         let mut off_particles = vec![Particle::default(); 6];
-        let mut off_layout = RadialLayout::default();
+        let mut off_layout = RadialLayout::new(RadialParams { radius_aware_spacing: false, ..RadialParams::default() });
         off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
 
         let mut on_particles = vec![Particle::default(); 6];
@@ -491,5 +513,39 @@ mod tests {
             (radius_of(&off_particles[1]) - radius_of(&on_particles[1])).abs() < 1e-3,
             "ring RADIUS itself must stay untouched by this item — only the angular allocation changes"
         );
+    }
+
+    /// Graph-strengthening arc, owner-requested degeneracy gate: on a
+    /// UNIFORM-radius graph, a full `tick()` must produce byte-identical
+    /// positions whether `radius_aware_spacing` is on or off. Unlike
+    /// `hierarchical`'s own floor-gated version of this same gate, this
+    /// layout's `assign_ring_angles` scales each share by
+    /// `own_radius / ring_average_radius` — at uniform radii that ratio
+    /// is exactly `1.0` for every member regardless of MAGNITUDE, so this
+    /// holds at any uniform radius, not just a small one (deliberately
+    /// used here, larger than `hierarchical`'s own floor threshold, to
+    /// prove the two layouts' degeneracy mechanisms are genuinely
+    /// different, not a copy-pasted test).
+    #[test]
+    fn radius_aware_spacing_is_a_true_no_op_on_a_uniform_radius_graph_through_a_full_tick() {
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5)];
+        let radii = vec![250.0f32; 6]; // uniform, well ABOVE hierarchical's own floor threshold
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = RadialLayout::new(RadialParams { radius_aware_spacing: false, ..RadialParams::default() });
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout = RadialLayout::new(RadialParams { radius_aware_spacing: true, ..RadialParams::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        for i in 0..6 {
+            assert!(
+                (off_particles[i].x - on_particles[i].x).abs() < 1e-3 && (off_particles[i].y - on_particles[i].y).abs() < 1e-3,
+                "node {i}: a uniform-radius graph must produce (near-)identical positions regardless of radius_aware_spacing: off=({}, {}) on=({}, {})",
+                off_particles[i].x, off_particles[i].y, on_particles[i].x, on_particles[i].y
+            );
+        }
     }
 }

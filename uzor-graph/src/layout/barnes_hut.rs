@@ -5,11 +5,75 @@
 //! brute-force under [`BRUTE_FORCE_THRESHOLD`] particles (quadtree-build
 //! overhead isn't worth it below that), Barnes-Hut above, θ = [`DEFAULT_THETA`]
 //! by default — matches the benchmarking cited in the engine design doc §1.2/§3.3.
+//!
+//! **Graph-strengthening arc, owner-approved default flip (2026-07-26,
+//! two rounds).** `DEFAULT_THETA` was `1.0` (Barnes & Hut's own
+//! textbook-cited value) — Wave G3 measured the max relative force error
+//! at that shipped value at **~120% in 2D, ~116% in 3D** on this file's
+//! own 96-particle fixture (`strength = 400.0`), against the ONLY tested
+//! value's own `0.6`/`35%` bound. A twofold force discrepancy is a
+//! different answer, not an approximation. Round 1 flipped the default to
+//! `0.85` without a full table; the owner asked for the missing points
+//! (`0.6`/`0.75`) plus MEAN error alongside max before accepting a
+//! number. Full table, same fixture/methodology (2026-07-26):
+//!
+//! | θ | 2D max err | 2D mean err | 3D max err | 3D mean err |
+//! |---|---|---|---|---|
+//! | 0.6  | 20.3%  | 2.00% | 9.0%   | 1.18% |
+//! | 0.75 | 63.3%  | 4.07% | 18.6%  | 2.72% |
+//! | 0.85 | 83.7%  | 6.46% | 121.1% | 5.12% |
+//! | 1.0  | 120.0% | 8.90% | 116.5% | 7.43% |
+//!
+//! Mean error is well-behaved and monotonic in θ at every point measured
+//! (the *usual* Barnes-Hut behavior). The MAX (worst-single-particle)
+//! metric is where the picture gets ugly, and asymmetrically so: 2D's max
+//! degrades smoothly with θ; 3D's does NOT — a sweep at 0.05 steps found
+//! 0.75→18.6%, 0.8→121.1%, 0.85→121.1%, 0.9→139.6%, 0.95→109.5%,
+//! 1.0→116.5% — a single query/cell accept-vs-descend boundary flips
+//! somewhere in `(0.75, 0.8)` and dominates the worst-case metric from
+//! there on. **0.6 is the last point before that cliff in BOTH axes** —
+//! it is not merely "the most accurate option tried," it is the one
+//! value with NO large-max-error regime nearby in either dimension.
+//!
+//! **Cost side of the trade** — accepted-vs-opened quadtree-cell counts
+//! (own instrumented traversal) and wall-clock `accumulate_forces` time,
+//! both measured on the crate's real 534-node `clusters` demo fixture
+//! (`force_directed::tests::clusters_534_fixture`'s own positions,
+//! release build, 200 repeated calls; 3D mirrors the same layout with a
+//! z-jitter, see `barnes_hut_3d`'s own module doc for that fixture):
+//!
+//! | θ | 2D cell visits | 2D wall (200×) | 3D cell visits | 3D wall (200×) |
+//! |---|---|---|---|---|
+//! | 0.6  | 45,969 (+80.8% vs 1.0) | 78.75ms (+73.2%) | 55,847 (+89.7%) | 191.84ms (+58.5%) |
+//! | 0.75 | 35,353 (+39.1%)        | 74.77ms (+64.5%) | 42,133 (+43.1%) | 150.30ms (+24.2%) |
+//! | 0.85 | 30,444 (+19.8%)        | 55.24ms (+21.5%) | 35,785 (+21.5%) | 150.44ms (+24.3%) |
+//! | 1.0  | 25,421 (baseline)      | 45.46ms          | 29,441 (baseline) | 121.03ms      |
+//!
+//! **Decision: `DEFAULT_THETA = 0.6`.** θ=0.6 costs 58-90% more than θ=1.0
+//! by these two proxies — above a rough "+60%" comfort line, but not by
+//! an order of magnitude, and Barnes-Hut's whole reason to exist is
+//! making LARGE graphs tractable (above `BRUTE_FORCE_THRESHOLD = 500`
+//! nodes) — a 534-node demo fixture spending an extra ~15-70ms across 200
+//! ticks is not the regime this budget has to protect. Against that, θ=0.6
+//! is the only value measured with NO large-max-error exposure in either
+//! dimension (worst case 20.3%, both axes comfortably inside the
+//! pre-existing `0.35` reference-test bound) — every other candidate
+//! (`0.75`/`0.85`/`1.0`) has a max-error regime at or above 63% in at
+//! least one dimension. A systematically-wrong force compounds over the
+//! hundreds of ticks a force layout actually runs; a slower-but-correct
+//! one does not. Reported to the owner as raw numbers, not a smoothed
+//! narrative — the decision follows the table, not a prior.
 
 use crate::particle::Particle;
 
-/// Barnes & Hut's own recommended θ (multipole acceptance criterion).
-pub const DEFAULT_THETA: f32 = 1.0;
+/// Barnes & Hut's own recommended θ was `1.0` — the graph-strengthening
+/// arc's owner-approved flip (two rounds; see this module's own doc
+/// comment for the full 0.6/0.75/0.85/1.0 error+cost table) lowers the
+/// shipped default to `0.6`: the only value measured with no
+/// large-max-error regime in EITHER dimension, at a real but bounded
+/// (58-90%, not order-of-magnitude) repulsion-pass cost increase over
+/// `1.0` on the crate's own 534-node demo fixture.
+pub const DEFAULT_THETA: f32 = 0.6;
 
 /// Below this many active particles, brute-force repulsion is cheaper
 /// than building a quadtree.
@@ -480,14 +544,25 @@ mod tests {
     }
 
     /// Layout audit A7 coverage gap, closed: the crate SHIPS
-    /// `DEFAULT_THETA = 1.0` (wired as the literal default in
-    /// `ForceParams::default()`/`ForceParams3D::default()`) — a
-    /// materially COARSER (less accurate, cheaper) value than the
-    /// `0.6` this file's own sibling test above exercises, and the
+    /// `DEFAULT_THETA` (wired as the literal default in
+    /// `ForceParams::default()`/`ForceParams3D::default()`), and the
     /// live approximation error at the value that actually SHIPS was,
     /// until this test, completely unverified. Same fixture/strength as
-    /// the sibling test, same measure (relative error against the exact
-    /// brute-force answer), only `theta` differs.
+    /// the sibling test above, same measure (relative error against the
+    /// exact brute-force answer), only `theta` is read from the named
+    /// constant instead of hardcoded — so this test alone would catch a
+    /// future accidental default drift toward a coarser value, even
+    /// though it currently computes byte-identically to the sibling.
+    ///
+    /// Graph-strengthening arc, owner-approved default flip (2026-07-26,
+    /// two rounds — round 1 landed `0.85`, round 2 landed `0.6` once the
+    /// owner had the full 0.6/0.75/0.85/1.0 error+cost table; see
+    /// [`DEFAULT_THETA`]'s own doc comment): `DEFAULT_THETA` now EQUALS
+    /// the `0.6` the sibling test above hardcodes — this is no longer
+    /// testing a "materially coarser" value, it's testing that the
+    /// shipped default hasn't silently drifted away from the crate's own
+    /// established accuracy reference. Same bound (`0.35`) as the
+    /// sibling for that reason — they now assert the identical claim.
     #[test]
     fn barnes_hut_matches_brute_force_within_tolerance_at_the_shipped_theta() {
         let particles = deterministic_particles(96);
@@ -508,17 +583,7 @@ mod tests {
                 max_rel_err = max_rel_err.max(diff / bmag);
             }
         }
-        // MEASURED on this exact fixture (2026-07-26, reported in full to
-        // the owner as part of the graph-strengthening arc Wave G3
-        // report — this bound is NOT tightened/loosened to make the test
-        // pass, and the shipped default is NOT changed here regardless
-        // of what this number says): the shipped theta=1.0 max relative
-        // error on this same 96-particle fixture measures ~1.20 (120%) —
-        // materially worse than the theta=0.6 sibling test's own 35%
-        // bound. `1.5` gives this regression test real headroom above
-        // the measured value while still catching a genuine further
-        // regression.
-        assert!(max_rel_err < 1.5, "Barnes-Hut relative error at the SHIPPED theta=1.0 too high: {max_rel_err}");
+        assert!(max_rel_err < 0.35, "Barnes-Hut relative error at the SHIPPED theta={DEFAULT_THETA} too high: {max_rel_err}");
     }
 
     #[test]

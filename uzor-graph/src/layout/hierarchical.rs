@@ -8,8 +8,9 @@
 //! (e.g. after changing [`HierarchicalParams`] or the graph's topology)
 //! instead of resettling a physics simulation — this layout has none.
 //!
-//! **Wave G3 item 3 — `radius_aware_spacing`.** OFF by default (doctrine:
-//! no silent output change) — see [`HierarchicalParams::radius_aware_spacing`]'s
+//! **Wave G3 item 3 — `radius_aware_spacing`.** ON by default
+//! (graph-strengthening arc, owner-approved flip, 2026-07-26 — was OFF at
+//! Wave G3 introduction) — see [`HierarchicalParams::radius_aware_spacing`]'s
 //! own doc comment. Scoped to WITHIN-ROW (horizontal) spacing only —
 //! vertical layer-to-layer spacing stays the plain `layer * layer_spacing`
 //! formula regardless, matching the audit's own "guaranteed to overlap
@@ -37,16 +38,21 @@ pub struct HierarchicalParams {
     /// uniform `slot_spacing` every slot uses today, so a
     /// collapsed-cluster supernode (sqrt-scaled radius,
     /// `crate::cluster::supernode_radius`) doesn't overlap its row
-    /// neighbors. Defaults to `false`: this CHANGES layout output for
-    /// any graph with varying node radii, so today's uniform spacing is
-    /// preserved unless a caller opts in (doctrine: no silent output
-    /// change — recommended to the owner, not flipped here).
+    /// neighbors. Defaults to `true` (graph-strengthening arc,
+    /// owner-approved flip, 2026-07-26 — was `false` at Wave G3
+    /// introduction, when a real output change was preserved by
+    /// default pending the owner's review): with it off, a supernode
+    /// was guaranteed to overlap its row neighbors, since the spacing
+    /// meant to keep siblings apart was computed with no knowledge that
+    /// a particular node renders several times larger than a leaf. A
+    /// caller can still pass `radius_aware_spacing: false` explicitly to
+    /// recover the old uniform-spacing behavior.
     pub radius_aware_spacing: bool,
 }
 
 impl Default for HierarchicalParams {
     fn default() -> Self {
-        Self { slot_spacing: 70.0, layer_spacing: 110.0, roots: Vec::new(), radius_aware_spacing: false }
+        Self { slot_spacing: 70.0, layer_spacing: 110.0, roots: Vec::new(), radius_aware_spacing: true }
     }
 }
 
@@ -220,9 +226,13 @@ mod tests {
 
     // ── Wave G3 item 3 — `radius_aware_spacing` ─────────────────────────
 
+    /// Graph-strengthening arc, owner-approved flip (2026-07-26): was
+    /// `hierarchical_params_radius_aware_spacing_defaults_to_false`,
+    /// asserting the opposite — see `HierarchicalParams::radius_aware_spacing`'s
+    /// own doc comment for why.
     #[test]
-    fn hierarchical_params_radius_aware_spacing_defaults_to_false() {
-        assert!(!HierarchicalParams::default().radius_aware_spacing, "must default OFF — doctrine: no silent output change");
+    fn hierarchical_params_radius_aware_spacing_defaults_to_true() {
+        assert!(HierarchicalParams::default().radius_aware_spacing, "must default ON — graph-strengthening arc owner-approved flip");
     }
 
     #[test]
@@ -279,8 +289,13 @@ mod tests {
         radii[1] = 100.0;
         let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
 
+        // `radius_aware_spacing` now defaults to `true` (graph-
+        // strengthening arc, owner-approved flip, 2026-07-26) — this test
+        // still isolates the ON/OFF comparison explicitly on BOTH sides
+        // rather than relying on `HierarchicalLayout::default()` for
+        // "off", since that would no longer BE off.
         let mut off_particles = vec![Particle::default(); 6];
-        let mut off_layout = HierarchicalLayout::default();
+        let mut off_layout = HierarchicalLayout::new(HierarchicalParams { radius_aware_spacing: false, ..HierarchicalParams::default() });
         off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
 
         let mut on_particles = vec![Particle::default(); 6];
@@ -291,5 +306,32 @@ mod tests {
         for i in 0..6 {
             assert_eq!(off_particles[i].y, on_particles[i].y, "layer height (Y) must stay untouched by this item — within-row spacing only");
         }
+    }
+
+    /// Graph-strengthening arc, owner-requested degeneracy gate: on a
+    /// UNIFORM-radius graph, a full `tick()` must produce byte-identical
+    /// positions whether `radius_aware_spacing` is on or off — this
+    /// layout's own `radius_aware_row_offsets` already floors each gap
+    /// at `slot_spacing` (see that function's own doc comment), so this
+    /// holds for any uniform radius up to `slot_spacing / 2`; investigated
+    /// alongside the (separately fixed) `hierarchical_3d` angle-convention
+    /// defect and confirmed this 2D sibling never had that bug — its
+    /// angle/x formula is identical either way once the floor dominates,
+    /// not merely the same radius under a different rotation.
+    #[test]
+    fn radius_aware_spacing_is_a_true_no_op_on_a_uniform_radius_graph_through_a_full_tick() {
+        let edges = [e(0, 1), e(0, 2), e(0, 3), e(0, 4), e(0, 5)];
+        let radii = vec![6.0f32; 6]; // uniform, well under slot_spacing/2 = 35
+        let t = SimTopology { node_count: 6, edges: &edges, degree: &[], radii };
+
+        let mut off_particles = vec![Particle::default(); 6];
+        let mut off_layout = HierarchicalLayout::new(HierarchicalParams { radius_aware_spacing: false, ..HierarchicalParams::default() });
+        off_layout.tick(&t, &mut off_particles, 1.0 / 60.0);
+
+        let mut on_particles = vec![Particle::default(); 6];
+        let mut on_layout = HierarchicalLayout::new(HierarchicalParams { radius_aware_spacing: true, ..HierarchicalParams::default() });
+        on_layout.tick(&t, &mut on_particles, 1.0 / 60.0);
+
+        assert_eq!(off_particles, on_particles, "a uniform-radius graph must produce byte-identical positions regardless of radius_aware_spacing");
     }
 }
