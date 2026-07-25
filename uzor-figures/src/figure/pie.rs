@@ -42,11 +42,12 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use uzor::render::RenderContext;
 use uzor::types::Rect;
 
-use crate::figure::FigureOverlay;
+use crate::figure::{category_color, FigureOverlay};
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::tooltip;
 use crate::mark::text::{draw_label_centered, draw_label_left_aligned, draw_label_right_aligned};
 use crate::scale::linear::format_value;
+use crate::scale::CategoricalScale;
 use crate::theme::FigureTheme;
 
 const MARGIN: f64 = 12.0;
@@ -276,11 +277,16 @@ pub struct PieFigure {
     legend_position: Option<LegendPosition>,
     title: Option<String>,
     top_n: Option<usize>,
+    /// This figure's own per-slice categorical color source — see
+    /// [`PieFigure::with_category_palette`]. Default (unset) reproduces
+    /// this figure's pre-existing `theme.palette[i % theme.palette.len()]`
+    /// slice-color indexing byte-for-byte.
+    category_palette: Option<CategoricalScale>,
 }
 
 impl PieFigure {
     pub fn new(slices: Vec<PieSlice>) -> Self {
-        Self { slices, donut_inner_ratio: 0.0, legend_position: None, title: None, top_n: None }
+        Self { slices, donut_inner_ratio: 0.0, legend_position: None, title: None, top_n: None, category_palette: None }
     }
 
     /// Draw as a donut with `inner_ratio` (clamped `0.0..=0.85`) of
@@ -304,6 +310,15 @@ impl PieFigure {
     /// "Other" bucket — see [`resolve_slices`].
     pub fn top_n(mut self, n: usize) -> Self {
         self.top_n = Some(n);
+        self
+    }
+
+    /// Override this figure's per-slice color source — see
+    /// [`crate::scale::CategoricalScale`]'s own doc comment. Default
+    /// (unset) is `None`, byte-identical to this figure's pre-existing
+    /// `theme.palette[i % theme.palette.len()]` slice-color indexing.
+    pub fn with_category_palette(mut self, palette: CategoricalScale) -> Self {
+        self.category_palette = Some(palette);
         self
     }
 
@@ -347,7 +362,7 @@ impl PieFigure {
             .enumerate()
             .map(|(i, s)| LegendEntry {
                 label: s.label.clone(),
-                color: theme.palette[i % theme.palette.len()].clone(),
+                color: category_color(theme, self.category_palette.as_ref(), i).to_owned(),
                 symbol: crate::guide::legend::LegendSymbol::Square,
             })
             .collect()
@@ -418,7 +433,7 @@ impl PieFigure {
         let hovered = overlay.hover_px.and_then(|(hx, hy)| hit_test_slice(&layout, hx, hy));
 
         for (i, slice) in layout.slices.iter().enumerate() {
-            ctx.set_fill_color(theme.palette[i % theme.palette.len()].as_str());
+            ctx.set_fill_color(category_color(theme, self.category_palette.as_ref(), i));
             build_wedge_path(ctx, &layout, slice);
             ctx.fill();
         }
@@ -617,5 +632,37 @@ mod tests {
             figure.render(ctx, Rect::new(0.0, 0.0, 200.0, 200.0), &theme);
         });
         assert!(result.is_ok(), "an empty pie figure must render without panicking");
+    }
+
+    #[test]
+    fn default_category_palette_is_unset_and_legend_uses_theme_palette() {
+        let figure = PieFigure::new(vec![slice("a", 1.0), slice("b", 2.0)]);
+        let theme = FigureTheme::dark();
+        let resolved = figure.resolved_slices();
+        let entries = figure.legend_entries(&resolved, &theme);
+        assert_eq!(entries[0].color, theme.palette[0]);
+        assert_eq!(entries[1].color, theme.palette[1]);
+    }
+
+    #[test]
+    fn with_category_palette_routes_legend_colors_through_the_explicit_palette() {
+        let palette = CategoricalScale::default_palette();
+        let figure = PieFigure::new(vec![slice("a", 1.0), slice("b", 2.0)]).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let resolved = figure.resolved_slices();
+        let entries = figure.legend_entries(&resolved, &theme);
+        assert_eq!(entries[0].color, palette.color_for(0));
+        assert_ne!(entries[0].color, theme.palette[0]);
+    }
+
+    #[test]
+    fn with_category_palette_renders_without_panicking() {
+        let figure = PieFigure::new(vec![slice("a", 1.0), slice("b", 2.0), slice("c", 3.0)]).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let spec = uzor_export::ExportSpec { width_px: 200, height_px: 200, dpr: 1.0, background: None };
+        let result = uzor_export::render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 200.0, 200.0), &theme);
+        });
+        assert!(result.is_ok());
     }
 }

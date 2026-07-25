@@ -16,7 +16,7 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
+use crate::figure::{category_color, resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::axis::LabelOverflow;
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
@@ -26,7 +26,7 @@ use crate::mark::rect::{draw_bars, draw_bars_grouped, draw_bars_stacked};
 use crate::mark::text::draw_label_centered;
 use crate::mark::MarkStyle;
 use crate::scale::linear::{format_value, nice_step};
-use crate::scale::{BandScale, LinearScale};
+use crate::scale::{BandScale, CategoricalScale, LinearScale};
 use crate::theme::FigureTheme;
 
 /// Left margin for the y-axis tick labels; bottom margin for the x-axis
@@ -94,6 +94,11 @@ pub struct BarFigure {
     /// This figure's own X-axis label-collision policy — see
     /// [`BarFigure::with_label_overflow`].
     label_overflow: LabelOverflow,
+    /// This figure's own per-series categorical color source — see
+    /// [`BarFigure::with_category_palette`]. Default (unset) reproduces
+    /// this figure's pre-existing `theme.palette[i % theme.palette.len()]`
+    /// series-color indexing byte-for-byte.
+    category_palette: Option<CategoricalScale>,
 }
 
 impl BarFigure {
@@ -122,6 +127,7 @@ impl BarFigure {
             margin_policy: MarginPolicy::default(),
             y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
             label_overflow: LabelOverflow::default(),
+            category_palette: None,
         }
     }
 
@@ -197,6 +203,19 @@ impl BarFigure {
         self
     }
 
+    /// Override this figure's per-series color source — see
+    /// [`crate::scale::CategoricalScale`]'s own doc comment (e.g.
+    /// `CategoricalScale::default_palette()`, the colour-blind-safe
+    /// Okabe-Ito set). Default (unset) is `None`, byte-identical to this
+    /// figure's pre-existing `theme.palette[i % theme.palette.len()]`
+    /// series-color indexing — per this crate's own binding doctrine, a
+    /// new categorical identity is a real, explicit option; nothing
+    /// changes silently unless a caller opts in.
+    pub fn with_category_palette(mut self, palette: CategoricalScale) -> Self {
+        self.category_palette = Some(palette);
+        self
+    }
+
     /// Resolved legend position for this render: an explicit
     /// [`BarFigure::with_legend`] override, or auto-[`LegendPosition::Top`]
     /// when there's more than one series, or `None` otherwise.
@@ -210,7 +229,7 @@ impl BarFigure {
             .enumerate()
             .map(|(i, s)| LegendEntry {
                 label: s.name.clone(),
-                color: theme.palette[i % theme.palette.len()].clone(),
+                color: category_color(theme, self.category_palette.as_ref(), i).to_owned(),
                 symbol: crate::guide::legend::LegendSymbol::Square,
             })
             .collect()
@@ -409,12 +428,12 @@ impl BarFigure {
 
             if self.series.len() <= 1 {
                 if let Some(single) = self.series.first() {
-                    let style = MarkStyle { color: theme.palette[0].clone(), ..Default::default() };
+                    let style = MarkStyle { color: category_color(theme, self.category_palette.as_ref(), 0).to_owned(), ..Default::default() };
                     draw_bars(ctx, &area, &band, &y_scale, &single.values, &style);
                 }
             } else {
                 let series_values: Vec<&[f64]> = self.series.iter().map(|s| s.values.as_slice()).collect();
-                let colors: Vec<&str> = (0..self.series.len()).map(|i| theme.palette[i % theme.palette.len()].as_str()).collect();
+                let colors: Vec<&str> = (0..self.series.len()).map(|i| category_color(theme, self.category_palette.as_ref(), i)).collect();
                 match self.mode {
                     BarMode::Grouped => draw_bars_grouped(ctx, &area, &band, &y_scale, &series_values, &colors),
                     BarMode::Stacked => draw_bars_stacked(ctx, &area, &band, &y_scale, &series_values, &colors),
@@ -569,6 +588,44 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), colors.len(), "every series must get its own distinct swatch color");
+    }
+
+    #[test]
+    fn default_category_palette_is_unset_and_legend_uses_theme_palette() {
+        let series = vec![BarSeries { name: "a".to_owned(), values: vec![1.0] }, BarSeries { name: "b".to_owned(), values: vec![2.0] }];
+        let figure = BarFigure::with_series(cats(1), series, BarMode::Grouped);
+        let theme = FigureTheme::dark();
+        let entries = figure.legend_entries(&theme);
+        assert_eq!(entries[0].color, theme.palette[0]);
+        assert_eq!(entries[1].color, theme.palette[1]);
+    }
+
+    #[test]
+    fn with_category_palette_routes_legend_colors_through_the_explicit_palette() {
+        use crate::scale::CategoricalScale;
+
+        let series = vec![BarSeries { name: "a".to_owned(), values: vec![1.0] }, BarSeries { name: "b".to_owned(), values: vec![2.0] }];
+        let palette = CategoricalScale::default_palette();
+        let figure = BarFigure::with_series(cats(1), series, BarMode::Grouped).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let entries = figure.legend_entries(&theme);
+        assert_eq!(entries[0].color, palette.color_for(0));
+        assert_eq!(entries[1].color, palette.color_for(1));
+        assert_ne!(entries[0].color, theme.palette[0], "an explicit category palette must override theme.palette's own default indexing");
+    }
+
+    #[test]
+    fn with_category_palette_renders_without_panicking() {
+        use crate::scale::CategoricalScale;
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let figure = BarFigure::new(cats(3), vec![5.0, 10.0, 15.0]).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 300.0, 200.0), &theme);
+        });
+        assert!(result.is_ok());
     }
 
     #[test]

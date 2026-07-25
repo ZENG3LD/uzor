@@ -150,6 +150,106 @@ impl ColorScale {
     }
 }
 
+/// N distinct hues for N unordered CATEGORIES — the discrete counterpart
+/// to [`ColorScale`]'s continuous sequential/diverging ramps. Deliberately
+/// NOT folded into [`ColorScale`] itself: `ColorScale`'s whole job is
+/// OKLCH-interpolating an intermediate hue BETWEEN two anchors for a value
+/// between two breakpoints, and a categorical palette must never do that —
+/// an interpolated blend between "category A"'s color and "category B"'s
+/// color has no meaning (category count has no ordering a blend could
+/// respect). This is a plain index -> color lookup with a documented
+/// cycling policy, not a ramp.
+#[derive(Debug, Clone)]
+pub struct CategoricalScale {
+    colors: Vec<String>,
+}
+
+/// The built-in default palette: Okabe, M. & Ito, K. (2008), "Color
+/// Universal Design (CUD) — How to make figures and presentations that are
+/// friendly to Colorblind people," Color Universal Design Organization
+/// (<https://jfly.uni-koeln.de/color/>) — the de-facto standard 8-hue
+/// qualitative palette for colorblind-safe categorical charts (the same
+/// set underlies R's `scales::pal_okabe_ito`/`ggthemes::okabe_ito` and is
+/// widely re-published as THE reference colorblind-safe qualitative
+/// palette in dataviz literature). Verified safe against protanopia,
+/// deuteranopia (the two red-green forms, together the large majority of
+/// color-vision deficiency), and tritanopia (blue-yellow) by the original
+/// publication; this crate's own test suite additionally runs an
+/// independent deuteranopia-simulation check (see `tests::
+/// default_palette_stays_pairwise_distinguishable_under_deuteranopia_simulation`
+/// below) as a second, locally-computed confirmation.
+const OKABE_ITO: [&str; 8] = [
+    "#000000", // black
+    "#E69F00", // orange
+    "#56B4E9", // sky blue
+    "#009E73", // bluish green
+    "#F0E442", // yellow
+    "#0072B2", // blue
+    "#D55E00", // vermillion
+    "#CC79A7", // reddish purple
+];
+
+/// Neutral fallback for [`CategoricalScale::color_for`] on an
+/// (unreachable through the public constructors, but defensively guarded)
+/// empty palette — a mid-gray rather than a panic on `% 0`.
+const EMPTY_PALETTE_FALLBACK: &str = "#808080";
+
+impl CategoricalScale {
+    /// The built-in colour-blind-safe default — see [`OKABE_ITO`]'s own
+    /// doc comment for the source and safety claim.
+    pub fn default_palette() -> Self {
+        Self { colors: OKABE_ITO.iter().map(|&s| s.to_owned()).collect() }
+    }
+
+    /// A caller-supplied palette (CSS hex strings). An EMPTY list falls
+    /// back to [`CategoricalScale::default_palette`] (a zero-color palette
+    /// can't assign anything); any non-empty list — including a single
+    /// color, or one shorter than the caller's own category count — is
+    /// honored as given (a caller relying on the cycling policy documented
+    /// on [`CategoricalScale::color_for`] is a legitimate choice this
+    /// constructor doesn't second-guess).
+    pub fn new(colors: Vec<String>) -> Self {
+        if colors.is_empty() {
+            Self::default_palette()
+        } else {
+            Self { colors }
+        }
+    }
+
+    /// This palette's own color count.
+    pub fn len(&self) -> usize {
+        self.colors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.colors.is_empty()
+    }
+
+    /// Color for category `index` — CYCLES via `index % len()` once
+    /// `index` exceeds the palette's own length. This is the ONE, documented
+    /// cycling policy for this crate's categorical color assignment —
+    /// matches the SAME `%`-modulo convention every pre-existing
+    /// `theme.palette[i % theme.palette.len()]` call site already uses for
+    /// the crate's own 10-color default palette (`BarFigure`/`PieFigure`/
+    /// `DagFigure`/`SankeyFigure`'s own category-color resolution): a
+    /// category beyond the Nth distinct hue silently repeats colors from
+    /// the start rather than growing the palette, blending, or erroring.
+    pub fn color_for(&self, index: usize) -> &str {
+        if self.colors.is_empty() {
+            return EMPTY_PALETTE_FALLBACK;
+        }
+        self.colors[index % self.colors.len()].as_str()
+    }
+}
+
+impl Default for CategoricalScale {
+    /// The colour-blind-safe Okabe-Ito default — see
+    /// [`CategoricalScale::default_palette`].
+    fn default() -> Self {
+        Self::default_palette()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +324,88 @@ mod tests {
     fn fewer_than_two_explicit_colors_falls_back_to_the_default_palette() {
         let scale = ColorScale::sequential_colors(0.0, 10.0, &["#123456"]);
         assert_eq!(scale.color_at(0.0), Color::from_hex(DEFAULT_SEQUENTIAL[0]).unwrap_or(Color::BLACK).to_hex());
+    }
+
+    // ── CategoricalScale ─────────────────────────────────────────────
+
+    #[test]
+    fn default_palette_has_eight_okabe_ito_entries() {
+        let palette = CategoricalScale::default_palette();
+        assert_eq!(palette.len(), 8);
+        assert_eq!(palette.color_for(0), "#000000");
+    }
+
+    #[test]
+    fn new_with_user_colors_is_honored_verbatim() {
+        let palette = CategoricalScale::new(vec!["#111111".to_owned(), "#222222".to_owned()]);
+        assert_eq!(palette.len(), 2);
+        assert_eq!(palette.color_for(0), "#111111");
+        assert_eq!(palette.color_for(1), "#222222");
+    }
+
+    #[test]
+    fn new_with_empty_colors_falls_back_to_the_default_palette() {
+        let palette = CategoricalScale::new(Vec::new());
+        assert_eq!(palette.len(), 8);
+        assert_eq!(palette.color_for(0), "#000000");
+    }
+
+    #[test]
+    fn color_for_cycles_via_modulo_past_the_palette_length() {
+        let palette = CategoricalScale::new(vec!["#aa0000".to_owned(), "#00bb00".to_owned(), "#0000cc".to_owned()]);
+        assert_eq!(palette.color_for(3), palette.color_for(0));
+        assert_eq!(palette.color_for(4), palette.color_for(1));
+        assert_eq!(palette.color_for(100), palette.color_for(100 % 3));
+    }
+
+    #[test]
+    fn default_impl_matches_default_palette() {
+        assert_eq!(CategoricalScale::default().color_for(0), CategoricalScale::default_palette().color_for(0));
+    }
+
+    /// Deuteranopia (red-green colorblindness) simulation via the Machado,
+    /// Oliveira & Fairchild (2009), "A Physiologically-based Model for
+    /// Simulation of Color Vision Deficiency" (IEEE TVCG 15(6)) linear-RGB
+    /// transform matrix — the same matrix underlying Chromium DevTools'
+    /// own "Rendering > Emulate vision deficiencies > Deuteranopia" mode.
+    /// An INDEPENDENT, locally-computed second confirmation of the
+    /// Okabe-Ito palette's own published colorblind-safety claim (see
+    /// [`OKABE_ITO`]'s own doc comment for the citation) — not a
+    /// replacement for it.
+    fn simulate_deuteranopia(hex: &str) -> (f64, f64, f64) {
+        let color = Color::from_hex(hex).unwrap_or(Color::BLACK);
+        let (r, g, b) = color.to_linear();
+        let r2 = 0.367_322 * r + 0.860_646 * g - 0.227_968 * b;
+        let g2 = 0.280_085 * r + 0.672_501 * g + 0.047_413 * b;
+        let b2 = -0.011_820 * r + 0.042_940 * g + 0.968_881 * b;
+        (r2, g2, b2)
+    }
+
+    fn euclidean_distance(a: (f64, f64, f64), b: (f64, f64, f64)) -> f64 {
+        ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn default_palette_stays_pairwise_distinguishable_under_deuteranopia_simulation() {
+        let palette = CategoricalScale::default_palette();
+        let simulated: Vec<(f64, f64, f64)> = (0..palette.len()).map(|i| simulate_deuteranopia(palette.color_for(i))).collect();
+        // A locally-computed pass over this exact palette measures its
+        // closest simulated pair (bluish-green #009E73 vs. vermillion
+        // #D55E00) at ~0.204 linear-RGB Euclidean distance — 0.15 is a
+        // generous floor well below that measured minimum, so this
+        // assertion has real margin without being tuned to just barely
+        // pass.
+        const MIN_DISTANCE: f64 = 0.15;
+        for i in 0..simulated.len() {
+            for j in (i + 1)..simulated.len() {
+                let d = euclidean_distance(simulated[i], simulated[j]);
+                assert!(
+                    d > MIN_DISTANCE,
+                    "palette entries {i} ({}) and {j} ({}) collapse under deuteranopia simulation: distance {d:.4}",
+                    palette.color_for(i),
+                    palette.color_for(j)
+                );
+            }
+        }
     }
 }

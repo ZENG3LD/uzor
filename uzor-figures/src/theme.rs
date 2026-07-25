@@ -69,6 +69,11 @@ const HIGHLIGHT_DARK: &str = "#ffffff";
 /// background at the same low alpha every figure's hover overlay already
 /// paints at (white-on-white was the actual bug this field fixes).
 const HIGHLIGHT_LIGHT: &str = "#1a1a2e";
+/// [`FigureTheme::high_contrast`]'s own hover/selection highlight — pure
+/// yellow, the maximum-contrast choice against this theme's pure-black
+/// background (same role [`HIGHLIGHT_DARK`]/[`HIGHLIGHT_LIGHT`] play for
+/// their own backgrounds).
+const HIGHLIGHT_HIGH_CONTRAST: &str = "#ffff00";
 
 impl FigureTheme {
     /// Dark theme — matches `force-graph-demo`'s `#0d0f14` canvas
@@ -103,6 +108,40 @@ impl FigureTheme {
             highlight: HIGHLIGHT_LIGHT.to_owned(),
         }
     }
+
+    /// High-contrast (accessibility) preset — pure-black background, pure-
+    /// white axis/label ink, a maximum-contrast yellow hover/selection
+    /// highlight. Closes the MLC-harvest gap: MLC ships `dark`/`light`/
+    /// `high_contrast`/`cyberpunk` against this crate's own `dark`/`light`
+    /// pair.
+    ///
+    /// `palette`/`positive`/`negative` are DELIBERATELY the SAME shared
+    /// values [`FigureTheme::dark`]/[`FigureTheme::light`] already use —
+    /// a figure's categorical-series identity stays consistent across
+    /// every built-in theme (the same design choice `dark`/`light` already
+    /// make relative to each other). This preset maximizes CHROME contrast
+    /// (background/axis/grid/label/highlight), not categorical-hue
+    /// distinguishability — a caller specifically wanting colour-blind-
+    /// safe categorical hues alongside this theme should pair it with
+    /// [`crate::scale::color::CategoricalScale::default_palette`] via a
+    /// figure's own `with_category_palette` builder (e.g.
+    /// [`crate::figure::BarFigure::with_category_palette`]), the two
+    /// accessibility concerns (screen contrast vs. hue confusability) are
+    /// independent knobs, not one setting.
+    pub fn high_contrast() -> Self {
+        Self {
+            background: "#000000".to_owned(),
+            axis_color: "#ffffff".to_owned(),
+            grid_color: "#4d4d4d".to_owned(),
+            label_color: "#ffffff".to_owned(),
+            label_font: "11px sans-serif".to_owned(),
+            label_font_family: "sans-serif".to_owned(),
+            palette: PALETTE.iter().map(|&s| s.to_owned()).collect(),
+            positive: POSITIVE_COLOR.to_owned(),
+            negative: NEGATIVE_COLOR.to_owned(),
+            highlight: HIGHLIGHT_HIGH_CONTRAST.to_owned(),
+        }
+    }
 }
 
 impl Default for FigureTheme {
@@ -120,6 +159,7 @@ mod tests {
     fn dark_and_light_both_carry_the_full_palette() {
         assert_eq!(FigureTheme::dark().palette.len(), PALETTE.len());
         assert_eq!(FigureTheme::light().palette.len(), PALETTE.len());
+        assert_eq!(FigureTheme::high_contrast().palette.len(), PALETTE.len());
     }
 
     #[test]
@@ -135,7 +175,7 @@ mod tests {
         // used directly) is imperceptible at low alpha. Every built-in
         // theme's own `highlight` must be a genuinely different color
         // from its own `background`.
-        for theme in [FigureTheme::dark(), FigureTheme::light()] {
+        for theme in [FigureTheme::dark(), FigureTheme::light(), FigureTheme::high_contrast()] {
             assert_ne!(
                 theme.highlight.to_ascii_lowercase(),
                 theme.background.to_ascii_lowercase(),
@@ -144,6 +184,27 @@ mod tests {
                 theme.background
             );
         }
+    }
+
+    #[test]
+    fn high_contrast_uses_pure_black_background_and_pure_white_chrome() {
+        let theme = FigureTheme::high_contrast();
+        assert_eq!(theme.background, "#000000");
+        assert_eq!(theme.axis_color, "#ffffff");
+        assert_eq!(theme.label_color, "#ffffff");
+        assert_ne!(theme.grid_color, theme.background, "grid must remain visible against a pure-black background");
+    }
+
+    #[test]
+    fn high_contrast_shares_the_same_palette_and_semantic_colors_as_dark_and_light() {
+        // Categorical-series identity stays consistent across every
+        // built-in theme — high_contrast maximizes CHROME contrast, not a
+        // different palette.
+        let dark = FigureTheme::dark();
+        let hc = FigureTheme::high_contrast();
+        assert_eq!(hc.palette, dark.palette);
+        assert_eq!(hc.positive, dark.positive);
+        assert_eq!(hc.negative, dark.negative);
     }
 
     #[test]

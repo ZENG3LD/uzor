@@ -1,10 +1,15 @@
 //! Scale layer — domain (data space) <-> normalized `[0, 1]` <-> (via
 //! [`crate::coord::PlotArea`]) screen pixels.
 //!
-//! One [`Scale`] trait, four domain<->normalized-range implementations:
+//! One [`Scale`] trait, six domain<->normalized-range implementations:
 //! [`LinearScale`], [`LogScale`], [`BandScale`], [`TimeScale`]
 //! (calendar-aware tick generation, harvested from mlc's ~1900-line module
-//! — see [`mod@time`]'s own docs for exactly what was ported/dropped).
+//! — see [`mod@time`]'s own docs for exactly what was ported/dropped),
+//! [`SymlogScale`] (linear near zero, log beyond — the scale [`LogScale`]
+//! cannot substitute for once data crosses zero or goes negative; see
+//! [`mod@symlog`]'s own docs), and [`PowScale`] (sign-preserving exponent
+//! mapping, e.g. [`PowScale::sqrt`] for area-to-value bubble-radius
+//! encoding; see [`mod@pow`]'s own docs).
 //!
 //! [`color::ColorScale`] is a DIFFERENT kind of scale — continuous value
 //! -> CSS hex color (not -> normalized `[0, 1]`), so it does not implement
@@ -12,26 +17,42 @@
 //! domain-mapping primitive over the same "figures need a value ->
 //! something" shape, driving heatmap/business-chart color encoding (see
 //! `color`'s own module docs for the OKLCH machinery it reuses).
+//! [`color::CategoricalScale`] is the DISCRETE sibling of `ColorScale` —
+//! value(index) -> one of N distinct category hues, never interpolated
+//! (see `color`'s own module doc for why it's a separate type).
 //!
-//! [`format::NumberFormat`] is a THIRD kind of primitive again — value ->
-//! display STRING (not -> `[0, 1]`, not -> color) — used by axis tick
-//! labels ([`crate::guide::axis::draw_x_axis_formatted`]/
+//! [`bin::ClassScale`] (implemented by [`bin::QuantizeScale`]/
+//! [`bin::ThresholdScale`]/[`bin::QuantileScale`]) is a FOURTH kind of
+//! primitive — continuous value -> discrete class INDEX (not -> `[0, 1]`,
+//! not -> color) — the foundation for risk/class colouring and for a
+//! legend that reads as classes rather than a ramp; see [`mod@bin`]'s own
+//! docs for the three flavors and the output-type justification.
+//!
+//! [`format::NumberFormat`] is a FIFTH kind of primitive again — value ->
+//! display STRING (not -> `[0, 1]`, not -> color, not -> class index) —
+//! used by axis tick labels ([`crate::guide::axis::draw_x_axis_formatted`]/
 //! `draw_y_axis_formatted`) and any other caller wanting Si/Percent/
 //! Currency-formatted numbers instead of this crate's default thousands-
 //! grouped decimal (see `format`'s own module docs).
 
 pub mod band;
+pub mod bin;
 pub mod color;
 pub mod format;
 pub mod linear;
 pub mod log;
+pub mod pow;
+pub mod symlog;
 pub mod time;
 
 pub use band::BandScale;
-pub use color::ColorScale;
+pub use bin::{ClassScale, QuantileScale, QuantizeScale, ThresholdScale};
+pub use color::{CategoricalScale, ColorScale};
 pub use format::NumberFormat;
 pub use linear::LinearScale;
 pub use log::LogScale;
+pub use pow::PowScale;
+pub use symlog::SymlogScale;
 pub use time::TimeScale;
 
 /// One tick mark: a domain value plus its display label.

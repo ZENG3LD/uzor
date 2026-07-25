@@ -65,13 +65,16 @@ pub use guide::axis::{
     measure_y_axis_gutter, rotated_label_extent, AxisTickWeightStyle, LabelOverflow, AUTO_ROTATE_DEGREES, AUTO_ROTATE_DROP_THRESHOLD,
 };
 pub use guide::grid::{draw_x_grid_weighted, draw_y_grid_weighted, GridTickWeightStyle};
-pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
+pub use guide::colorbar::{draw_colorbar, draw_discrete_colorbar, measure_colorbar, measure_discrete_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
-pub use guide::legend::{LegendEntry, LegendPosition, LegendSymbol};
+pub use guide::legend::{entries_from_class_scale, LegendEntry, LegendPosition, LegendSymbol};
 pub use guide::wrap::{truncate_ellipsis, wrap_text};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::{GapPolicy, LineCap, LineJoin, MarkStyle};
-pub use scale::{BandScale, ColorScale, LinearScale, LogScale, NumberFormat, Scale, Tick, TimeScale};
+pub use scale::{
+    BandScale, CategoricalScale, ClassScale, ColorScale, LinearScale, LogScale, NumberFormat, PowScale, QuantileScale, QuantizeScale,
+    Scale, SymlogScale, ThresholdScale, Tick, TimeScale,
+};
 pub use theme::FigureTheme;
 pub use transform::lttb;
 
@@ -90,11 +93,12 @@ mod proof_tests {
     use crate::theme::FigureTheme;
     use crate::transform::lttb;
     use crate::{
-        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, ColorScale, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode,
-        FocusSet, GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow, LegendEntry, LegendPosition,
-        LegendSymbol, LinearScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius, SankeyFigure, SankeyLink,
-        SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
-        draw_annotation_overlays, draw_annotation_underlays, draw_colorbar,
+        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CategoricalScale, ClassScale, ColorScale, CurveFigure, CurveSeries,
+        DagEdge, DagFigure, DagNode, FocusSet, GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow,
+        LegendEntry, LegendPosition, LegendSymbol, LinearScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius,
+        QuantizeScale, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, SymlogScale, TimeScale, TimelineEvent,
+        TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, draw_annotation_overlays, draw_annotation_underlays, draw_colorbar,
+        draw_discrete_colorbar, entries_from_class_scale, measure_discrete_colorbar,
     };
 
     const WIDTH: u32 = 800;
@@ -1925,5 +1929,181 @@ mod proof_tests {
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_tooltip_guide_backends.png"))
             .expect("tooltip guide multi-backend composite should write");
         assert!(diff.all_within_budget(), "tooltip: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    // ── Engine-strengthening WAVE 4a (missing scale kinds + categorical
+    // palette) — multi-backend proofs ─────────────────────────────────
+
+    /// Deterministic 41-point fixture whose X values are deliberately
+    /// symmetric-log-shaped (dense near zero, spreading out to +-100,000
+    /// across 5 decades either side) — the exact data shape
+    /// [`LogScale`](crate::scale::LogScale) cannot represent (it floors
+    /// every non-positive value) and [`SymlogScale`] exists for (a money-
+    /// flow/P&L/delta series spanning zero across orders of magnitude).
+    /// Fixed formula, no RNG/time.
+    fn seeded_symlog_curve_figure() -> CurveFigure {
+        let mut running = 0.0;
+        let points: Vec<(f64, f64)> = (-20..=20_i32)
+            .map(|i| {
+                let x = if i == 0 { 0.0 } else { (i as f64).signum() * 10.0_f64.powf((i as f64).abs() / 4.0) };
+                let step = ((i * 13 + 7) % 19) as f64 - 9.0;
+                running += step;
+                (x, running)
+            })
+            .collect();
+        let x_min = points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let x_max = points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+        CurveFigure::new(points)
+            .with_title("SymlogScale X-axis (seeded, spans zero across 5 decades)")
+            .with_x_scale(SymlogScale::new(x_min, x_max))
+    }
+
+    /// `SymlogScale` proof — a real [`CurveFigure`] wired via
+    /// `with_x_scale` (the SAME "accept any `Scale` impl" extension point
+    /// [`TimeScale`] already proved out) over data that genuinely crosses
+    /// zero across orders of magnitude.
+    #[test]
+    fn symlog_scale_curve_figure_multi_backend_divergence_proof() {
+        let figure = seeded_symlog_curve_figure();
+        let theme = FigureTheme::dark();
+        let panel_w = 700.0;
+        let panel_h = 400.0;
+
+        let render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[symlog-scale] {line}");
+        }
+        print_urx_gpu_degrades("symlog-scale", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_symlog_backends.png"))
+            .expect("symlog-scale multi-backend composite should write");
+        assert!(diff.all_within_budget(), "symlog X-axis CurveFigure: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Deterministic 10-category fixture spanning `[0, 100)` — fixed
+    /// formula, no RNG.
+    fn seeded_binned_bar_values() -> (Vec<String>, Vec<f64>) {
+        let categories: Vec<String> = (0..10).map(|i| format!("region-{i}")).collect();
+        let values: Vec<f64> = (0..10).map(|i| 5.0 + ((i as f64 * 37.0) % 95.0)).collect();
+        (categories, values)
+    }
+
+    /// `QuantizeScale` + discrete legend/colorbar proof — bars colored by
+    /// which of 4 uniform-width VALUE CLASSES each one falls into (a
+    /// risk/class-coloring use case, not the continuous per-series color a
+    /// plain [`BarFigure`] would use), with BOTH new discrete-swatch guide
+    /// entry points this wave adds: [`entries_from_class_scale`] feeding
+    /// the EXISTING [`crate::guide::legend::draw_legend`] pipeline, and
+    /// [`draw_discrete_colorbar`] (the banded, non-gradient sibling of
+    /// [`draw_colorbar`]) — both driven by the SAME [`QuantizeScale`] and
+    /// class-color list, so the legend and colorbar agree on every class's
+    /// own color.
+    #[test]
+    fn quantize_scale_binned_bars_with_discrete_legend_multi_backend_divergence_proof() {
+        let (categories, values) = seeded_binned_bar_values();
+        let theme = FigureTheme::dark();
+        let quantize = QuantizeScale::new(0.0, 100.0, 4);
+        // Low -> high class colors, deliberately NOT theme.palette (a
+        // caller's own risk-tier ramp) — proves `entries_from_class_scale`/
+        // `draw_discrete_colorbar` both honor caller-supplied colors.
+        let class_colors: Vec<String> =
+            vec!["#2f6f4f".to_owned(), "#c9a227".to_owned(), "#c9662f".to_owned(), "#a4302f".to_owned()];
+
+        let panel_w = 700.0;
+        let panel_h = 320.0;
+        let plot_rect = Rect::new(60.0, 20.0, 400.0, panel_h - 60.0);
+        let band = crate::scale::BandScale::new(categories, 0.2);
+        let y_scale = LinearScale::new(0.0, 100.0);
+        let area = PlotArea::new(plot_rect);
+
+        let render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            crate::guide::grid::draw_y_grid(ctx, &area, &y_scale, &theme, 5);
+            for (i, &v) in values.iter().enumerate() {
+                let (x0, x1) = area.x_band(&band, i);
+                let y_top = area.y(&y_scale, v);
+                let y_base = area.y(&y_scale, 0.0);
+                let class = quantize.class_index(v);
+                ctx.set_fill_color(&class_colors[class % class_colors.len()]);
+                ctx.fill_rect(x0, y_top.min(y_base), (x1 - x0).max(0.0), (y_base - y_top).abs());
+            }
+            crate::guide::axis::draw_x_axis(ctx, &area, &band, &theme, band.len());
+            crate::guide::axis::draw_y_axis(ctx, &area, &y_scale, &theme, 5);
+
+            // Measure BOTH discrete-swatch guides before placing them
+            // (this crate's own design law #1 discipline) so the
+            // colorbar's own class labels never collide with the
+            // legend's — `measure_discrete_colorbar`/`measure_legend`
+            // both need a live `ctx`, so this layout step happens INSIDE
+            // the capture closure, same as every real figure's own
+            // `render_with`.
+            let entries = entries_from_class_scale(&theme, &quantize, &class_colors);
+            let legend_size = crate::guide::legend::measure_legend(ctx, &theme, &entries, LegendPosition::Right, 160.0, panel_h - 40.0);
+            let legend_rect = Rect::new(panel_w - 20.0 - legend_size.width, 20.0, legend_size.width, legend_size.height.max(1.0));
+            crate::guide::legend::draw_legend(ctx, legend_rect, &theme, &entries, LegendPosition::Right);
+
+            let colorbar_size = measure_discrete_colorbar(ctx, &theme, &quantize);
+            let colorbar_rect = Rect::new(legend_rect.x - 20.0 - colorbar_size.width, 20.0, colorbar_size.width, panel_h - 60.0);
+            draw_discrete_colorbar(ctx, colorbar_rect, &theme, &quantize, &class_colors);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[binning-scale-legend] {line}");
+        }
+        print_urx_gpu_degrades("binning-scale-legend", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_binning_legend_backends.png"))
+            .expect("binning-scale discrete legend multi-backend composite should write");
+        assert!(diff.all_within_budget(), "binning-scale discrete legend: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Deterministic 8-slice fixture — fixed values, no RNG.
+    fn seeded_categorical_pie_slices() -> Vec<PieSlice> {
+        vec![
+            PieSlice { label: "alpha".to_owned(), value: 30.0 },
+            PieSlice { label: "beta".to_owned(), value: 25.0 },
+            PieSlice { label: "gamma".to_owned(), value: 20.0 },
+            PieSlice { label: "delta".to_owned(), value: 15.0 },
+            PieSlice { label: "epsilon".to_owned(), value: 12.0 },
+            PieSlice { label: "zeta".to_owned(), value: 9.0 },
+            PieSlice { label: "eta".to_owned(), value: 6.0 },
+            PieSlice { label: "theta".to_owned(), value: 3.0 },
+        ]
+    }
+
+    /// `CategoricalScale::default_palette` proof — two panels, SAME 8
+    /// slices: LEFT is this figure's own pre-existing default
+    /// (`theme.palette` indexing, unchanged); RIGHT opts into
+    /// [`PieFigure::with_category_palette`]`(CategoricalScale::
+    /// default_palette())`, the colour-blind-safe Okabe-Ito set — proves
+    /// the option is real, reachable, and visibly distinct from the
+    /// default identity, without that default having changed.
+    #[test]
+    fn categorical_scale_default_palette_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let panel_w = 380.0;
+        let panel_h = 420.0;
+
+        let default_fig =
+            PieFigure::new(seeded_categorical_pie_slices()).with_title("theme.palette (default)").with_legend(LegendPosition::Right);
+        let categorical_fig = PieFigure::new(seeded_categorical_pie_slices())
+            .with_title("CategoricalScale::default_palette (Okabe-Ito)")
+            .with_legend(LegendPosition::Right)
+            .with_category_palette(CategoricalScale::default_palette());
+
+        let render = MultiLegRender::capture((panel_w * 2.0) as u32, panel_h as u32, |ctx| {
+            default_fig.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+            categorical_fig.render(ctx, Rect::new(panel_w, 0.0, panel_w, panel_h), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[categorical-palette] {line}");
+        }
+        print_urx_gpu_degrades("categorical-palette", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_categorical_palette_backends.png"))
+            .expect("categorical palette multi-backend composite should write");
+        assert!(diff.all_within_budget(), "categorical palette pie figure: structural backend divergence beyond the generous AA/text tolerance");
     }
 }

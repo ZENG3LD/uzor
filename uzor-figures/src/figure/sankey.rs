@@ -22,6 +22,7 @@ use uzor::types::Rect;
 use crate::figure::FigureOverlay;
 use crate::guide::tooltip;
 use crate::mark::text::{draw_label_left_aligned, draw_label_right_aligned};
+use crate::scale::CategoricalScale;
 use crate::theme::FigureTheme;
 
 const MARGIN_LEFT: f64 = 12.0;
@@ -345,10 +346,17 @@ pub fn hit_test_node(layout: &SankeyLayout, px: f64, py: f64) -> Option<usize> {
     layout.node_rects.iter().position(|r| r.contains(px, py))
 }
 
-/// `theme.palette[kind % palette.len()]`, guarded against a degenerate
-/// empty custom theme — same convention as
-/// [`crate::figure::timeline::palette_color`].
-fn palette_color<'a>(theme: &'a FigureTheme, kind: usize) -> &'a str {
+/// `palette.color_for(kind)` when an explicit [`CategoricalScale`] override
+/// is given; otherwise `theme.palette[kind % palette.len()]`, guarded
+/// against a degenerate empty custom theme — same convention as
+/// [`crate::figure::timeline::palette_color`]. This figure's own
+/// `kind`-indexed ribbon/accent color resolver — see
+/// [`SankeyFigure::with_category_palette`]'s own doc comment for why
+/// `kind` (not node identity) is this figure's real "categorical" axis.
+fn palette_color<'a>(theme: &'a FigureTheme, palette: Option<&'a CategoricalScale>, kind: usize) -> &'a str {
+    if let Some(p) = palette {
+        return p.color_for(kind);
+    }
     if theme.palette.is_empty() {
         return &theme.axis_color;
     }
@@ -361,15 +369,33 @@ pub struct SankeyFigure {
     pub nodes: Vec<SankeyNode>,
     pub links: Vec<SankeyLink>,
     pub title: String,
+    /// This figure's own per-[`SankeyLink::kind`] ribbon color source —
+    /// see [`SankeyFigure::with_category_palette`]. Default (unset)
+    /// reproduces this figure's pre-existing `theme.palette[kind %
+    /// theme.palette.len()]` ribbon-color indexing byte-for-byte.
+    category_palette: Option<CategoricalScale>,
 }
 
 impl SankeyFigure {
     pub fn new(nodes: Vec<SankeyNode>, links: Vec<SankeyLink>) -> Self {
-        Self { nodes, links, title: String::new() }
+        Self { nodes, links, title: String::new(), category_palette: None }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    /// Override this figure's per-[`SankeyLink::kind`] ribbon color source
+    /// — see [`crate::scale::CategoricalScale`]'s own doc comment. Default
+    /// (unset) is `None`, byte-identical to this figure's pre-existing
+    /// `theme.palette[kind % theme.palette.len()]` indexing. This figure's
+    /// NODES are always drawn in the theme's neutral `label_color` (never
+    /// category-colored, by this figure's own pre-existing design); `kind`
+    /// (the ribbon/link classification) is this figure's real
+    /// "categorical" axis, so that's what this builder overrides.
+    pub fn with_category_palette(mut self, palette: CategoricalScale) -> Self {
+        self.category_palette = Some(palette);
         self
     }
 
@@ -475,7 +501,7 @@ impl SankeyFigure {
                 Some(_) if touches_hovered => RIBBON_HOVER_ALPHA,
                 Some(_) => RIBBON_DIM_ALPHA,
             };
-            ctx.set_fill_color(palette_color(theme, link.kind));
+            ctx.set_fill_color(palette_color(theme, self.category_palette.as_ref(), link.kind));
             ctx.set_global_alpha(alpha);
             draw_ribbon_path(ctx, ribbon);
             ctx.fill();
@@ -510,7 +536,7 @@ impl SankeyFigure {
 
             if let Some(focus) = overlay.focus {
                 if focus.is_selected(i as u64) {
-                    ctx.set_stroke_color(palette_color(theme, 1));
+                    ctx.set_stroke_color(palette_color(theme, self.category_palette.as_ref(), 1));
                     ctx.set_stroke_width(SELECTED_STROKE_WIDTH);
                     ctx.stroke_rounded_rect(r.x, r.y, r.width, r.height, NODE_CORNER_RADIUS);
                 }
@@ -716,5 +742,34 @@ mod tests {
         let cy = r.y + r.height / 2.0;
         assert_eq!(hit_test_node(&layout, cx, cy), Some(1));
         assert_eq!(hit_test_node(&layout, -1000.0, -1000.0), None);
+    }
+
+    // ── category_palette (Wave 4a) ──────────────────────────────────────
+
+    #[test]
+    fn default_category_palette_is_unset_and_ribbon_color_uses_theme_palette() {
+        let theme = FigureTheme::dark();
+        assert_eq!(palette_color(&theme, None, 2), theme.palette[2 % theme.palette.len()]);
+    }
+
+    #[test]
+    fn with_category_palette_routes_ribbon_color_through_the_explicit_palette() {
+        let theme = FigureTheme::dark();
+        let palette = CategoricalScale::default_palette();
+        assert_eq!(palette_color(&theme, Some(&palette), 2), palette.color_for(2));
+        assert_ne!(palette_color(&theme, Some(&palette), 2), theme.palette[2 % theme.palette.len()]);
+    }
+
+    #[test]
+    fn with_category_palette_renders_without_panicking() {
+        let nodes = vec![node("a", 0), node("b", 1)];
+        let links = vec![link(0, 1, 5.0, 0)];
+        let figure = SankeyFigure::new(nodes, links).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let spec = uzor_export::ExportSpec { width_px: 200, height_px: 120, dpr: 1.0, background: None };
+        let result = uzor_export::render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 200.0, 120.0), &theme);
+        });
+        assert!(result.is_ok());
     }
 }

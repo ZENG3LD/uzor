@@ -35,6 +35,7 @@ use crate::figure::FigureOverlay;
 use crate::guide::tooltip;
 use crate::guide::wrap::truncate_ellipsis;
 use crate::mark::text::draw_label_centered;
+use crate::scale::CategoricalScale;
 use crate::theme::FigureTheme;
 
 const MARGIN: f64 = 12.0;
@@ -222,11 +223,16 @@ pub struct DagFigure {
     /// fallback-root rule used when this is empty (the default).
     roots: Vec<usize>,
     pub title: String,
+    /// This figure's own per-category node color source — see
+    /// [`DagFigure::with_category_palette`]. Default (unset) reproduces
+    /// this figure's pre-existing `theme.palette[cat % theme.palette.len()]`
+    /// node-color indexing byte-for-byte.
+    category_palette: Option<CategoricalScale>,
 }
 
 impl DagFigure {
     pub fn new(nodes: Vec<DagNode>, edges: Vec<DagEdge>) -> Self {
-        Self { nodes, edges, roots: Vec::new(), title: String::new() }
+        Self { nodes, edges, roots: Vec::new(), title: String::new(), category_palette: None }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -239,6 +245,15 @@ impl DagFigure {
     /// docs.
     pub fn with_roots(mut self, roots: Vec<usize>) -> Self {
         self.roots = roots;
+        self
+    }
+
+    /// Override this figure's per-[`DagNode::category`] color source — see
+    /// [`crate::scale::CategoricalScale`]'s own doc comment. Default
+    /// (unset) is `None`, byte-identical to this figure's pre-existing
+    /// `theme.palette[cat % theme.palette.len()]` node-color indexing.
+    pub fn with_category_palette(mut self, palette: CategoricalScale) -> Self {
+        self.category_palette = Some(palette);
         self
     }
 
@@ -266,9 +281,10 @@ impl DagFigure {
         layout_dag(&self.nodes, &self.edges, &self.roots, self.plot_rect(rect))
     }
 
-    fn node_color<'a>(&self, theme: &'a FigureTheme, i: usize) -> &'a str {
-        match self.nodes.get(i).and_then(|n| n.category) {
-            Some(cat) if !theme.palette.is_empty() => &theme.palette[cat % theme.palette.len()],
+    fn node_color<'a>(&'a self, theme: &'a FigureTheme, i: usize) -> &'a str {
+        match (self.nodes.get(i).and_then(|n| n.category), &self.category_palette) {
+            (Some(cat), Some(palette)) => palette.color_for(cat),
+            (Some(cat), None) if !theme.palette.is_empty() => &theme.palette[cat % theme.palette.len()],
             _ => &theme.label_color,
         }
     }
@@ -585,5 +601,42 @@ mod tests {
             figure.render_with(ctx, rect, &theme, &overlay);
         });
         assert!(result.is_ok(), "a small DAG with hover + focus overlay must render without panicking");
+    }
+
+    #[test]
+    fn default_category_palette_is_unset_and_node_color_uses_theme_palette() {
+        let mut categorized = node("a");
+        categorized.category = Some(2);
+        let figure = DagFigure::new(vec![categorized], Vec::new());
+        let theme = FigureTheme::dark();
+        assert_eq!(figure.node_color(&theme, 0), theme.palette[2 % theme.palette.len()]);
+    }
+
+    #[test]
+    fn with_category_palette_routes_node_color_through_the_explicit_palette() {
+        let mut categorized = node("a");
+        categorized.category = Some(2);
+        let palette = CategoricalScale::default_palette();
+        let figure = DagFigure::new(vec![categorized], Vec::new()).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        assert_eq!(figure.node_color(&theme, 0), palette.color_for(2));
+        assert_ne!(figure.node_color(&theme, 0), theme.palette[2 % theme.palette.len()]);
+    }
+
+    #[test]
+    fn with_category_palette_renders_without_panicking() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let nodes = vec![node("a"), node("b")].into_iter().enumerate().map(|(i, mut n)| {
+            n.category = Some(i);
+            n
+        }).collect();
+        let figure = DagFigure::new(nodes, vec![edge(0, 1)]).with_category_palette(CategoricalScale::default_palette());
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 200, height_px: 120, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 200.0, 120.0), &theme);
+        });
+        assert!(result.is_ok());
     }
 }

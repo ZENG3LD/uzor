@@ -61,6 +61,7 @@ use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
 use crate::interact::focus::FocusSet;
+use crate::scale::CategoricalScale;
 use crate::theme::FigureTheme;
 
 /// Borrowed per-frame interaction state a figure may optionally react to.
@@ -197,6 +198,27 @@ pub fn resolve_tick_count(policy: TickCountPolicy, available_px: f64) -> usize {
     }
 }
 
+/// Resolve category `index`'s own color: `Some(palette)` routes through
+/// [`CategoricalScale::color_for`] (Wave 4a's opt-in colour-blind-safe
+/// categorical identity — see that type's own doc comment); `None`
+/// reproduces this crate's pre-existing `theme.palette[index %
+/// theme.palette.len()]` indexing byte-for-byte, guarded the SAME way
+/// every pre-existing "degenerate empty theme.palette" check in this
+/// crate already is (falls back to `theme.label_color`, never divides by
+/// zero). Shared by every figure exposing an OPT-IN
+/// `with_category_palette` builder ([`BarFigure`]/[`PieFigure`]/
+/// [`DagFigure`]/[`SankeyFigure`]) — per this crate's own binding
+/// doctrine, a new categorical color identity is a real, explicit option;
+/// every figure's own DEFAULT (`None`) renders EXACTLY as before this
+/// item, nothing changes silently.
+pub(crate) fn category_color<'a>(theme: &'a FigureTheme, palette: Option<&'a CategoricalScale>, index: usize) -> &'a str {
+    match palette {
+        Some(p) => p.color_for(index),
+        None if theme.palette.is_empty() => &theme.label_color,
+        None => &theme.palette[index % theme.palette.len()],
+    }
+}
+
 /// Left inset (px) of a figure's own title from `rect.x` — see
 /// [`draw_title`]'s own doc comment for why this is larger than the
 /// pre-existing `8.0`.
@@ -232,4 +254,28 @@ pub(crate) fn draw_title(ctx: &mut dyn RenderContext, rect: Rect, title: &str, t
     ctx.set_text_align(TextAlign::Left);
     ctx.set_text_baseline(TextBaseline::Top);
     ctx.fill_text(title, rect.x + TITLE_LEFT_INSET, rect.y + TITLE_TOP_INSET);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_color_defaults_to_theme_palette_indexing() {
+        let theme = FigureTheme::dark();
+        assert_eq!(category_color(&theme, None, 0), theme.palette[0]);
+        assert_eq!(category_color(&theme, None, theme.palette.len()), theme.palette[0], "must cycle via modulo past the palette length");
+    }
+
+    #[test]
+    fn category_color_routes_through_an_explicit_categorical_palette_when_given() {
+        let theme = FigureTheme::dark();
+        let palette = CategoricalScale::default_palette();
+        assert_eq!(category_color(&theme, Some(&palette), 0), palette.color_for(0));
+        assert_ne!(
+            category_color(&theme, Some(&palette), 0),
+            category_color(&theme, None, 0),
+            "an explicit categorical palette must NOT silently fall back to theme.palette's own indexing"
+        );
+    }
 }

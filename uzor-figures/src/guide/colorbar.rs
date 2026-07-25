@@ -16,6 +16,7 @@ use uzor::types::Rect;
 
 use crate::scale::color::ColorScale;
 use crate::scale::linear::format_value;
+use crate::scale::ClassScale;
 use crate::theme::FigureTheme;
 
 const BAR_WIDTH: f64 = 14.0;
@@ -86,6 +87,69 @@ pub fn draw_colorbar(ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureThem
     ctx.fill_text(&format_value(min, 1.0), bar_x + BAR_WIDTH + TICK_GAP, bar_y + bar_h);
 }
 
+/// Measure a discrete colorbar for `scale`'s own classes — call BEFORE
+/// painting, same discipline as [`measure_colorbar`]. Reserves space for
+/// the WIDEST class label (`scale.class_label(i)` over every class), not
+/// just the two domain endpoints a continuous [`measure_colorbar`] reserves
+/// for.
+pub fn measure_discrete_colorbar(ctx: &mut dyn RenderContext, theme: &FigureTheme, scale: &dyn ClassScale) -> ColorbarSize {
+    ctx.set_font(&theme.label_font);
+    let n = scale.class_count();
+    let widest = (0..n).map(|i| ctx.measure_text(&scale.class_label(i))).fold(0.0_f64, f64::max);
+    ColorbarSize { width: PAD + BAR_WIDTH + TICK_GAP + widest }
+}
+
+/// The discrete-class counterpart of [`draw_colorbar`] — `scale.
+/// class_count()` STACKED SOLID swatches (never a gradient — a binning
+/// scale's whole point is that its output is a CLASS, not a continuously
+/// interpolated ramp position) with each class's own [`ClassScale::
+/// class_label`] beside it, wired into [`crate::guide::legend`]/this
+/// module the same way [`crate::guide::legend::entries_from_class_scale`]
+/// wires a binning scale into the discrete swatch LIST — this is the
+/// vertical-bar sibling of that same "present a binning scale as discrete
+/// classes, not a ramp" capability.
+///
+/// Class `0` (the LOWEST class) draws at the BOTTOM, the highest class at
+/// the TOP — the same "max at top, min at bottom" convention
+/// [`draw_colorbar`] already uses (matches [`crate::coord::PlotArea::y`]'s
+/// own "larger value plots higher" convention). `colors` supplies each
+/// class's own swatch fill, cycling via `index % colors.len()` once
+/// `scale.class_count()` exceeds `colors.len()` — same modulo policy
+/// [`crate::guide::legend::entries_from_class_scale`] documents; an empty
+/// `colors` slice falls back to `theme.palette`.
+pub fn draw_discrete_colorbar(ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme, scale: &dyn ClassScale, colors: &[String]) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let n = scale.class_count().max(1);
+    let bar_x = rect.x;
+    let bar_y = rect.y;
+    let swatch_h = rect.height / n as f64;
+    let color_source: &[String] = if colors.is_empty() { &theme.palette } else { colors };
+    let len = color_source.len().max(1);
+
+    ctx.set_font(&theme.label_font);
+    ctx.set_text_align(TextAlign::Left);
+    ctx.set_text_baseline(TextBaseline::Middle);
+
+    for i in 0..n {
+        // Class `i == 0` is the LOWEST class -> bottom row on screen;
+        // class `n - 1` is the highest -> top row.
+        let row_from_top = n - 1 - i;
+        let y0 = bar_y + row_from_top as f64 * swatch_h;
+        let color = color_source.get(i % len).map(String::as_str).unwrap_or("#808080");
+
+        ctx.set_fill_color(color);
+        ctx.fill_rect(bar_x, y0, BAR_WIDTH, swatch_h);
+        ctx.set_stroke_color(&theme.axis_color);
+        ctx.set_stroke_width(1.0);
+        ctx.stroke_rect(bar_x, y0, BAR_WIDTH, swatch_h);
+
+        ctx.set_fill_color(&theme.label_color);
+        ctx.fill_text(&scale.class_label(i), bar_x + BAR_WIDTH + TICK_GAP, y0 + swatch_h / 2.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +176,75 @@ mod tests {
         let result = render_to_png(&spec, |ctx| {
             draw_colorbar(ctx, Rect::new(10.0, 10.0, 60.0, 150.0), &theme, &scale);
             draw_colorbar(ctx, Rect::new(0.0, 0.0, 0.0, 0.0), &theme, &scale);
+        });
+        assert!(result.is_ok());
+    }
+
+    // ── discrete colorbar (binning scale) ───────────────────────────────
+
+    #[test]
+    fn measure_discrete_colorbar_reserves_a_positive_width() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 5);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut size = ColorbarSize::default();
+        render_to_png(&spec, |ctx| {
+            size = measure_discrete_colorbar(ctx, &theme, &scale);
+        })
+        .expect("render");
+        assert!(size.width > BAR_WIDTH);
+    }
+
+    #[test]
+    fn draw_discrete_colorbar_renders_without_panicking_including_a_degenerate_rect() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(-50.0, 150.0, 5);
+        let colors: Vec<String> = vec!["#111111".to_owned(), "#222222".to_owned(), "#333333".to_owned(), "#444444".to_owned(), "#555555".to_owned()];
+        let spec = ExportSpec { width_px: 200, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            draw_discrete_colorbar(ctx, Rect::new(10.0, 10.0, 60.0, 150.0), &theme, &scale, &colors);
+            draw_discrete_colorbar(ctx, Rect::new(0.0, 0.0, 0.0, 0.0), &theme, &scale, &colors);
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn draw_discrete_colorbar_is_visibly_banded_not_a_smooth_ramp() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 3);
+        let colors: Vec<String> = vec!["#000000".to_owned(), "#808080".to_owned(), "#ffffff".to_owned()];
+        let spec = ExportSpec { width_px: 100, height_px: 90, dpr: 1.0, background: None };
+        let discrete = render_to_png(&spec, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, 100.0, 90.0);
+            draw_discrete_colorbar(ctx, Rect::new(10.0, 10.0, 60.0, 70.0), &theme, &scale, &colors);
+        })
+        .expect("discrete render");
+        let continuous = render_to_png(&spec, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, 100.0, 90.0);
+            let ramp = ColorScale::sequential_colors(0.0, 100.0, &["#000000", "#808080", "#ffffff"]);
+            draw_colorbar(ctx, Rect::new(10.0, 10.0, 60.0, 70.0), &theme, &ramp);
+        })
+        .expect("continuous render");
+        assert_ne!(discrete, continuous, "a discrete banded colorbar must render visibly differently from a smooth gradient ramp over comparable colors");
+    }
+
+    #[test]
+    fn discrete_colorbar_falls_back_to_theme_palette_for_empty_colors() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 3);
+        let spec = ExportSpec { width_px: 100, height_px: 90, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            draw_discrete_colorbar(ctx, Rect::new(10.0, 10.0, 60.0, 70.0), &theme, &scale, &[]);
         });
         assert!(result.is_ok());
     }

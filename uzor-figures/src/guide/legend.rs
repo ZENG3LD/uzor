@@ -23,6 +23,7 @@
 use uzor::render::{CircleBatch, RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
+use crate::scale::ClassScale;
 use crate::theme::FigureTheme;
 
 const SWATCH_SIZE: f64 = 12.0;
@@ -65,6 +66,33 @@ pub enum LegendPosition {
     Top,
     Bottom,
     Right,
+}
+
+/// Build one [`LegendEntry`] per class of `scale` (a
+/// [`crate::scale::QuantizeScale`]/[`crate::scale::ThresholdScale`]/
+/// [`crate::scale::QuantileScale`]) — the discrete-class counterpart of
+/// [`crate::guide::colorbar::draw_colorbar`]'s continuous ramp, letting a
+/// binning scale present its classes as swatches through this crate's
+/// EXISTING measure/wrap/draw legend machinery instead of a bespoke
+/// discrete-swatch renderer (design law: reuse before rebuild). Each
+/// entry's label is `scale.class_label(i)` (e.g. `"10 – 20"`, `"< 5"`,
+/// `">= 90"`); `colors` supplies the per-class swatch color, CYCLING via
+/// `index % colors.len()` once `scale.class_count()` exceeds `colors.len()`
+/// (the SAME modulo convention [`crate::scale::color::CategoricalScale::
+/// color_for`] documents). An empty `colors` slice falls back to
+/// `theme.palette` — a caller can pass `&[]` to reuse this crate's own
+/// default categorical identity without constructing a palette first.
+pub fn entries_from_class_scale(theme: &FigureTheme, scale: &dyn ClassScale, colors: &[String]) -> Vec<LegendEntry> {
+    let fallback = &theme.palette;
+    let source: &[String] = if colors.is_empty() { fallback } else { colors };
+    let len = source.len().max(1);
+    (0..scale.class_count())
+        .map(|i| LegendEntry {
+            label: scale.class_label(i),
+            color: source.get(i % len).cloned().unwrap_or_else(|| "#808080".to_owned()),
+            symbol: LegendSymbol::Square,
+        })
+        .collect()
 }
 
 /// A legend's measured reserved size — the figure shrinks its plot rect by
@@ -387,6 +415,64 @@ mod tests {
             draw_legend(ctx, Rect::new(10.0, 10.0, 380.0, size.height), &theme, &entries, LegendPosition::Top);
         });
         assert!(result.is_ok());
+    }
+
+    // ── entries_from_class_scale (binning scale -> discrete legend) ────
+
+    #[test]
+    fn entries_from_class_scale_labels_and_colors_each_class() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 4);
+        let colors: Vec<String> = vec!["#111111".to_owned(), "#222222".to_owned(), "#333333".to_owned(), "#444444".to_owned()];
+        let entries = entries_from_class_scale(&theme, &scale, &colors);
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].color, "#111111");
+        assert_eq!(entries[3].color, "#444444");
+        assert!(entries.iter().all(|e| !e.label.is_empty()));
+        assert!(entries.iter().all(|e| e.symbol == LegendSymbol::Square));
+    }
+
+    #[test]
+    fn entries_from_class_scale_cycles_colors_shorter_than_class_count() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 5);
+        let colors: Vec<String> = vec!["#aa0000".to_owned(), "#00bb00".to_owned()];
+        let entries = entries_from_class_scale(&theme, &scale, &colors);
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[0].color, "#aa0000");
+        assert_eq!(entries[1].color, "#00bb00");
+        assert_eq!(entries[2].color, "#aa0000", "color must cycle back to the start once colors run out");
+    }
+
+    #[test]
+    fn entries_from_class_scale_falls_back_to_theme_palette_for_empty_colors() {
+        use crate::scale::QuantizeScale;
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(0.0, 100.0, 3);
+        let entries = entries_from_class_scale(&theme, &scale, &[]);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].color, theme.palette[0]);
+    }
+
+    #[test]
+    fn entries_from_class_scale_renders_through_the_existing_legend_pipeline() {
+        use crate::scale::QuantizeScale;
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let theme = FigureTheme::dark();
+        let scale = QuantizeScale::new(-50.0, 150.0, 5);
+        let entries = entries_from_class_scale(&theme, &scale, &[]);
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            let size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 280.0, 180.0);
+            draw_legend(ctx, Rect::new(10.0, 10.0, size.width, size.height), &theme, &entries, LegendPosition::Right);
+        });
+        assert!(result.is_ok(), "a binning scale's discrete legend must render through the existing legend guide without panicking");
     }
 
     #[test]
