@@ -129,6 +129,15 @@ impl ToolbarItemDef {
         }
     }
 
+    /// Suppress the dropdown chevron — for split controls where a labeled
+    /// button IS the dropdown trigger and needs no extra glyph.
+    pub fn without_chevron(mut self) -> Self {
+        if let Self::Dropdown { show_chevron: ref mut c, .. } = &mut self {
+            *c = false;
+        }
+        self
+    }
+
     pub fn with_icon(mut self, icon: impl Into<ToolbarIconId>) -> Self {
         match &mut self {
             Self::Button { icon: ref mut i, .. } => *i = Some(icon.into()),
