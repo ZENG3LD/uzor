@@ -142,6 +142,11 @@ pub struct InputCoordinator {
     scoped_regions: Vec<ScopedRegion>,
     /// Text field store — owns text/cursor/selection state for all text fields
     text_fields: TextFieldStore,
+    /// Hover snapshot as of the PREVIOUS begin_frame bake — end_frame reads
+    /// this as the "was hovered" side of hover_started/hover_ended
+    /// transitions (the live persistent snapshot is re-baked at frame start
+    /// since 2026-07-28, so the transition baseline needs its own slot).
+    hover_prev: Option<WidgetId>,
 }
 
 impl InputCoordinator {
@@ -159,6 +164,7 @@ impl InputCoordinator {
             frame: 0,
             scoped_regions: Vec::new(),
             text_fields: TextFieldStore::new(),
+            hover_prev: None,
         }
     }
 
@@ -169,6 +175,19 @@ impl InputCoordinator {
     /// outside a region its position is set to `None` in the child's
     /// `InputState` so widgets inside do not spuriously report hover.
     pub fn begin_frame(&mut self, input: InputState) {
+        // Bake the persistent hover snapshot from the COMPLETE previous
+        // frame's widget accumulation at the FRESH pointer position
+        // (z-order + modal-barrier aware). `end_frame` used to bake this
+        // mid-frame — before top layers (dropdowns/modals rendered after
+        // it) had registered — so widgets under an open popup kept
+        // reporting `is_hovered() == true` (systemic z-order leak,
+        // 2026-07-28). Baking here sees every layer of the finished frame.
+        let hovered = input
+            .pointer
+            .pos
+            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        self.widget_state.hover.set_hovered(hovered);
+
         self.widgets.clear();
         self.layers.clear();
         self.layers.push(Layer {
@@ -211,6 +230,15 @@ impl InputCoordinator {
     /// derived from `self.input`; callers that use this path are responsible for
     /// calling `set_cursor_pos` before any hit-tests.
     pub fn begin_frame_widgets_only(&mut self) {
+        // Same complete-frame hover bake as `begin_frame` (see its comment),
+        // at the retained pointer position.
+        let hovered = self
+            .input
+            .pointer
+            .pos
+            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        self.widget_state.hover.set_hovered(hovered);
+
         self.widgets.clear();
         self.layers.clear();
         self.layers.push(Layer {
@@ -513,7 +541,7 @@ impl InputCoordinator {
             }
 
             let is_hovered = hovered_id.as_ref() == Some(&widget.id);
-            let was_hovered = self.widget_state.hover.is_hovered(&widget.id);
+            let was_hovered = self.hover_prev.as_ref() == Some(&widget.id);
 
             if (widget.sense.hover || widget.sense.click || widget.sense.drag)
                 && (is_hovered || was_hovered) {
@@ -588,8 +616,13 @@ impl InputCoordinator {
             }
         }
 
-        // 5. Update persistent state
-        self.widget_state.hover.set_hovered(hovered_id);
+        // 5. Persistent hover state is NO LONGER baked here — end_frame runs
+        // mid-frame, before top layers (dropdowns/modals) register, so its
+        // view is incomplete and widgets under popups leaked hover. The
+        // visual snapshot is baked in `begin_frame` from the finished
+        // previous frame instead (2026-07-28). This frame's local view is
+        // stashed as the NEXT end_frame's hover-transition baseline.
+        self.hover_prev = hovered_id;
 
         responses
     }
@@ -748,6 +781,17 @@ impl InputCoordinator {
     /// the `end_frame` snapshot.
     pub fn hit_test_now(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|_| true)
+    }
+
+    /// Live z-order probe: the LAYER z_order of the topmost widget at
+    /// `(x, y)` (sense-agnostic, modal-barrier aware), `None` when nothing
+    /// is hit. The central occlusion primitive for hosts that must
+    /// suppress canvas-level affordances (crosshair, hover glow, tooltips)
+    /// under popups/modals — compare against the host's popup threshold
+    /// instead of hand-checking individual modal rects.
+    pub fn topmost_layer_z_at(&self, x: f64, y: f64) -> Option<u32> {
+        let widget = self.hit_test_at(x, y)?;
+        self.layers.iter().find(|l| l.id == widget.layer).map(|l| l.z_order)
     }
 
     /// Live equivalent of [`is_over_ui`]: returns `true` if `(x, y)` is over any
