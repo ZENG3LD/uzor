@@ -46,12 +46,16 @@ pub mod layout;
 pub mod particle;
 pub mod render;
 pub mod render3d;
+pub mod style;
 pub mod theme;
 
 pub use camera::{Aabb, Camera2D};
 pub use camera3d::Camera3D;
 pub use cluster::{AggregatedEdge, ClusterRegistry, ClusterState, GroupId};
-pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, GraphInteractionConfig, NodeFacts, SelectMode};
+pub use engine::{
+    DragEndPolicy, FilterSpec, GraphEngine, GraphInteractionConfig, GraphPointerBindings,
+    NodeFacts, SelectMode,
+};
 pub use engine3d::{GraphEngine3D, TransitionDirection};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use label_grid::LabelLodConfig;
@@ -61,6 +65,7 @@ pub use layout::{
     LayoutTickResult, RadialLayout, RadialLayout3D, RadialParams, RadialParams3D,
 };
 pub use particle::Particle;
+pub use style::{DashPattern, EdgeVisualStyle, NodeMarker, NodeVisualStyle};
 pub use theme::GraphTheme;
 pub use uzor_figures::interact::FocusSet;
 pub use uzor_figures::scale::color::CategoricalScale;

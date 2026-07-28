@@ -229,6 +229,7 @@ use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
 use crate::particle::Particle;
 use crate::render::category_color_default;
+use crate::style::{DashPattern, NodeMarker};
 
 /// Edge line tint (RGB) — the SAME desaturated blue-gray as the 2D
 /// engine's own default edge stroke (`crate::render::draw_edges`'s
@@ -353,16 +354,36 @@ impl Default for Graph3DEdgeStyle {
 /// `u8`-typed and private to that module) — small enough to own here
 /// rather than reach into an unrelated widget's internals for four
 /// `u8::from_str_radix` calls.
-fn category_tint(category: &str) -> [f32; 4] {
-    let color = category_color_default(category);
+fn color_tint(color: &str, alpha: f32) -> [f32; 4] {
     let hex = color.trim_start_matches('#');
     if hex.len() != 6 {
-        return [1.0, 1.0, 1.0, 1.0];
+        return [1.0, 1.0, 1.0, alpha.clamp(0.0, 1.0)];
     }
     let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(255);
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(255);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
-    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, alpha.clamp(0.0, 1.0)]
+}
+
+fn category_tint(category: &str) -> [f32; 4] {
+    color_tint(&category_color_default(category), 1.0)
+}
+
+/// Shared marker geometry held by [`crate::engine3d::GraphEngine3D`].
+/// Marker instances are additive and never enter the color-ID pick pass.
+#[derive(Clone)]
+pub struct Graph3DMarkerMeshes {
+    pub ring: Arc<MeshLit>,
+    pub warning: Arc<MeshLit>,
+}
+
+impl Default for Graph3DMarkerMeshes {
+    fn default() -> Self {
+        Self {
+            ring: Arc::new(MeshLit::torus(0.85, 0.08, 24, 8, [1.0, 1.0, 1.0, 1.0])),
+            warning: Arc::new(MeshLit::cone(0.7, 1.4, 16, [1.0, 1.0, 1.0, 1.0])),
+        }
+    }
 }
 
 /// Default for [`Graph3DLighting::node_material`] — Wave C node material
@@ -457,15 +478,94 @@ pub fn build_node_instances<N, E>(
                 return None;
             }
             let p = particles.get(id.index())?;
+            let tint = if let Some(style) = &node.style {
+                let color;
+                let fill = if let Some(fill) = style.fill.as_deref() {
+                    fill
+                } else {
+                    color = category_color_default(&node.category);
+                    color.as_str()
+                };
+                color_tint(fill, style.alpha.unwrap_or(1.0))
+            } else {
+                category_tint(&node.category)
+            };
             Some(
                 Node::new_lit(mesh.clone())
                     .with_translation(Vec3::new(p.x, p.y, p.z))
                     .with_scale(Vec3::splat(node.radius.max(0.01)))
-                    .with_tint(category_tint(&node.category))
+                    .with_tint(tint)
                     .with_material(material),
             )
         })
         .collect()
+}
+
+/// Additive semantic marker instances. Base node spheres remain one per
+/// graph node; markers do not alter radius, identity, or id-pass output.
+pub fn build_node_marker_instances<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    meshes: &Graph3DMarkerMeshes,
+    hidden: &HashSet<NodeIndex>,
+    material: PhongMaterial,
+) -> Vec<Node> {
+    let mut instances = Vec::new();
+    for (id, node) in graph.nodes() {
+        if hidden.contains(&id) {
+            continue;
+        }
+        let Some(style) = &node.style else { continue };
+        if style.marker.is_none() && style.outline.is_none() {
+            continue;
+        }
+        let Some(particle) = particles.get(id.index()) else { continue };
+        let position = Vec3::new(particle.x, particle.y, particle.z);
+        let radius = node.radius.max(0.01);
+        let fallback;
+        let marker_color = if let Some(outline) = style.outline.as_deref() {
+            outline
+        } else if let Some(fill) = style.fill.as_deref() {
+            fill
+        } else {
+            fallback = category_color_default(&node.category);
+            fallback.as_str()
+        };
+        let tint = color_tint(marker_color, style.alpha.unwrap_or(1.0));
+        let ring = |scale: f32, translation: Vec3| {
+            Node::new_lit(meshes.ring.clone())
+                .with_translation(translation)
+                .with_scale(Vec3::splat(scale))
+                .with_tint(tint)
+                .with_material(material)
+        };
+
+        match style.marker {
+            Some(NodeMarker::DoubleRing) => {
+                instances.push(ring(radius * 1.25, position));
+                instances.push(ring(radius * 1.55, position));
+            }
+            Some(NodeMarker::Boundary) => {
+                instances.push(ring(radius * 1.35, position));
+            }
+            Some(NodeMarker::Frontier) => {
+                instances.push(ring(radius * 0.72, position + Vec3::Y * radius * 1.2));
+            }
+            Some(NodeMarker::Warning) => {
+                instances.push(
+                    Node::new_lit(meshes.warning.clone())
+                        .with_translation(position + Vec3::Y * radius * 1.25)
+                        .with_scale(Vec3::splat(radius * 0.55))
+                        .with_tint(tint)
+                        .with_material(material),
+                );
+            }
+            None => {
+                instances.push(ring(radius * 1.25, position));
+            }
+        }
+    }
+    instances
 }
 
 /// One instanced `Node::new_line` per graph edge (Wave C/D — see the
@@ -505,32 +605,86 @@ pub fn build_edge_instances<N, E>(
     hidden: &HashSet<NodeIndex>,
     style: &Graph3DEdgeStyle,
 ) -> Vec<Node> {
-    graph
-        .edges()
-        .filter_map(|(_, edge)| {
+    let mut instances = Vec::new();
+    for (_, edge) in graph.edges() {
             if hidden.contains(&edge.from) || hidden.contains(&edge.to) {
-                return None;
+                continue;
             }
-            let a = particles.get(edge.from.index())?;
-            let b = particles.get(edge.to.index())?;
+            let (Some(a), Some(b)) = (particles.get(edge.from.index()), particles.get(edge.to.index())) else { continue };
             let from = Vec3::new(a.x, a.y, a.z);
             let to = Vec3::new(b.x, b.y, b.z);
             let delta = to - from;
             let length = delta.length();
             if length < 1e-5 {
-                return None;
+                continue;
             }
             let dir = delta / length;
-            let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
-            Some(
-                Node::new_line(mesh.clone())
-                    .with_translation(from)
-                    .with_rotation(rotation)
-                    .with_scale(Vec3::new(edge_width_scale(edge.weight, style.width_scale_max), length, 1.0))
-                    .with_tint(style.edge_tint()),
-            )
-        })
-        .collect()
+            let element_style = edge.style.as_ref();
+            let width_scale = element_style
+                .and_then(|value| value.width)
+                .map(|width| width.max(0.1) / 1.75)
+                .unwrap_or_else(|| edge_width_scale(edge.weight, style.width_scale_max));
+            let tint = if let Some(element_style) = element_style {
+                let alpha = element_style.alpha.unwrap_or(style.alpha);
+                element_style
+                    .tint
+                    .as_deref()
+                    .map(|color| color_tint(color, alpha))
+                    .unwrap_or([style.tint_rgb[0], style.tint_rgb[1], style.tint_rgb[2], alpha.clamp(0.0, 1.0)])
+            } else {
+                style.edge_tint()
+            };
+
+            let spans = element_style
+                .and_then(|value| value.dash.as_ref())
+                .and_then(DashPattern::resolved)
+                .map(|pattern| dashed_spans(length, &pattern))
+                .unwrap_or_else(|| vec![(0.0, length)]);
+            for (start, end) in spans {
+                instances.push(line_instance(mesh, from + dir * start, from + dir * end, width_scale, tint));
+            }
+
+            if element_style.is_some_and(|value| value.directed) {
+                let target_radius = graph.get_node(edge.to).map(|node| node.radius.max(0.01)).unwrap_or(0.01);
+                let tip = to - dir * (target_radius * 1.1).min(length * 0.45);
+                let arrow_length = (target_radius * 1.1).max(2.0).min(length * 0.35);
+                let back = tip - dir * arrow_length;
+                let mut side = dir.cross(Vec3::Y);
+                if side.length_squared() < 1e-6 {
+                    side = dir.cross(Vec3::X);
+                }
+                side = side.normalize_or_zero() * arrow_length * 0.45;
+                instances.push(line_instance(mesh, tip, back + side, width_scale, tint));
+                instances.push(line_instance(mesh, tip, back - side, width_scale, tint));
+            }
+    }
+    instances
+}
+
+fn line_instance(mesh: &Arc<Mesh>, from: Vec3, to: Vec3, width_scale: f32, tint: [f32; 4]) -> Node {
+    let delta = to - from;
+    let length = delta.length();
+    Node::new_line(mesh.clone())
+        .with_translation(from)
+        .with_rotation(Quat::from_rotation_arc(Vec3::Y, delta / length))
+        .with_scale(Vec3::new(width_scale, length, 1.0))
+        .with_tint(tint)
+}
+
+fn dashed_spans(length: f32, pattern: &[f32]) -> Vec<(f32, f32)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0.0;
+    let mut index = 0usize;
+    while cursor < length {
+        let run = pattern[index % pattern.len()];
+        let end = (cursor + run).min(length);
+        if index % 2 == 0 && end > cursor {
+            spans.push((cursor, end));
+        }
+        cursor = end;
+        index += 1;
+    }
+    spans
 }
 
 /// Key light + ambient floor bright enough that `MeshLit` category tints
@@ -573,6 +727,49 @@ fn arm_default_lighting(scene: &mut Scene3D, lighting: &Graph3DLighting) {
 /// directly — now caller-supplied parameters (graph-strengthening arc
 /// Wave G2b).
 pub fn build_scene<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    node_mesh: &Arc<MeshLit>,
+    edge_mesh: &Arc<Mesh>,
+    hidden: &HashSet<NodeIndex>,
+    lighting: &Graph3DLighting,
+    edge_style: &Graph3DEdgeStyle,
+) -> Scene3D {
+    let mut scene = build_scene_base(graph, particles, node_mesh, edge_mesh, hidden, lighting, edge_style);
+    if graph.nodes().any(|(_, node)| {
+        node.style
+            .as_ref()
+            .is_some_and(|style| style.marker.is_some() || style.outline.is_some())
+    }) {
+        scene.nodes.extend(build_node_marker_instances(
+            graph,
+            particles,
+            &Graph3DMarkerMeshes::default(),
+            hidden,
+            lighting.node_material,
+        ));
+    }
+    scene
+}
+
+/// [`build_scene`] with caller-owned shared marker meshes. Long-lived
+/// engines use this form so optional torus/cone geometry is built once.
+pub fn build_scene_with_markers<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    node_mesh: &Arc<MeshLit>,
+    edge_mesh: &Arc<Mesh>,
+    marker_meshes: &Graph3DMarkerMeshes,
+    hidden: &HashSet<NodeIndex>,
+    lighting: &Graph3DLighting,
+    edge_style: &Graph3DEdgeStyle,
+) -> Scene3D {
+    let mut scene = build_scene_base(graph, particles, node_mesh, edge_mesh, hidden, lighting, edge_style);
+    scene.nodes.extend(build_node_marker_instances(graph, particles, marker_meshes, hidden, lighting.node_material));
+    scene
+}
+
+fn build_scene_base<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
     node_mesh: &Arc<MeshLit>,
@@ -1256,6 +1453,7 @@ pub fn build_id_pass_scene<N, E>(
 mod tests {
     use super::*;
     use crate::graph::Graph;
+    use crate::style::{EdgeVisualStyle, NodeVisualStyle};
 
     type DemoGraph = Graph<(), ()>;
 
@@ -1295,6 +1493,78 @@ mod tests {
         let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new(), custom);
 
         assert_eq!(nodes[0].material.ambient_strength, 0.9, "Wave G2b configurability gate: the material parameter must actually be threaded through, not ignored");
+    }
+
+    #[test]
+    fn unstyled_elements_preserve_existing_3d_category_and_global_edge_defaults() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "cat-a", 2.0);
+        let b = graph.push_node((), "b", "cat-b", 2.0);
+        graph.push_edge(a, b, 1.0, ());
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
+
+        let nodes = build_node_instances(&graph, &particles, &unit_mesh(), &HashSet::new(), DEFAULT_NODE_MATERIAL);
+        let edges = build_edge_instances(&graph, &particles, &unit_edge_quad_mesh(), &HashSet::new(), &Graph3DEdgeStyle::default());
+
+        assert_eq!(nodes[0].color_tint, category_tint("cat-a"));
+        assert_eq!(nodes[1].color_tint, category_tint("cat-b"));
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].color_tint, EDGE_TINT);
+        assert_eq!(edges[0].scale.x, 1.0);
+    }
+
+    #[test]
+    fn build_node_instances_and_marker_instances_apply_per_node_tint_alpha_outline_and_double_ring() {
+        let mut graph = DemoGraph::new();
+        let id = graph.push_node((), "root", "cat-a", 2.0);
+        graph.set_node_style(id, Some(NodeVisualStyle {
+            fill: Some("#204060".into()),
+            outline: Some("#ff8000".into()),
+            alpha: Some(0.5),
+            marker: Some(NodeMarker::DoubleRing),
+            ..NodeVisualStyle::default()
+        }));
+        let particles = vec![Particle::at3(1.0, 2.0, 3.0)];
+        let mesh = unit_mesh();
+        let marker_meshes = Graph3DMarkerMeshes::default();
+
+        let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new(), DEFAULT_NODE_MATERIAL);
+        let markers = build_node_marker_instances(&graph, &particles, &marker_meshes, &HashSet::new(), DEFAULT_NODE_MATERIAL);
+
+        assert_eq!(nodes[0].color_tint, color_tint("#204060", 0.5));
+        assert_eq!(markers.len(), 2, "DoubleRing must compose two shared torus instances");
+        assert!(markers.iter().all(|node| node.color_tint == color_tint("#ff8000", 0.5)));
+        assert!(markers[0].scale.x < markers[1].scale.x);
+    }
+
+    #[test]
+    fn all_semantic_node_marker_variants_construct_distinct_additive_3d_geometry() {
+        let mut graph = DemoGraph::new();
+        for (index, marker) in [
+            NodeMarker::DoubleRing,
+            NodeMarker::Boundary,
+            NodeMarker::Frontier,
+            NodeMarker::Warning,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = graph.push_node((), format!("n{index}"), "x", 2.0);
+            graph.set_node_style(id, Some(NodeVisualStyle { marker: Some(marker), ..NodeVisualStyle::default() }));
+        }
+        let particles = (0..4).map(|index| Particle::at3(index as f32 * 10.0, 0.0, 0.0)).collect::<Vec<_>>();
+
+        let markers = build_node_marker_instances(
+            &graph,
+            &particles,
+            &Graph3DMarkerMeshes::default(),
+            &HashSet::new(),
+            DEFAULT_NODE_MATERIAL,
+        );
+
+        assert_eq!(markers.len(), 5, "double-ring emits two instances; boundary, frontier, and warning emit one each");
+        assert_ne!(markers[3].translation.y, particles[2].y, "frontier ring is lifted above its node");
+        assert_ne!(markers[4].translation.y, particles[3].y, "warning cone is lifted above its node");
     }
 
     #[test]
@@ -1422,6 +1692,31 @@ mod tests {
 
         assert_eq!(edges[0].color_tint, [1.0, 0.0, 0.0, 0.9]);
         assert_ne!(edges[0].color_tint, EDGE_TINT);
+    }
+
+    #[test]
+    fn build_edge_instances_constructs_dashed_directed_segments_with_per_edge_tint_alpha_and_width() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        let edge = graph.push_edge(a, b, 1.0, ());
+        graph.set_edge_style(edge, Some(EdgeVisualStyle {
+            tint: Some("#336699".into()),
+            alpha: Some(0.25),
+            width: Some(3.5),
+            dash: Some(DashPattern::Pattern(vec![4.0, 2.0])),
+            directed: true,
+        }));
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 30.0, 0.0)];
+        let mesh = unit_edge_quad_mesh();
+
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
+
+        assert_eq!(edges.len(), 7, "five on-spans plus two solid arrowhead wings");
+        assert!(edges.iter().all(|node| node.color_tint == color_tint("#336699", 0.25)));
+        assert!(edges.iter().all(|node| (node.scale.x - 2.0).abs() < 1e-6), "3.5px override maps to 2x the 1.75px base");
+        assert!((edges[0].scale.y - 4.0).abs() < 1e-6);
+        assert_eq!(edges[1].translation, Vec3::new(0.0, 6.0, 0.0));
     }
 
     #[test]
@@ -1723,6 +2018,30 @@ mod tests {
 
         assert_eq!(scene.nodes.len(), 1, "the hidden node must not emit an id-pass sphere");
         assert_eq!(scene.nodes[0].color_tint, encode_node_id_tint(a), "the remaining visible node must still be present and correctly tinted");
+    }
+
+    #[test]
+    fn semantic_marker_does_not_change_index_encoded_id_pass_identity() {
+        let mut graph = DemoGraph::new();
+        let id = graph.push_node((), "warning", "x", 2.0);
+        graph.set_node_style(id, Some(NodeVisualStyle {
+            fill: Some("#ff0000".into()),
+            marker: Some(NodeMarker::Warning),
+            ..NodeVisualStyle::default()
+        }));
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0)];
+        let id_pass_mesh = Arc::new(build_id_pass_mesh(4, 4));
+
+        let scene = build_id_pass_scene(&graph, &particles, &id_pass_mesh, &HashSet::new());
+
+        assert_eq!(scene.nodes.len(), 1, "marker geometry must not add pick-pass identities");
+        assert_eq!(scene.nodes[0].color_tint, encode_node_id_tint(id));
+        assert_eq!(decode_node_id_pixel([
+            forward_channel_byte(scene.nodes[0].color_tint[0]),
+            forward_channel_byte(scene.nodes[0].color_tint[1]),
+            forward_channel_byte(scene.nodes[0].color_tint[2]),
+            255,
+        ]), id);
     }
 
     // ── Wave 5: 3D reference grid + axis tick labels ────────────────────

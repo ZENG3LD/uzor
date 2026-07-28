@@ -377,6 +377,8 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// Shared unit sphere every node instances from (plan §1.3) — built
     /// once at construction, never mutated.
     node_mesh: Arc<MeshLit>,
+    /// Shared torus/cone meshes used by optional semantic node markers.
+    marker_meshes: crate::render3d::Graph3DMarkerMeshes,
     /// Shared unit edge-quad every edge instances from (Wave C/D — see
     /// `crate::render3d`'s own module doc for why edges are a
     /// screen-space billboarded quad, not a cylinder or a hardware
@@ -568,6 +570,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             selection: BTreeSet::new(),
             clusters: ClusterRegistry::default(),
             node_mesh: Arc::new(MeshLit::sphere(1.0, NODE_SPHERE_RINGS, NODE_SPHERE_SLICES, [1.0, 1.0, 1.0, 1.0])),
+            marker_meshes: crate::render3d::Graph3DMarkerMeshes::default(),
             edge_mesh: Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0])),
             modifiers: ModifierKeys::default(),
             mode: Pointer3DMode::Idle,
@@ -1846,11 +1849,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
         let hidden = self.compute_excluded_nodes_3d();
         let render_particles = self.render_particles();
-        let mut scene = crate::render3d::build_scene(
+        let mut scene = crate::render3d::build_scene_with_markers(
             &self.graph,
             &render_particles,
             &self.node_mesh,
             &self.edge_mesh,
+            &self.marker_meshes,
             &hidden,
             &self.lighting,
             &self.edge_style,

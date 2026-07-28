@@ -8,6 +8,8 @@
 
 use std::collections::HashSet;
 
+use crate::style::{EdgeVisualStyle, NodeVisualStyle};
+
 /// Index of a node inside a [`Graph`]. Stable for the lifetime of the
 /// graph (nodes are append-only this run — see [`Graph::push_node`]).
 /// `Ord`/`PartialOrd` (Wave 2.4) back
@@ -61,6 +63,9 @@ pub struct GraphNode<N> {
     /// Caller sets this (e.g. from degree via [`Graph::degree`]) after
     /// edges are known — see [`Graph::set_radius`].
     pub radius: f32,
+    /// Optional element-local paint semantics. `None` preserves the
+    /// category palette and all renderer defaults.
+    pub style: Option<NodeVisualStyle>,
 }
 
 /// One edge's static (non-simulated) data.
@@ -70,6 +75,9 @@ pub struct GraphEdge<E> {
     /// Spring-strength / ideal-length input for `LinkForce`.
     pub weight: f32,
     pub payload: E,
+    /// Optional element-local paint semantics. `None` preserves the
+    /// global edge theme and existing weight behavior.
+    pub style: Option<EdgeVisualStyle>,
 }
 
 /// Minimal, payload-free copy of an edge — what the simulation actually
@@ -141,6 +149,7 @@ impl<N, E> Graph<N, E> {
             label: label.into(),
             category: category.into(),
             radius,
+            style: None,
         });
         self.adjacency.push(Vec::new());
         self.degree.push(0);
@@ -150,7 +159,7 @@ impl<N, E> Graph<N, E> {
     /// Append an edge between two already-pushed nodes.
     pub fn push_edge(&mut self, from: NodeIndex, to: NodeIndex, weight: f32, payload: E) -> EdgeIndex {
         let id = EdgeIndex(self.edges.len() as u32);
-        self.edges.push(GraphEdge { from, to, weight, payload });
+        self.edges.push(GraphEdge { from, to, weight, payload, style: None });
         self.sim_edges.push(SimEdge { from, to, weight });
         if let Some(adj) = self.adjacency.get_mut(from.index()) {
             adj.push(id);
@@ -174,6 +183,22 @@ impl<N, E> Graph<N, E> {
         if let Some(node) = self.nodes.get_mut(id.index()) {
             node.radius = radius;
         }
+    }
+
+    /// Set or clear an individual node's visual style. Returns `false`
+    /// for an out-of-range index.
+    pub fn set_node_style(&mut self, id: NodeIndex, style: Option<NodeVisualStyle>) -> bool {
+        let Some(node) = self.nodes.get_mut(id.index()) else { return false };
+        node.style = style;
+        true
+    }
+
+    /// Set or clear an individual edge's visual style. Returns `false`
+    /// for an out-of-range index.
+    pub fn set_edge_style(&mut self, id: EdgeIndex, style: Option<EdgeVisualStyle>) -> bool {
+        let Some(edge) = self.edges.get_mut(id.index()) else { return false };
+        edge.style = style;
+        true
     }
 
     pub fn node_count(&self) -> usize {
@@ -361,5 +386,24 @@ mod tests {
         // the requested depth vastly exceeding the graph's actual reach.
         let node_keys: HashSet<u64> = keys.into_iter().filter(|k| k % 2 == 0).collect();
         assert_eq!(node_keys.len(), 4);
+    }
+
+    #[test]
+    fn element_styles_default_to_none_and_can_be_overridden_independently() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let edge = graph.push_edge(a, b, 1.0, ());
+
+        assert_eq!(graph.node(a).style, None);
+        assert_eq!(graph.edge(edge).style, None);
+
+        let node_style = NodeVisualStyle { fill: Some("#102030".into()), marker: Some(crate::style::NodeMarker::DoubleRing), ..NodeVisualStyle::default() };
+        let edge_style = EdgeVisualStyle { width: Some(3.0), directed: true, ..EdgeVisualStyle::default() };
+        assert!(graph.set_node_style(a, Some(node_style.clone())));
+        assert!(graph.set_edge_style(edge, Some(edge_style.clone())));
+        assert_eq!(graph.node(a).style.as_ref(), Some(&node_style));
+        assert_eq!(graph.edge(edge).style.as_ref(), Some(&edge_style));
+        assert_eq!(graph.node(b).style, None, "an override must remain per-element");
     }
 }

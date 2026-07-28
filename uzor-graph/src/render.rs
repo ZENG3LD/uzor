@@ -28,6 +28,7 @@ use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
 use crate::label_grid::{self, LabelCandidate, LabelLodConfig};
 use crate::particle::Particle;
+use crate::style::{EdgeVisualStyle, NodeMarker, NodeVisualStyle};
 use crate::theme::{default_category_palette, GraphTheme};
 
 /// Re-exported from `label_grid` (Wave 2.3 moved the constants there —
@@ -179,6 +180,7 @@ pub fn draw_edges<N, E>(
     let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut dim_segments: Vec<LineSegment> = Vec::new();
+    let mut styled_segments: Vec<(LineSegment, EdgeVisualStyle, bool, f64)> = Vec::new();
 
     for (eid, edge) in graph.edges() {
         if ctx.hidden.contains(&edge.from) || ctx.hidden.contains(&edge.to) {
@@ -193,14 +195,21 @@ pub fn draw_edges<N, E>(
         let (ax, ay) = ctx.camera.world_to_screen((a.x as f64, a.y as f64), ctx.viewport);
         let (bx, by) = ctx.camera.world_to_screen((b.x as f64, b.y as f64), ctx.viewport);
         let seg = LineSegment { x1: ax, y1: ay, x2: bx, y2: by };
-        if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(eid)) {
+        let dimmed = ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(eid));
+        if let Some(style) = &edge.style {
+            let target_radius = graph
+                .get_node(edge.to)
+                .map(|node| ctx.camera.node_screen_radius(node.radius))
+                .unwrap_or(0.0);
+            styled_segments.push((seg, style.clone(), dimmed, target_radius));
+        } else if dimmed {
             dim_segments.push(seg);
         } else {
             segments.push(seg);
         }
     }
 
-    let drawn = segments.len() + dim_segments.len();
+    let drawn = segments.len() + dim_segments.len() + styled_segments.len();
     // Round caps + >=1.5px width: sub-1.5px butt-capped hairlines at an
     // angle read as a beaded staircase on a standard-DPI display even
     // with correct AA (live-verified 2026-07-18); industry engines
@@ -215,9 +224,73 @@ pub fn draw_edges<N, E>(
     if !segments.is_empty() {
         render.draw_line_batch(&segments, &ctx.theme.edge_color, ctx.theme.edge_width);
     }
+    for (segment, style, dimmed, target_radius) in &styled_segments {
+        draw_styled_edge(render, *segment, style, *dimmed, *target_radius, ctx.theme);
+    }
     render.set_line_cap("butt");
     render.restore();
     drawn
+}
+
+fn draw_styled_edge(
+    render: &mut dyn RenderContext,
+    segment: LineSegment,
+    style: &EdgeVisualStyle,
+    dimmed: bool,
+    target_radius: f64,
+    theme: &GraphTheme,
+) {
+    let color = style
+        .tint
+        .as_deref()
+        .unwrap_or(if dimmed { &theme.edge_dim_color } else { &theme.edge_color });
+    let width = style
+        .width
+        .map(|value| value.max(0.1) as f64)
+        .unwrap_or(if dimmed { theme.edge_dim_width } else { theme.edge_width });
+    let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
+        * if dimmed { theme.dim_alpha } else { 1.0 };
+    let dash: Vec<f64> = style
+        .dash
+        .as_ref()
+        .and_then(|pattern| pattern.resolved())
+        .unwrap_or_default()
+        .into_iter()
+        .map(f64::from)
+        .collect();
+
+    render.set_global_alpha(alpha);
+    render.set_line_dash(&dash);
+    render.draw_line_batch(&[segment], color, width);
+
+    if style.directed {
+        let dx = segment.x2 - segment.x1;
+        let dy = segment.y2 - segment.y1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > 1e-6 {
+            let ux = dx / length;
+            let uy = dy / length;
+            let target_offset = (target_radius + 2.0).min(length * 0.45);
+            let tip_x = segment.x2 - ux * target_offset;
+            let tip_y = segment.y2 - uy * target_offset;
+            let arrow_length = 7.0 + width;
+            let wing = arrow_length * 0.45;
+            let back_x = tip_x - ux * arrow_length;
+            let back_y = tip_y - uy * arrow_length;
+            render.set_line_dash(&[]);
+            render.draw_line_batch(
+                &[
+                    LineSegment { x1: tip_x, y1: tip_y, x2: back_x - uy * wing, y2: back_y + ux * wing },
+                    LineSegment { x1: tip_x, y1: tip_y, x2: back_x + uy * wing, y2: back_y - ux * wing },
+                ],
+                color,
+                width,
+            );
+        }
+    }
+
+    render.set_line_dash(&[]);
+    render.set_global_alpha(1.0);
 }
 
 /// Per-frame node/label draw counts. [`crate::engine::GraphEngine::draw`]
@@ -308,6 +381,7 @@ pub fn draw_nodes<N, E>(
     render.save();
     let mut by_color: HashMap<String, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
+    let mut styled: Vec<(NodeIndex, CircleBatch, bool)> = Vec::new();
     let mut nodes_drawn = 0usize;
 
     for &id in ctx.visible {
@@ -319,7 +393,10 @@ pub fn draw_nodes<N, E>(
         let r = ctx.camera.node_screen_radius(node.radius);
         let circle = CircleBatch { cx: sx, cy: sy, r };
         nodes_drawn += 1;
-        if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id)) {
+        let dimmed = ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id));
+        if node.style.is_some() {
+            styled.push((id, circle, dimmed));
+        } else if dimmed {
             dim.push(circle);
         } else {
             by_color.entry(category_color(&node.category, &ctx.theme.category_palette)).or_default().push(circle);
@@ -352,6 +429,28 @@ pub fn draw_nodes<N, E>(
     for (color, circles) in &by_color {
         render.draw_circle_batch(circles, color);
     }
+    for (id, circle, dimmed) in &styled {
+        let node = graph.node(*id);
+        let style = node.style.as_ref().expect("styled list only contains styled nodes");
+        let fill = style.fill.as_deref().unwrap_or(if *dimmed {
+            &ctx.theme.dim_node_fill
+        } else {
+            // Kept owned for the duration of this draw call below.
+            ""
+        });
+        let category_fill;
+        let fill = if fill.is_empty() {
+            category_fill = category_color(&node.category, &ctx.theme.category_palette);
+            category_fill.as_str()
+        } else {
+            fill
+        };
+        let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
+            * if *dimmed { ctx.theme.dim_alpha } else { 1.0 };
+        render.set_global_alpha(alpha);
+        render.draw_circle_batch(&[*circle], fill);
+        render.set_global_alpha(1.0);
+    }
 
     let label_set = labels_to_draw(graph, particles, ctx);
     // Whole-graph max degree (not just the currently-visible subset) —
@@ -368,6 +467,20 @@ pub fn draw_nodes<N, E>(
         let (Some(p), Some(node)) = (particles.get(id.index()), graph.get_node(id)) else { continue };
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
+
+        if let Some(style) = &node.style {
+            let dimmed = ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id));
+            let category_fill;
+            let fill = if let Some(fill) = style.fill.as_deref() {
+                fill
+            } else if dimmed {
+                &ctx.theme.dim_node_fill
+            } else {
+                category_fill = category_color(&node.category, &ctx.theme.category_palette);
+                category_fill.as_str()
+            };
+            draw_node_semantics(render, sx, sy, r, style, fill, dimmed, ctx.theme);
+        }
 
         if ctx.selection.contains(&id) {
             render.set_stroke_color(&ctx.theme.selection_ring_color);
@@ -422,6 +535,71 @@ pub fn draw_nodes<N, E>(
 
     render.restore();
     NodeDrawStats { nodes_drawn, labels_drawn }
+}
+
+fn draw_node_semantics(
+    render: &mut dyn RenderContext,
+    sx: f64,
+    sy: f64,
+    radius: f64,
+    style: &NodeVisualStyle,
+    fill: &str,
+    dimmed: bool,
+    theme: &GraphTheme,
+) {
+    if style.outline.is_none() && style.marker.is_none() {
+        return;
+    }
+
+    let color = style.outline.as_deref().unwrap_or(fill);
+    let width = style.outline_width.unwrap_or(1.5).max(0.1) as f64;
+    let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
+        * if dimmed { theme.dim_alpha } else { 1.0 };
+    render.set_global_alpha(alpha);
+    render.set_stroke_color(color);
+    render.set_stroke_width(width);
+    render.set_line_dash(&[]);
+
+    if style.outline.is_some() {
+        render.begin_path();
+        render.arc(sx, sy, radius + width * 0.5, 0.0, std::f64::consts::TAU);
+        render.stroke();
+    }
+
+    match style.marker {
+        Some(NodeMarker::DoubleRing) => {
+            for offset in [3.0 + width, 6.0 + width * 2.0] {
+                render.begin_path();
+                render.arc(sx, sy, radius + offset, 0.0, std::f64::consts::TAU);
+                render.stroke();
+            }
+        }
+        Some(NodeMarker::Boundary) => {
+            let extent = radius + 4.0 + width;
+            render.begin_path();
+            render.rect(sx - extent, sy - extent, extent * 2.0, extent * 2.0);
+            render.stroke();
+        }
+        Some(NodeMarker::Frontier) => {
+            render.set_line_dash(&[4.0, 3.0]);
+            render.begin_path();
+            render.arc(sx, sy, radius + 4.0 + width, 0.0, std::f64::consts::TAU);
+            render.stroke();
+        }
+        Some(NodeMarker::Warning) => {
+            let extent = radius + 5.0 + width;
+            render.begin_path();
+            render.move_to(sx, sy - extent);
+            render.line_to(sx + extent * 0.88, sy + extent * 0.62);
+            render.line_to(sx - extent * 0.88, sy + extent * 0.62);
+            render.close_path();
+            render.stroke();
+        }
+        None => {}
+    }
+
+    render.set_line_dash(&[]);
+    render.set_global_alpha(1.0);
 }
 
 /// Draw the aggregated cross-cluster edges for every collapsed cluster —
@@ -985,6 +1163,9 @@ mod tests {
         state: PaintState,
         stack: Vec<PaintState>,
         circle_batch_colors: Vec<String>,
+        current_dash: Vec<f64>,
+        line_batches: Vec<(usize, String, f64, Vec<f64>, f64)>,
+        alpha_changes: Vec<f64>,
         /// Every `set_stroke_color` call, in order — unlike `state.stroke_color`
         /// (which a `save()`/`restore()` bracket resets away by the time a
         /// caller can observe it), this survives past the call so a test can
@@ -1009,6 +1190,7 @@ mod tests {
         }
         fn set_global_alpha(&mut self, alpha: f64) {
             self.state.global_alpha = alpha;
+            self.alpha_changes.push(alpha);
         }
         fn set_stroke_color(&mut self, color: &str) {
             self.state.stroke_color = color.to_owned();
@@ -1017,7 +1199,9 @@ mod tests {
         fn set_stroke_width(&mut self, width: f64) {
             self.state.stroke_width = width;
         }
-        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_dash(&mut self, pattern: &[f64]) {
+            self.current_dash = pattern.to_vec();
+        }
         fn set_line_cap(&mut self, cap: &str) {
             self.state.line_cap = cap.to_owned();
         }
@@ -1074,6 +1258,12 @@ mod tests {
             }
             self.circle_batch_colors.push(color.to_owned());
         }
+        fn draw_line_batch(&mut self, lines: &[uzor::render::LineSegment], color: &str, width: f64) {
+            if lines.is_empty() {
+                return;
+            }
+            self.line_batches.push((lines.len(), color.to_owned(), width, self.current_dash.clone(), self.state.global_alpha));
+        }
     }
     impl uzor::render::RenderContext for ColorOrderRecorder {
         fn dpr(&self) -> f64 {
@@ -1111,6 +1301,104 @@ mod tests {
                 Some(expected) => assert_eq!(&render.circle_batch_colors, expected, "repeated calls over unchanged state must paint colors in the identical order every time"),
             }
         }
+    }
+
+    #[test]
+    fn unstyled_elements_preserve_existing_2d_category_and_global_edge_defaults() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "cat-a", 5.0);
+        let b = graph.push_node((), "b", "cat-b", 5.0);
+        graph.push_edge(a, b, 1.0, ());
+        let particles = vec![Particle::at(-20.0, 0.0), Particle::at(20.0, 0.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![a, b];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let mut render = ColorOrderRecorder::default();
+
+        draw_edges(&mut render, &graph, &particles, &ctx);
+        draw_nodes(&mut render, &graph, &particles, &ctx);
+
+        assert_eq!(render.line_batches.len(), 1);
+        assert_eq!(render.line_batches[0].1, theme.edge_color);
+        assert_eq!(render.line_batches[0].2, theme.edge_width);
+        assert!(render.line_batches[0].3.is_empty());
+        assert!(render.circle_batch_colors.contains(&category_color("cat-a", &theme.category_palette)));
+        assert!(render.circle_batch_colors.contains(&category_color("cat-b", &theme.category_palette)));
+    }
+
+    #[test]
+    fn draw_nodes_applies_per_node_fill_alpha_outline_and_double_ring_marker() {
+        let mut graph: Graph<(), ()> = Graph::new();
+        let node = graph.push_node((), "styled", "category", 5.0);
+        graph.set_node_style(node, Some(NodeVisualStyle {
+            fill: Some("#112233".into()),
+            outline: Some("#fedcba".into()),
+            alpha: Some(0.4),
+            outline_width: Some(2.5),
+            marker: Some(NodeMarker::DoubleRing),
+        }));
+        let particles = vec![Particle::at(0.0, 0.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![node];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let mut render = ColorOrderRecorder::default();
+
+        draw_nodes(&mut render, &graph, &particles, &ctx);
+
+        assert!(render.circle_batch_colors.contains(&"#112233".to_owned()));
+        assert!(render.alpha_changes.iter().any(|alpha| (*alpha - 0.4).abs() < 1e-6));
+        assert_eq!(render.stroke_colors.iter().filter(|color| color.as_str() == "#fedcba").count(), 1);
+    }
+
+    #[test]
+    fn draw_edges_constructs_custom_dash_width_tint_alpha_and_direction_arrowhead() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        let edge = graph.push_edge(a, b, 1.0, ());
+        graph.set_edge_style(edge, Some(EdgeVisualStyle {
+            tint: Some("#abcdef".into()),
+            alpha: Some(0.35),
+            width: Some(4.0),
+            dash: Some(crate::style::DashPattern::Pattern(vec![6.0, 2.0])),
+            directed: true,
+        }));
+        let particles = vec![Particle::at(-20.0, 0.0), Particle::at(20.0, 0.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![a, b];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let mut render = ColorOrderRecorder::default();
+
+        assert_eq!(draw_edges(&mut render, &graph, &particles, &ctx), 1);
+        assert_eq!(render.line_batches.len(), 2, "main dashed segment plus one two-wing arrowhead batch");
+        assert_eq!(render.line_batches[0].0, 1);
+        assert_eq!(render.line_batches[0].1, "#abcdef");
+        assert_eq!(render.line_batches[0].2, 4.0);
+        assert_eq!(render.line_batches[0].3, vec![6.0, 2.0]);
+        assert!((render.line_batches[0].4 - 0.35).abs() < 1e-6);
+        assert_eq!(render.line_batches[1].0, 2);
+        assert!(render.line_batches[1].3.is_empty(), "arrowhead wings stay solid");
     }
 
     /// Graph-strengthening arc G1.4: `draw_nodes` must honor `ctx.hidden`
