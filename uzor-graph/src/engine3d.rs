@@ -448,6 +448,11 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// opt-in orientation aid, not a default-on feature. See
     /// [`GraphEngine3D::set_grid_enabled`]/[`GraphEngine3D::grid_enabled`].
     grid_enabled: bool,
+    /// Hover info-card toggle — mirrors [`crate::engine::GraphEngine`]'s
+    /// independent overlay control. Hover picking and [`Self::hovered`]
+    /// remain active while this is disabled; only the card emitted by
+    /// [`Self::draw_overlay`] is suppressed. Defaults to `true`.
+    hover_card: bool,
     /// Node-label halo color — the 3D sibling of [`crate::engine::
     /// GraphEngine::label_halo`] (same [`DEFAULT_LABEL_HALO`] default). See
     /// [`GraphEngine3D::label_halo`]/[`GraphEngine3D::set_label_halo`].
@@ -584,6 +589,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             gpu_pick_threshold: pick3d::GPU_PICK_NODE_THRESHOLD,
             gpu_pick_pipeline: pick3d::GpuPickPipeline::new(),
             grid_enabled: false,
+            hover_card: true,
             label_halo: DEFAULT_LABEL_HALO.to_owned(),
             local_root: None,
             filter: None,
@@ -1441,6 +1447,18 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         self.grid_enabled = enabled;
     }
 
+    /// Whether [`Self::draw_overlay`] paints the generic info card near a
+    /// hovered node. Hover picking remains enabled independently.
+    pub fn hover_card_enabled(&self) -> bool {
+        self.hover_card
+    }
+
+    /// Toggle only the generic hovered-node info card. This does not
+    /// clear or disable [`Self::hovered`].
+    pub fn set_hover_card_enabled(&mut self, enabled: bool) {
+        self.hover_card = enabled;
+    }
+
     /// Node-label halo color — the 3D sibling of [`crate::engine::
     /// GraphEngine::label_halo`] (same [`DEFAULT_LABEL_HALO`] default).
     pub fn label_halo(&self) -> &str {
@@ -2270,20 +2288,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         }
 
         let mut hover_card_drawn = false;
-        if let Some(hovered) = self.hovered {
-            if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
-                let world = Vec3::new(p.x, p.y, p.z * scale);
-                if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
-                    let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
-                    // Graph-strengthening arc Wave G2b — the hover card's
-                    // `FigureTheme` is now this engine's OWN `self.theme.hover_card`
-                    // (was an unconditional `FigureTheme::dark()` literal;
-                    // `GraphTheme::dark().hover_card` is byte-identical to
-                    // that prior literal, so this preserves default
-                    // behavior while a caller can now override it via
-                    // `set_theme`).
-                    draw_hover_card(render, anchor, &info, viewport, &self.theme.hover_card);
-                    hover_card_drawn = true;
+        if self.hover_card {
+            if let Some(hovered) = self.hovered {
+                if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
+                    let world = Vec3::new(p.x, p.y, p.z * scale);
+                    if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
+                        let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
+                        // Graph-strengthening arc Wave G2b — the hover card's
+                        // `FigureTheme` is now this engine's OWN `self.theme.hover_card`
+                        // (was an unconditional `FigureTheme::dark()` literal;
+                        // `GraphTheme::dark().hover_card` is byte-identical to
+                        // that prior literal, so this preserves default
+                        // behavior while a caller can now override it via
+                        // `set_theme`).
+                        draw_hover_card(render, anchor, &info, viewport, &self.theme.hover_card);
+                        hover_card_drawn = true;
+                    }
                 }
             }
         }
@@ -3068,6 +3088,7 @@ mod tests {
         let camera = engine.camera(aspect);
         engine.hovered = Some(NodeIndex(0));
 
+        assert!(engine.hover_card_enabled(), "3D hover cards must remain enabled by default");
         let mut ctx = RecordingRenderContext::new();
         let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
 
@@ -3080,6 +3101,23 @@ mod tests {
             ctx.fill_texts.iter().any(|(t, _, _)| t == "a"),
             "the hover card must show the hovered node's own label text"
         );
+    }
+
+    #[test]
+    fn disabling_hover_card_suppresses_only_the_card_and_keeps_hover_active() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        engine.hovered = Some(NodeIndex(0));
+        engine.set_hover_card_enabled(false);
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(!engine.hover_card_enabled());
+        assert!(!stats.hover_card_drawn, "disabled hover cards must not emit overlay paint");
+        assert_eq!(engine.hovered(), Some(NodeIndex(0)), "disabling the card must not disable or clear hover picking state");
     }
 
     #[test]
