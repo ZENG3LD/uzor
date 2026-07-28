@@ -318,11 +318,40 @@ impl FilterSpec {
     }
 }
 
+/// Mouse-button bindings for the generic 2D graph interaction path.
+///
+/// The default keeps the legacy single-button behavior: left-dragging a
+/// node moves it, left-dragging the background pans, and a left click
+/// selects (or clears selection). Callers may split those actions across
+/// buttons or disable any action with `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphPointerBindings {
+    pub select_button: Option<MouseButton>,
+    pub pan_button: Option<MouseButton>,
+    pub drag_node_button: Option<MouseButton>,
+}
+
+impl Default for GraphPointerBindings {
+    fn default() -> Self {
+        Self {
+            select_button: Some(MouseButton::Left),
+            pan_button: Some(MouseButton::Left),
+            drag_node_button: Some(MouseButton::Left),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PointerMode {
     Idle,
-    PanningCamera { last: (f64, f64), total: f64 },
-    DraggingNode,
+    Selecting { button: MouseButton, last: (f64, f64), total: f64 },
+    PanningCamera {
+        button: MouseButton,
+        last: (f64, f64),
+        total: f64,
+        select_on_click: bool,
+    },
+    DraggingNode { button: MouseButton },
     /// Wave 2.4 box-select drag — `origin` is the fixed down-point,
     /// `current` tracks the live cursor (updated every `PointerMoved`,
     /// what [`GraphEngine::box_select_rect`] reads for the live rubber-
@@ -331,7 +360,12 @@ enum PointerMode {
     /// the rest of the gesture, even if the user releases/re-holds a
     /// modifier mid-drag (matches every surveyed engine's own convention
     /// — the activating chord is read at mousedown, not mouseup).
-    BoxSelecting { origin: (f64, f64), current: (f64, f64), mode: SelectMode },
+    BoxSelecting {
+        button: MouseButton,
+        origin: (f64, f64),
+        current: (f64, f64),
+        mode: SelectMode,
+    },
 }
 
 /// How [`GraphEngine::apply_selection`]/[`GraphEngine::box_select`]
@@ -517,6 +551,7 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     /// `on_pointer_down`'s doc comment).
     drag_was_group: bool,
     drag_end_policy: DragEndPolicy,
+    pointer_bindings: GraphPointerBindings,
     /// Current keyboard-modifier state (Wave 2.4) — updated from
     /// `PlatformEvent::ModifiersChanged`, read by `on_pointer_down` to
     /// decide box-select vs. camera-pan/node-drag (see
@@ -596,6 +631,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             drag_group: Vec::new(),
             drag_was_group: false,
             drag_end_policy: DragEndPolicy::default(),
+            pointer_bindings: GraphPointerBindings::default(),
             modifiers: ModifierKeys::default(),
             mode: PointerMode::Idle,
             canvas_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
@@ -1405,6 +1441,15 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.drag_end_policy = policy;
     }
 
+    /// Mouse-button bindings for selection, camera pan, and node drag.
+    pub fn pointer_bindings(&self) -> GraphPointerBindings {
+        self.pointer_bindings
+    }
+
+    pub fn set_pointer_bindings(&mut self, bindings: GraphPointerBindings) {
+        self.pointer_bindings = bindings;
+    }
+
     /// Persistently pin `node` at its current position (survives drag
     /// release — Obsidian's explicit-pin affordance, distinct from
     /// "drag holds position while the button is down").
@@ -1503,9 +1548,9 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// `true` if the event was consumed.
     pub fn on_event(&mut self, event: &PlatformEvent) -> bool {
         match event {
-            PlatformEvent::PointerDown { x, y, button: MouseButton::Left } => self.on_pointer_down(*x, *y),
+            PlatformEvent::PointerDown { x, y, button } => self.on_pointer_down(*x, *y, *button),
             PlatformEvent::PointerMoved { x, y } => self.on_pointer_moved(*x, *y),
-            PlatformEvent::PointerUp { x, y, button: MouseButton::Left } => self.on_pointer_up(*x, *y),
+            PlatformEvent::PointerUp { x, y, button } => self.on_pointer_up(*x, *y, *button),
             PlatformEvent::Scroll { dy, .. } => self.on_scroll(*dy),
             // Wave 2.4 modifier tracking — `on_pointer_down` reads
             // `self.modifiers` to decide box-select vs. camera-pan/
@@ -1549,11 +1594,15 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// a spurious `PointerLeft`/defocus with nothing in progress doesn't
     /// spuriously mark the canvas dirty.
     fn cancel_pointer_gesture(&mut self) -> bool {
-        if matches!(self.mode, PointerMode::Idle) {
-            return false;
-        }
+        let button = match self.mode {
+            PointerMode::Idle => return false,
+            PointerMode::Selecting { button, .. }
+            | PointerMode::PanningCamera { button, .. }
+            | PointerMode::DraggingNode { button }
+            | PointerMode::BoxSelecting { button, .. } => button,
+        };
         let (x, y) = self.last_pointer_screen;
-        self.on_pointer_up(x, y)
+        self.on_pointer_up(x, y, button)
     }
 
     /// A mapped nav key going down (Wave 2.5): a direct user key-press is
@@ -1596,21 +1645,67 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         }
     }
 
-    fn on_pointer_down(&mut self, x: f64, y: f64) -> bool {
-        if !self.canvas_rect.contains(x, y) {
+    fn on_pointer_down(&mut self, x: f64, y: f64, button: MouseButton) -> bool {
+        if !self.canvas_rect.contains(x, y) || !matches!(self.mode, PointerMode::Idle) {
             return false;
+        }
+        let can_select = self.pointer_bindings.select_button == Some(button);
+        let can_pan = self.pointer_bindings.pan_button == Some(button);
+        let can_drag_node = self.pointer_bindings.drag_node_button == Some(button);
+        if !can_select && !can_pan && !can_drag_node {
+            return false;
+        }
+        self.last_pointer_screen = (x, y);
+
+        // A dedicated pan button owns the gesture before node picking.
+        if can_pan && !can_select && !can_drag_node {
+            self.camera_transition = None;
+            self.mode = PointerMode::PanningCamera {
+                button,
+                last: (x, y),
+                total: 0.0,
+                select_on_click: false,
+            };
+            self.dirty = true;
+            return true;
         }
         // Wave 2.4: a held Shift ALWAYS starts a box-select, even when
         // the down-point lands directly on a node (the oss doc's own
         // cytoscape-issue-1583 note — modifier-held mousedown wins over
         // node-grab dispatch). See `box_select_mode_for`'s doc comment
         // for the full modifier -> mode mapping.
-        if let Some(mode) = box_select_mode_for(self.modifiers) {
-            self.mode = PointerMode::BoxSelecting { origin: (x, y), current: (x, y), mode };
-            self.dirty = true;
-            return true;
+        if can_select {
+            if let Some(mode) = box_select_mode_for(self.modifiers) {
+                self.mode = PointerMode::BoxSelecting {
+                    button,
+                    origin: (x, y),
+                    current: (x, y),
+                    mode,
+                };
+                self.dirty = true;
+                return true;
+            }
         }
         if let Some(hit) = pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
+            if !can_drag_node {
+                if can_select {
+                    self.mode = PointerMode::Selecting { button, last: (x, y), total: 0.0 };
+                    self.dirty = true;
+                    return true;
+                }
+                if can_pan {
+                    self.camera_transition = None;
+                    self.mode = PointerMode::PanningCamera {
+                        button,
+                        last: (x, y),
+                        total: 0.0,
+                        select_on_click: false,
+                    };
+                    self.dirty = true;
+                    return true;
+                }
+                return false;
+            }
             // Wave 2.4 group drag: dragging a node already IN the
             // multi-selection moves the WHOLE selection together;
             // dragging anything else drags just that one node (and, on
@@ -1631,7 +1726,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 })
                 .collect();
 
-            self.mode = PointerMode::DraggingNode;
+            self.mode = PointerMode::DraggingNode { button };
             self.drag.start(hit);
             // Pin-during-drag for EVERY moved member (d3-force canon —
             // `fx`/`fy` are the ONLY pin primitive, drag-in-progress and
@@ -1646,7 +1741,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             // it back to 0.0.
             self.layout.set_alpha_target(self.interaction.drag_alpha_target);
             self.reheat(self.interaction.drag_alpha_target);
-        } else {
+        } else if can_pan {
             // 2D quality audit A1 / graph-strengthening arc G1.5: a
             // background pan is real-time user input, so it wins over any
             // in-flight PROGRAMMATIC camera transition — the same rule
@@ -1656,7 +1751,16 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             // (`engine.rs`) fights the user's own drag every frame until
             // the animation finishes.
             self.camera_transition = None;
-            self.mode = PointerMode::PanningCamera { last: (x, y), total: 0.0 };
+            self.mode = PointerMode::PanningCamera {
+                button,
+                last: (x, y),
+                total: 0.0,
+                select_on_click: can_select,
+            };
+        } else if can_select {
+            self.mode = PointerMode::Selecting { button, last: (x, y), total: 0.0 };
+        } else {
+            return false;
         }
         self.dirty = true;
         true
@@ -1667,22 +1771,37 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         let mut handled = false;
 
         match self.mode {
-            PointerMode::DraggingNode => {
+            PointerMode::Selecting { button, last, total } => {
+                let dx = x - last.0;
+                let dy = y - last.1;
+                self.mode = PointerMode::Selecting {
+                    button,
+                    last: (x, y),
+                    total: total + (dx * dx + dy * dy).sqrt(),
+                };
+                handled = true;
+            }
+            PointerMode::DraggingNode { .. } => {
                 if self.drag.dragging_node().is_some() {
                     self.apply_drag_shift((x, y));
                 }
                 handled = true;
             }
-            PointerMode::PanningCamera { last, total } => {
+            PointerMode::PanningCamera { button, last, total, select_on_click } => {
                 let dx = x - last.0;
                 let dy = y - last.1;
                 self.camera.pan_x += dx;
                 self.camera.pan_y += dy;
-                self.mode = PointerMode::PanningCamera { last: (x, y), total: total + (dx * dx + dy * dy).sqrt() };
+                self.mode = PointerMode::PanningCamera {
+                    button,
+                    last: (x, y),
+                    total: total + (dx * dx + dy * dy).sqrt(),
+                    select_on_click,
+                };
                 handled = true;
             }
-            PointerMode::BoxSelecting { origin, mode, .. } => {
-                self.mode = PointerMode::BoxSelecting { origin, current: (x, y), mode };
+            PointerMode::BoxSelecting { button, origin, mode, .. } => {
+                self.mode = PointerMode::BoxSelecting { button, origin, current: (x, y), mode };
                 handled = true;
             }
             PointerMode::Idle => {}
@@ -1719,9 +1838,47 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         handled
     }
 
-    fn on_pointer_up(&mut self, x: f64, y: f64) -> bool {
+    fn activate_selection_at(&mut self, x: f64, y: f64) {
+        match pick::nearest_node(
+            &self.graph,
+            &self.particles,
+            &self.camera,
+            self.canvas_rect,
+            (x, y),
+            &self.visible,
+        ) {
+            Some(hit) if self.clusters.cluster_of(hit).is_some_and(|id| self.clusters.is_collapsed(id)) => {
+                if let Some(id) = self.clusters.cluster_of(hit) {
+                    self.expand_cluster(id);
+                }
+            }
+            Some(hit) => self.select(hit),
+            None => self.clear_selection(),
+        }
+    }
+
+    fn on_pointer_up(&mut self, x: f64, y: f64, button: MouseButton) -> bool {
+        let active_button = match self.mode {
+            PointerMode::Idle => return false,
+            PointerMode::Selecting { button, .. }
+            | PointerMode::PanningCamera { button, .. }
+            | PointerMode::DraggingNode { button }
+            | PointerMode::BoxSelecting { button, .. } => button,
+        };
+        if active_button != button {
+            return false;
+        }
+
         match self.mode {
-            PointerMode::DraggingNode => {
+            PointerMode::Selecting { total, .. } => {
+                self.mode = PointerMode::Idle;
+                if total < self.interaction.click_drag_threshold_px && self.canvas_rect.contains(x, y) {
+                    self.activate_selection_at(x, y);
+                }
+                self.dirty = true;
+                true
+            }
+            PointerMode::DraggingNode { .. } => {
                 if let Some(anchor) = self.drag.stop() {
                     let policy = self.drag_end_policy;
                     let was_group = self.drag_was_group;
@@ -1772,9 +1929,12 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 self.dirty = true;
                 true
             }
-            PointerMode::PanningCamera { total, .. } => {
+            PointerMode::PanningCamera { total, select_on_click, .. } => {
                 self.mode = PointerMode::Idle;
-                if total < self.interaction.click_drag_threshold_px && self.canvas_rect.contains(x, y) {
+                if select_on_click
+                    && total < self.interaction.click_drag_threshold_px
+                    && self.canvas_rect.contains(x, y)
+                {
                     match pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
                         // A collapsed super-node's designated expand
                         // affordance is a single click on it (this raw-
@@ -1883,6 +2043,94 @@ mod tests {
         let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
         engine.set_canvas_rect(rect);
         engine
+    }
+
+    #[test]
+    fn default_pointer_bindings_preserve_legacy_left_drag_pan() {
+        let (mut engine, a, _b) = two_node_chain_engine();
+        assert_eq!(engine.pointer_bindings(), GraphPointerBindings::default());
+
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 130.0, y: 120.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 130.0, y: 120.0, button: MouseButton::Left });
+        assert_eq!(engine.selected, Some(a));
+        assert!(engine.is_pinned(a));
+
+        let pan_before = (engine.camera.pan_x, engine.camera.pan_y);
+        engine.on_event(&PlatformEvent::PointerDown { x: 500.0, y: 400.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 525.0, y: 410.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 525.0, y: 410.0, button: MouseButton::Left });
+        assert_eq!(
+            (engine.camera.pan_x, engine.camera.pan_y),
+            (pan_before.0 + 25.0, pan_before.1 + 10.0),
+        );
+    }
+
+    #[test]
+    fn flow_bindings_use_middle_pan_and_left_select_without_node_drag() {
+        let (mut engine, a, _b) = two_node_chain_engine();
+        let bindings = GraphPointerBindings {
+            select_button: Some(MouseButton::Left),
+            pan_button: Some(MouseButton::Middle),
+            drag_node_button: None,
+        };
+        engine.set_pointer_bindings(bindings);
+        assert_eq!(engine.pointer_bindings(), bindings);
+
+        let node_before = engine.particles[a.index()];
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerUp { x: 100.0, y: 100.0, button: MouseButton::Left });
+        assert_eq!(engine.selected, Some(a), "left click must still select");
+        assert!(!engine.is_pinned(a), "selection-only binding must not pin or drag the node");
+        assert_eq!((engine.particles[a.index()].x, engine.particles[a.index()].y), (node_before.x, node_before.y));
+
+        let pan_before = (engine.camera.pan_x, engine.camera.pan_y);
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Middle });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 140.0, y: 115.0 });
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { button: MouseButton::Middle, .. }));
+        assert_eq!(
+            (engine.camera.pan_x, engine.camera.pan_y),
+            (pan_before.0 + 40.0, pan_before.1 + 15.0),
+            "middle drag must pan even when it starts over a node",
+        );
+        assert!(!engine.on_event(&PlatformEvent::PointerUp {
+            x: 140.0,
+            y: 115.0,
+            button: MouseButton::Left,
+        }));
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { button: MouseButton::Middle, .. }));
+        assert!(engine.on_event(&PlatformEvent::PointerUp {
+            x: 140.0,
+            y: 115.0,
+            button: MouseButton::Middle,
+        }));
+        assert_eq!(engine.selected, Some(a), "middle pan must not alter selection");
+        assert!(!engine.is_pinned(a), "middle pan over a node must never start node drag");
+    }
+
+    #[test]
+    fn focus_loss_cancels_middle_pan() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.set_pointer_bindings(GraphPointerBindings {
+            select_button: Some(MouseButton::Left),
+            pan_button: Some(MouseButton::Middle),
+            drag_node_button: None,
+        });
+
+        engine.on_event(&PlatformEvent::PointerDown { x: 300.0, y: 300.0, button: MouseButton::Middle });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 340.0, y: 320.0 });
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { button: MouseButton::Middle, .. }));
+        assert!(engine.on_event(&PlatformEvent::WindowFocused(false)));
+        assert!(matches!(engine.mode, PointerMode::Idle));
+
+        let pan_after_focus_loss = (engine.camera.pan_x, engine.camera.pan_y);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 380.0, y: 350.0 });
+        assert_eq!((engine.camera.pan_x, engine.camera.pan_y), pan_after_focus_loss);
+        assert!(!engine.on_event(&PlatformEvent::PointerUp {
+            x: 380.0,
+            y: 350.0,
+            button: MouseButton::Middle,
+        }));
     }
 
     /// Down(bg point) -> Moved xN -> Up: each Move pans the camera by
@@ -2807,7 +3055,7 @@ mod tests {
     fn window_defocus_finalizes_an_in_progress_node_drag_and_leaves_it_sticky_pinned() {
         let (mut engine, a, _b) = two_node_chain_engine();
         engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
-        assert!(matches!(engine.mode, PointerMode::DraggingNode), "fixture sanity: must genuinely be dragging node a");
+        assert!(matches!(engine.mode, PointerMode::DraggingNode { .. }), "fixture sanity: must genuinely be dragging node a");
         assert!(engine.layout.alpha_target() > 0.0, "a drag must hold the sustained alpha target while in progress");
 
         assert!(engine.on_event(&PlatformEvent::WindowFocused(false)));
