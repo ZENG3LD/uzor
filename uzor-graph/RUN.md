@@ -187,8 +187,8 @@ re-settle around it, then freeze again on release.
 
 ## What's explicitly deferred (see in-tree comments)
 
-- **Porting the Yozarest forensic app onto this engine** — separate
-  later run; this crate has zero forensic/case-specific types by
+- **Porting the Foxhound transaction-flow app onto this engine** — separate
+  consumer work; this crate has zero forensic/case-specific types by
   design.
 - **3D** — 2D only, per the engine design doc.
 - **Direct `uzor-render-wgpu-instanced` `QuadInstance`/`LineInstance`

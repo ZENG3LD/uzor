@@ -8,12 +8,10 @@
 //! `RenderContext::fill_text` through a REAL paragraph-layout pipeline
 //! (`uzor_text::draw_paragraph`), and even that one is a single fixed
 //! paragraph at one font/size/color — it has no headings, no multiple
-//! sizes, no numbers table, no muted-label row. `uzor-typeset`'s own
-//! richer fixtures (`showcase.rs`/`yozarest_report.rs`) exist but are
-//! either real Foxhound case content (inappropriate to repurpose for a
-//! generic engine-calibration fixture) or a heavy multi-page PDF-export
-//! pipeline (`pages_to_pdf`) not shaped for a quick `RenderContext`-
-//! comparable PNG). Building `typography_page` directly gives exact
+//! sizes, no numbers table, no muted-label row. `uzor-typeset`'s richer
+//! `showcase.rs` fixture is a heavy multi-page PDF-export pipeline
+//! (`pages_to_pdf`) not shaped for a quick `RenderContext`-comparable
+//! PNG. Building `typography_page` directly gives exact
 //! control over the content profile the owner specified: an H1 + H2
 //! heading pair, two body paragraphs at 13-14px (via the REAL
 //! `uzor_text::layout_text`/`draw_paragraph` pipeline — the same one
