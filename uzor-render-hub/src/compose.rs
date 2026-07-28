@@ -417,25 +417,28 @@ pub fn submit_urx_composed(
     // crosshairs remain on top. One retained blitter handles both
     // layers. Wave 5b (`urx-wave5-compose-cutover-design-2026-07-25.md`
     // §4 5b): both layers now record through
-    // `uzor_render_urx::UrxRenderContext` and render through the SAME
-    // per-window `NativeUrxRenderer` Phase 3 drives, instead of
-    // rasterising into a CPU `tiny-skia` pixmap and uploading it.
+    // `uzor_render_urx::UrxRenderContext` and render through dedicated
+    // per-layer `NativeUrxRenderer` instances, instead of rasterising
+    // into a CPU `tiny-skia` pixmap and uploading it. Separate renderers
+    // are required because Phase 3, cached overlay refresh, and dynamic
+    // overlay can all record into this encoder before its one submit;
+    // a later renderer upload must not overwrite an earlier pass's
+    // still-pending instance buffers.
     if let Some(cached_job) = cached_overlay.as_mut() {
         let needs_refresh = state.urx_compose_overlay_cache.as_ref().is_none_or(|cache| {
             cache.key != cached_job.key || cache.width != surf_w || cache.height != surf_h
         });
         if needs_refresh {
-            // Lazy-init, independent of Phase 3's own lazy-init
-            // (`compose_urx_native_into_swap`) — Phase 3 may have been
-            // skipped entirely this frame by the dead-pass elimination.
-            if state.urx_native_renderer.is_none() {
-                state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+            // Lazy-init an independent buffer arena. Phase 3 and the
+            // dynamic overlay can both record later in the same encoder.
+            if state.urx_cached_overlay_renderer.is_none() {
+                state.urx_cached_overlay_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
                     device.clone(),
                     queue.clone(),
                     wgpu::TextureFormat::Rgba8Unorm,
                 ));
             }
-            let uploaded = match state.urx_native_renderer.as_mut() {
+            let uploaded = match state.urx_cached_overlay_renderer.as_mut() {
                 Some(renderer) => build_overlay_texture_native(
                     &device,
                     &queue,
@@ -479,11 +482,11 @@ pub fn submit_urx_composed(
 
     if let Some(overlay_fn) = overlay.as_mut() {
         if surf_w > 0 && surf_h > 0 {
-            // Lazy-init, independently of both Phase 3 AND the
-            // cached-overlay branch above (neither is guaranteed to
-            // have run this frame).
-            if state.urx_native_renderer.is_none() {
-                state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+            // Lazy-init an independent buffer arena. Neither Phase 3
+            // nor the cached-overlay branch is guaranteed to run, but
+            // either may already have recorded work into this encoder.
+            if state.urx_dynamic_overlay_renderer.is_none() {
+                state.urx_dynamic_overlay_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
                     device.clone(),
                     queue.clone(),
                     wgpu::TextureFormat::Rgba8Unorm,
@@ -528,7 +531,7 @@ pub fn submit_urx_composed(
                     Some(UrxComposeOverlayDynamic { texture, view, width: surf_w, height: surf_h });
             }
             if let Some(dynamic) = state.urx_compose_overlay_dynamic.as_ref() {
-                if let Some(renderer) = state.urx_native_renderer.as_mut() {
+                if let Some(renderer) = state.urx_dynamic_overlay_renderer.as_mut() {
                     if let Err(e) = renderer.render_into_encoder(
                         &scene,
                         &mut encoder,
@@ -973,8 +976,8 @@ struct UploadedOverlay {
 /// [`uzor_render_urx::UrxRenderContext`] (the SAME `RenderContext` ->
 /// `Scene` bridge Phase 3's own `Wgpu`/`Auto` 2D channel already uses)
 /// instead of rasterising into a CPU `tiny-skia` pixmap, then renders
-/// the resulting `Scene` through `renderer` (the SAME per-window
-/// `NativeUrxRenderer` Phase 3 drives) into a FRESH sampleable texture.
+/// the resulting `Scene` through `renderer` (the dedicated retained-
+/// overlay `NativeUrxRenderer`) into a FRESH sampleable texture.
 /// Returns `None` for a zero-sized surface (nothing to paint) — this is
 /// the cached-overlay call site's exact drop-in replacement for the
 /// prior `build_overlay_texture` (`needs_refresh`-gated, so a fresh
@@ -1089,6 +1092,111 @@ fn blit_overlay_onto(
 mod tests {
     use super::*;
 
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+        .ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("uzor-render-hub-compose-test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        }))
+        .ok()
+    }
+
+    fn rgba_texture(
+        device: &wgpu::Device,
+        label: &'static str,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    fn readback_pixel(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        width: u32,
+        height: u32,
+        x: u32,
+        y: u32,
+    ) -> [u8; 4] {
+        let aligned_stride = (width * 4 + 255) & !255;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("uzor-render-hub-compose-test-readback"),
+            size: (aligned_stride * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(aligned_stride),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        rx.recv()
+            .expect("map_async callback channel closed before firing")
+            .expect("staging buffer map failed");
+        let mapped = slice.get_mapped_range();
+        let offset = (y * aligned_stride + x * 4) as usize;
+        let pixel = [mapped[offset], mapped[offset + 1], mapped[offset + 2], mapped[offset + 3]];
+        drop(mapped);
+        staging.unmap();
+        pixel
+    }
+
+    fn solid_scene(width: u32, height: u32, color: [u8; 4]) -> uzor_urx_core::Scene {
+        let mut scene = uzor_urx_core::Scene::new();
+        scene.push(uzor_urx_core::DrawCommand::FillRect {
+            rect: uzor_urx_core::Rect::new(0.0, 0.0, width as f64, height as f64),
+            radii: None,
+            brush: uzor_urx_core::math::Brush::Solid(
+                uzor_urx_core::math::Color::from_rgba8(color[0], color[1], color[2], color[3]),
+            ),
+            transform: uzor_urx_core::Affine::IDENTITY,
+        });
+        scene
+    }
+
     fn probe_scene() -> uzor_urx_core::Scene {
         let mut scene = uzor_urx_core::Scene::new();
         scene.push(uzor_urx_core::DrawCommand::FillRect {
@@ -1149,5 +1257,51 @@ mod tests {
             }
             _ => unreachable!("checked above"),
         }
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn independent_native_renderers_preserve_cached_and_dynamic_overlay_payloads_before_single_submit() {
+        let Some((device, queue)) = test_device() else { return };
+        const SIZE: u32 = 32;
+        let (cached_texture, cached_view) =
+            rgba_texture(&device, "uzor-render-hub-compose-test-cached", SIZE, SIZE);
+        let (dynamic_texture, dynamic_view) =
+            rgba_texture(&device, "uzor-render-hub-compose-test-dynamic", SIZE, SIZE);
+        let mut cached_renderer = uzor_urx_wgpu::NativeUrxRenderer::new(
+            device.clone(),
+            queue.clone(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let mut dynamic_renderer = uzor_urx_wgpu::NativeUrxRenderer::new(
+            device.clone(),
+            queue.clone(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let cached_scene = solid_scene(SIZE, SIZE, [210, 35, 45, 255]);
+        let dynamic_scene = solid_scene(SIZE, SIZE, [35, 210, 80, 255]);
+        let viewport = uzor_urx_wgpu::Viewport { width: SIZE, height: SIZE };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("uzor-render-hub-compose-test-shared-encoder"),
+        });
+
+        cached_renderer
+            .render_into_encoder(&cached_scene, &mut encoder, &cached_view, viewport)
+            .expect("cached overlay scene must record");
+        dynamic_renderer
+            .render_into_encoder(&dynamic_scene, &mut encoder, &dynamic_view, viewport)
+            .expect("dynamic overlay scene must record");
+        queue.submit(Some(encoder.finish()));
+
+        assert_eq!(
+            readback_pixel(&device, &queue, &cached_texture, SIZE, SIZE, 16, 16),
+            [210, 35, 45, 255],
+            "the dynamic upload must not replace the cached overlay payload",
+        );
+        assert_eq!(
+            readback_pixel(&device, &queue, &dynamic_texture, SIZE, SIZE, 16, 16),
+            [35, 210, 80, 255],
+            "the dynamic overlay must retain its own payload",
+        );
     }
 }

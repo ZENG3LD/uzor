@@ -51,8 +51,11 @@
 //!    (`urx-wave6-autodetect-cutover-design-2026-07-25.md` §3) flipped
 //!    the ordinary (non-compose) `submit_urx_wgpu` path too — the exact
 //!    function `uzor-render-hub::detect_backend`'s future GPU-autodetect
-//!    arm will make live. Both cutovers share ONE per-window
-//!    `NativeUrxRenderer` instance (`WindowRenderState.urx_native_renderer`).
+//!    arm will make live. Ordinary native submits and composed Phase 3
+//!    share `WindowRenderState.urx_native_renderer`; composed cached and
+//!    dynamic overlays use independent per-window renderer instances so
+//!    multiple passes recorded before one submit cannot alias instance
+//!    buffers.
 //!
 //! ## Native pipelines (Wave 1 + Wave 2 + Wave 3 + Wave 4)
 //!

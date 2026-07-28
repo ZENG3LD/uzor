@@ -518,6 +518,13 @@ impl NativeUrxRenderer {
     /// `uzor_urx_core::validate::validate_command` and skipped +
     /// countered inside `encode::encode_scene`, same policy as
     /// `uzor-urx-cpu`.
+    ///
+    /// Record at most one call on a given renderer between queue
+    /// submits. Instance uploads use `queue.write_buffer` at offset
+    /// zero; a second call before submission would replace payloads
+    /// referenced by the first recorded pass. Compositors that record
+    /// multiple passes into one encoder must use independent renderer
+    /// instances (and therefore independent buffer arenas).
     pub fn render_into_encoder(
         &mut self,
         scene: &uzor_urx_core::scene::Scene,
