@@ -234,12 +234,26 @@ pub fn draw_edges<N, E>(
 
 fn draw_styled_edge(
     render: &mut dyn RenderContext,
-    segment: LineSegment,
+    mut segment: LineSegment,
     style: &EdgeVisualStyle,
     dimmed: bool,
     target_radius: f64,
     theme: &GraphTheme,
 ) {
+    if let Some(offset) = style.lateral_offset.filter(|value| value.is_finite()) {
+        let dx = segment.x2 - segment.x1;
+        let dy = segment.y2 - segment.y1;
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > 1e-6 {
+            let offset_x = -dy / length * f64::from(offset);
+            let offset_y = dx / length * f64::from(offset);
+            segment.x1 += offset_x;
+            segment.y1 += offset_y;
+            segment.x2 += offset_x;
+            segment.y2 += offset_y;
+        }
+    }
+
     let color = style
         .tint
         .as_deref()
@@ -1165,6 +1179,7 @@ mod tests {
         circle_batch_colors: Vec<String>,
         current_dash: Vec<f64>,
         line_batches: Vec<(usize, String, f64, Vec<f64>, f64)>,
+        line_segments: Vec<Vec<LineSegment>>,
         alpha_changes: Vec<f64>,
         /// Every `set_stroke_color` call, in order — unlike `state.stroke_color`
         /// (which a `save()`/`restore()` bracket resets away by the time a
@@ -1263,6 +1278,7 @@ mod tests {
                 return;
             }
             self.line_batches.push((lines.len(), color.to_owned(), width, self.current_dash.clone(), self.state.global_alpha));
+            self.line_segments.push(lines.to_vec());
         }
     }
     impl uzor::render::RenderContext for ColorOrderRecorder {
@@ -1329,6 +1345,11 @@ mod tests {
         assert_eq!(render.line_batches[0].1, theme.edge_color);
         assert_eq!(render.line_batches[0].2, theme.edge_width);
         assert!(render.line_batches[0].3.is_empty());
+        let expected_from = camera.world_to_screen((-20.0, 0.0), viewport);
+        let expected_to = camera.world_to_screen((20.0, 0.0), viewport);
+        let rendered = render.line_segments[0][0];
+        assert_eq!((rendered.x1, rendered.y1), expected_from, "the default style must not displace the from endpoint");
+        assert_eq!((rendered.x2, rendered.y2), expected_to, "the default style must not displace the to endpoint");
         assert!(render.circle_batch_colors.contains(&category_color("cat-a", &theme.category_palette)));
         assert!(render.circle_batch_colors.contains(&category_color("cat-b", &theme.category_palette)));
     }
@@ -1375,6 +1396,7 @@ mod tests {
             alpha: Some(0.35),
             width: Some(4.0),
             dash: Some(crate::style::DashPattern::Pattern(vec![6.0, 2.0])),
+            lateral_offset: None,
             directed: true,
         }));
         let particles = vec![Particle::at(-20.0, 0.0), Particle::at(20.0, 0.0)];
@@ -1399,6 +1421,50 @@ mod tests {
         assert!((render.line_batches[0].4 - 0.35).abs() < 1e-6);
         assert_eq!(render.line_batches[1].0, 2);
         assert!(render.line_batches[1].3.is_empty(), "arrowhead wings stay solid");
+    }
+
+    #[test]
+    fn draw_edges_offsets_parallel_segments_and_arrowheads_in_opposite_screen_directions() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        let positive = graph.push_edge(a, b, 1.0, ());
+        let negative = graph.push_edge(a, b, 1.0, ());
+        graph.set_edge_style(positive, Some(EdgeVisualStyle {
+            lateral_offset: Some(6.0),
+            directed: true,
+            ..EdgeVisualStyle::default()
+        }));
+        graph.set_edge_style(negative, Some(EdgeVisualStyle {
+            lateral_offset: Some(-6.0),
+            directed: true,
+            ..EdgeVisualStyle::default()
+        }));
+        let particles = vec![Particle::at(-20.0, 0.0), Particle::at(20.0, 0.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![a, b];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let mut render = ColorOrderRecorder::default();
+
+        assert_eq!(draw_edges(&mut render, &graph, &particles, &ctx), 2);
+
+        assert_eq!(render.line_segments.len(), 4, "each styled directed edge emits its main segment and arrowhead batch");
+        let positive_segment = render.line_segments[0][0];
+        let positive_arrow = render.line_segments[1][0];
+        let negative_segment = render.line_segments[2][0];
+        let negative_arrow = render.line_segments[3][0];
+        assert!((positive_segment.y1 - negative_segment.y1 - 12.0).abs() < 1e-6);
+        assert!((positive_segment.y2 - negative_segment.y2 - 12.0).abs() < 1e-6);
+        assert!((positive_arrow.y1 - negative_arrow.y1 - 12.0).abs() < 1e-6, "arrowhead tip must move with its styled segment");
+        assert_eq!(positive_segment.x1, negative_segment.x1);
+        assert_eq!(positive_segment.x2, negative_segment.x2);
     }
 
     /// Graph-strengthening arc G1.4: `draw_nodes` must honor `ctx.hidden`

@@ -75,6 +75,12 @@ pub struct EdgeVisualStyle {
     pub width: Option<f32>,
     /// Optional dashed construction.
     pub dash: Option<DashPattern>,
+    /// Signed lateral displacement from the endpoint-to-endpoint segment.
+    ///
+    /// The 2D renderer interprets this in screen pixels. The 3D renderer
+    /// interprets it in world units along a deterministic perpendicular.
+    /// `None` preserves the endpoint geometry exactly.
+    pub lateral_offset: Option<f32>,
     /// Draw an arrowhead at the `to` endpoint.
     pub directed: bool,
 }

@@ -620,6 +620,13 @@ pub fn build_edge_instances<N, E>(
             }
             let dir = delta / length;
             let element_style = edge.style.as_ref();
+            let lateral_offset = element_style
+                .and_then(|value| value.lateral_offset)
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0);
+            let lateral = stable_edge_perpendicular(dir) * lateral_offset;
+            let offset_from = from + lateral;
+            let offset_to = to + lateral;
             let width_scale = element_style
                 .and_then(|value| value.width)
                 .map(|width| width.max(0.1) / 1.75)
@@ -641,12 +648,12 @@ pub fn build_edge_instances<N, E>(
                 .map(|pattern| dashed_spans(length, &pattern))
                 .unwrap_or_else(|| vec![(0.0, length)]);
             for (start, end) in spans {
-                instances.push(line_instance(mesh, from + dir * start, from + dir * end, width_scale, tint));
+                instances.push(line_instance(mesh, offset_from + dir * start, offset_from + dir * end, width_scale, tint));
             }
 
             if element_style.is_some_and(|value| value.directed) {
                 let target_radius = graph.get_node(edge.to).map(|node| node.radius.max(0.01)).unwrap_or(0.01);
-                let tip = to - dir * (target_radius * 1.1).min(length * 0.45);
+                let tip = offset_to - dir * (target_radius * 1.1).min(length * 0.45);
                 let arrow_length = (target_radius * 1.1).max(2.0).min(length * 0.35);
                 let back = tip - dir * arrow_length;
                 let mut side = dir.cross(Vec3::Y);
@@ -659,6 +666,18 @@ pub fn build_edge_instances<N, E>(
             }
     }
     instances
+}
+
+fn stable_edge_perpendicular(direction: Vec3) -> Vec3 {
+    let absolute = direction.abs();
+    let reference = if absolute.y <= absolute.x && absolute.y <= absolute.z {
+        Vec3::Y
+    } else if absolute.x <= absolute.z {
+        Vec3::X
+    } else {
+        Vec3::Z
+    };
+    direction.cross(reference).normalize_or_zero()
 }
 
 fn line_instance(mesh: &Arc<Mesh>, from: Vec3, to: Vec3, width_scale: f32, tint: [f32; 4]) -> Node {
@@ -1705,6 +1724,7 @@ mod tests {
             alpha: Some(0.25),
             width: Some(3.5),
             dash: Some(DashPattern::Pattern(vec![4.0, 2.0])),
+            lateral_offset: None,
             directed: true,
         }));
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 30.0, 0.0)];
@@ -1717,6 +1737,45 @@ mod tests {
         assert!(edges.iter().all(|node| (node.scale.x - 2.0).abs() < 1e-6), "3.5px override maps to 2x the 1.75px base");
         assert!((edges[0].scale.y - 4.0).abs() < 1e-6);
         assert_eq!(edges[1].translation, Vec3::new(0.0, 6.0, 0.0));
+    }
+
+    #[test]
+    fn build_edge_instances_offsets_parallel_lines_and_arrowheads_in_opposite_world_directions() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        let positive = graph.push_edge(a, b, 1.0, ());
+        let negative = graph.push_edge(a, b, 1.0, ());
+        graph.set_edge_style(positive, Some(EdgeVisualStyle {
+            lateral_offset: Some(2.0),
+            directed: true,
+            ..EdgeVisualStyle::default()
+        }));
+        graph.set_edge_style(negative, Some(EdgeVisualStyle {
+            lateral_offset: Some(-2.0),
+            directed: true,
+            ..EdgeVisualStyle::default()
+        }));
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 10.0, 0.0)];
+        let mesh = unit_edge_quad_mesh();
+
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new(), &Graph3DEdgeStyle::default());
+
+        assert_eq!(edges.len(), 6, "each solid directed edge emits one segment and two arrow wings");
+        assert_eq!(edges[0].translation, Vec3::new(0.0, 0.0, -2.0));
+        assert_eq!(edges[3].translation, Vec3::new(0.0, 0.0, 2.0));
+        assert!((edges[1].translation.z - edges[4].translation.z + 4.0).abs() < 1e-6, "arrowhead tips must move with their edge");
+        assert_eq!(edges[0].scale.y, edges[3].scale.y);
+    }
+
+    #[test]
+    fn stable_edge_perpendicular_is_finite_and_orthogonal_for_axis_aligned_directions() {
+        for direction in [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z] {
+            let perpendicular = stable_edge_perpendicular(direction);
+            assert!(perpendicular.is_finite());
+            assert!((perpendicular.length() - 1.0).abs() < 1e-6);
+            assert!(perpendicular.dot(direction).abs() < 1e-6);
+        }
     }
 
     #[test]
