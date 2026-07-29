@@ -651,6 +651,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         }
     }
 
+    /// Advance view-only transitions without invoking the graph layout.
+    ///
+    /// This is the production path for projections whose particle
+    /// coordinates are supplied externally and pinned.
+    pub fn tick_view(&mut self, dt: f32) {
+        self.advance_dimension_transition(dt);
+    }
+
     /// Seed every particle's `(x, y)` from `positions` (mirrors
     /// [`crate::engine::GraphEngine::seed_positions`]'s own 2D-position
     /// signature — the common bootstrap shape, migrating an existing

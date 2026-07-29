@@ -762,6 +762,39 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.tick(dt)
     }
 
+    /// Advance only camera animation and held keyboard navigation.
+    ///
+    /// Static projections with externally assigned, pinned coordinates must
+    /// use this instead of [`GraphEngine::tick`]: the layout is deliberately
+    /// not invoked, so an immutable graph does not rebuild force buffers or
+    /// walk its topology on every frame.
+    pub fn tick_view(&mut self, dt: f32) -> LayoutTickResult {
+        let was_hot = self.is_hot();
+        self.apply_held_nav_keys(dt);
+        self.advance_camera_transition(dt);
+        self.last_tick = LayoutTickResult {
+            alpha: self.last_tick.alpha,
+            max_displacement: 0.0,
+            settled: true,
+        };
+        if was_hot || self.is_hot() {
+            self.dirty = true;
+        }
+        self.last_tick
+    }
+
+    /// [`GraphEngine::tick_view`] using wall-clock elapsed time since the
+    /// previous real-time tick.
+    pub fn tick_view_real_time(&mut self) -> LayoutTickResult {
+        let now = Instant::now();
+        let dt = match self.last_frame_at {
+            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),
+            None => 1.0 / 60.0,
+        };
+        self.last_frame_at = Some(now);
+        self.tick_view(dt)
+    }
+
     pub fn reheat(&mut self, alpha: f32) {
         self.layout.reheat(alpha);
         self.dirty = true;
@@ -2529,6 +2562,26 @@ mod tests {
         engine.on_key_down(KeyCode::ArrowRight);
         engine.apply_held_nav_keys(1.0);
         assert_eq!(engine.camera.pan_x, before, "a zeroed key_pan_speed_px_per_s override must produce zero pan");
+    }
+
+    #[test]
+    fn tick_view_advances_navigation_without_moving_static_particles() {
+        let (graph, a, _b, _c) = chain_graph();
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.seed_positions(&[(10.0, 20.0), (30.0, 40.0), (50.0, 60.0)]);
+        let before = engine.particles.clone();
+        let camera_before = engine.camera.pan_x;
+        engine.on_key_down(KeyCode::ArrowRight);
+
+        for _ in 0..1_000 {
+            let result = engine.tick_view(1.0 / 60.0);
+            assert!(result.settled);
+            assert_eq!(result.max_displacement, 0.0);
+        }
+
+        assert_eq!(engine.particles, before);
+        assert!(engine.camera.pan_x > camera_before);
+        assert_eq!(engine.particles[a.index()].x, 10.0);
     }
 
     /// A real `draw()` call (through `uzor-export`'s headless render path,
