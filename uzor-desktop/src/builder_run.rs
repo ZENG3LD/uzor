@@ -20,7 +20,7 @@ use uzor::framework::builder::AppBuilder;
 use uzor_render_hub::{RenderBackend, RenderSurfaceFactory};
 
 use crate::manager::{Manager, ManagerError};
-use crate::scene3d_app::Scene3DApp;
+use crate::scene3d_app::{scene3d_frame_submission, Scene3DApp};
 
 // ── AppRun ────────────────────────────────────────────────────────────────────
 
@@ -85,13 +85,13 @@ where
             .as_deref()
             .map(crate::utils::single_instance::single_instance);
         let mut mgr = Manager::from_built(built);
-        // `<A as Scene3DApp<P>>::scene3d` is a plain trait-method item
-        // (no captured environment) — coerces to the bare
-        // `fn(&mut A, u32, u32) -> Option<Scene3DFrame>` pointer
-        // `Manager::scene3d_hook` stores, so the per-frame dispatch code
+        // The monomorphized dispatch helper is a plain function item
+        // with no captured environment, returning either a retained Arc
+        // scene or the original owned frame. `Manager::scene3d_hook`
+        // stores it so the per-frame dispatch code
         // (bound only by `A: App<P>`) can call through it without itself
         // needing the narrower `Scene3DApp<P>` bound.
-        mgr.scene3d_hook = Some(<A as Scene3DApp<P>>::scene3d);
+        mgr.scene3d_hook = Some(scene3d_frame_submission::<A, P>);
         mgr.run()
     }
 }

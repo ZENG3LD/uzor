@@ -43,7 +43,7 @@ pub use factory::{BackendContext, GpuDevicePool, Submit3DError, UrxCapture3D, Wi
 pub use retained::RetainedCache;
 pub use compose::{
     CachedOverlayJob, Compose3DJob, ComposeParticlesJob, ComposedOutcome,
-    submit_urx_composed, submit_particles_composed,
+    submit_urx_composed, submit_urx_composed_with_scene, submit_particles_composed,
 };
 pub use urx_engine_handle::UrxEngineHandle;
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};

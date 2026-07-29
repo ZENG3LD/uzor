@@ -165,6 +165,48 @@ pub fn submit_urx_composed(
     state:      &mut WindowRenderState,
     base_color: [f32; 4],
     jobs:       &[Compose3DJob],
+    overlay: Option<Box<dyn FnMut(&mut dyn RenderContext)>>,
+    cached_overlay: Option<CachedOverlayJob>,
+) -> Result<ComposedOutcome, Submit3DError> {
+    submit_urx_composed_impl(
+        state,
+        None,
+        base_color,
+        jobs,
+        overlay,
+        cached_overlay,
+    )
+}
+
+/// Composes a frame from a caller-owned or caller-retained scene.
+///
+/// Unlike [`submit_urx_composed`], this path borrows `scene` directly
+/// instead of requiring a move into the hub-owned scene slot. This lets
+/// retained [`std::sync::Arc`] scene storage be reused across frames
+/// without cloning its node buffers.
+pub fn submit_urx_composed_with_scene(
+    state:      &mut WindowRenderState,
+    scene:      &uzor_urx_3d::Scene3D,
+    base_color: [f32; 4],
+    jobs:       &[Compose3DJob],
+    overlay: Option<Box<dyn FnMut(&mut dyn RenderContext)>>,
+    cached_overlay: Option<CachedOverlayJob>,
+) -> Result<ComposedOutcome, Submit3DError> {
+    submit_urx_composed_impl(
+        state,
+        Some(scene),
+        base_color,
+        jobs,
+        overlay,
+        cached_overlay,
+    )
+}
+
+fn submit_urx_composed_impl(
+    state:      &mut WindowRenderState,
+    scene_override: Option<&uzor_urx_3d::Scene3D>,
+    base_color: [f32; 4],
+    jobs:       &[Compose3DJob],
     mut overlay: Option<Box<dyn FnMut(&mut dyn RenderContext)>>,
     mut cached_overlay: Option<CachedOverlayJob>,
 ) -> Result<ComposedOutcome, Submit3DError> {
@@ -335,7 +377,7 @@ pub fn submit_urx_composed(
             }
             state.urx_renderer_3d = Some(r3d);
         }
-        if state.urx_scene_3d.is_none() {
+        if scene_override.is_none() && state.urx_scene_3d.is_none() {
             state.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
         }
 
@@ -365,7 +407,10 @@ pub fn submit_urx_composed(
         // using OUR encoder — no acquire, no submit, no present here.
         let r3d_ok = {
             let r3d   = match state.urx_renderer_3d.as_mut() { Some(r) => r, None => { jobs_skipped += 1; continue; } };
-            let scene = match state.urx_scene_3d.as_ref()    { Some(s) => s, None => { jobs_skipped += 1; continue; } };
+            let scene = match scene_override.or(state.urx_scene_3d.as_ref()) {
+                Some(s) => s,
+                None => { jobs_skipped += 1; continue; }
+            };
             let off   = match state.urx_offscreen_3d.as_ref() { Some(o) => o, None => { jobs_skipped += 1; continue; } };
             r3d.render(&device, &queue, &mut encoder, &off.view, &job.camera, scene);
             true

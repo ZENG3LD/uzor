@@ -16,7 +16,7 @@ use uzor::layout::{LayoutManager, WindowHost};
 use uzor::framework::multi_window::WindowSpec;
 use uzor_render_hub::{
     RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
-    submit_frame, SubmitParams, Compose3DJob, submit_urx_composed, SubmitOutcome,
+    submit_frame, SubmitParams, Compose3DJob, SubmitOutcome,
 };
 use uzor::layout::window::{WindowDecorations, WindowProvider};
 
@@ -36,7 +36,7 @@ use uzor::framework::render_control::RenderControl;
 
 use uzor::framework::frame_profiler::EmaF64;
 
-use crate::scene3d_app::Scene3DFrame;
+use crate::scene3d_app::Scene3DFrameSubmission;
 
 // ── HubControl ────────────────────────────────────────────────────────────────
 
@@ -277,15 +277,15 @@ pub struct Manager<A: App<P>, P: DockPanel> {
 
     /// 3D dispatch hook (W3D arc plan §1.7, Wave 2) — `None` for every
     /// ordinary `.run()`-started app (zero behavior change);
-    /// `crate::builder_run::AppRun3D::run_with_3d` sets it to
-    /// `<A as Scene3DApp<P>>::scene3d` before calling `Manager::run`. A
+    /// `crate::builder_run::AppRun3D::run_with_3d` sets it to the
+    /// monomorphized owned/retained dispatcher before `Manager::run`. A
     /// bare `fn` pointer (not a boxed closure) so this field can live on
     /// `Manager<A, P>` — which is generic over `A: App<P>` ONLY — without
     /// requiring every instantiation to also satisfy the narrower
     /// `Scene3DApp<P>` bound; only `AppRun3D::run_with_3d`'s own impl
     /// block carries that bound, at the one call site that produces the
     /// function pointer.
-    pub(crate) scene3d_hook: Option<fn(&mut A, u32, u32) -> Option<Scene3DFrame>>,
+    pub(crate) scene3d_hook: Option<fn(&mut A, u32, u32) -> Option<Scene3DFrameSubmission>>,
 
     /// Per-window state, keyed by `winit::WindowId` for fast event routing.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1524,9 +1524,10 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
             let outcome = if let Some(mut frame) = scene3d_frame {
                 let (surf_w, surf_h) = surf_wh.expect("scene3d_frame is Some only when surf_wh was already Some");
-                pw.render_state.with_renderer_3d(|_, scene| *scene = frame.scene);
                 pw.render_state.set_capture_3d(true);
-                let job = Compose3DJob { camera: frame.camera, dst_x: 0, dst_y: 0, dst_w: surf_w, dst_h: surf_h };
+                let job = Compose3DJob { camera: frame.camera(), dst_x: 0, dst_y: 0, dst_w: surf_w, dst_h: surf_h };
+                let overlay = frame.take_overlay();
+                let cached_overlay = frame.take_cached_overlay();
                 // Wave 4 (W3D arc plan §1.3 label-overlay gap): forward the
                 // app's optional 2D overlay closure into the new post-3D
                 // Phase 4.5 — see `uzor-render-hub::compose`'s own doc
@@ -1536,12 +1537,13 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 // so an owned `Box` sidesteps threading a borrowed
                 // `&mut dyn FnMut(...)` reference's lifetime through a
                 // generic function boundary entirely.
-                match submit_urx_composed(
+                match uzor_render_hub::submit_urx_composed_with_scene(
                     &mut pw.render_state,
+                    frame.scene(),
                     bg_color.components,
                     std::slice::from_ref(&job),
-                    frame.overlay.take(),
-                    frame.cached_overlay.take(),
+                    overlay,
+                    cached_overlay,
                 ) {
                     Ok(composed) => SubmitOutcome { metrics: Default::default(), surface_lost: composed.surface_lost },
                     Err(e) => {
