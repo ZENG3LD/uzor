@@ -1062,6 +1062,24 @@ impl<P: DockPanel> DockState<P> {
         self.drop_policy = Some(policy);
     }
 
+    /// Run the installed drop policy for one candidate — the renderer's
+    /// door to "which zones are even available for this drag" (drop-zone
+    /// affordances must not advertise placements the policy would veto).
+    /// No policy installed → every zone passes through.
+    pub fn drop_policy_check(
+        &self,
+        dragged: &P,
+        target: Option<&P>,
+        zone: DropZone,
+        is_window_edge: bool,
+        frac: (f32, f32),
+    ) -> Option<DropZone> {
+        match &self.drop_policy {
+            Some(p) => p(dragged, target, zone, is_window_edge, frac),
+            None => Some(zone),
+        }
+    }
+
     /// End panel drag - perform the drop action, or float the leaf if no target
     pub fn end_panel_drag(&mut self, area_width: f32, area_height: f32) -> Option<FloatingWindowId> {
         let drag = self.panel_drag.take()?;
