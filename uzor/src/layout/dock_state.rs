@@ -1347,6 +1347,16 @@ impl<P: DockPanel> DockState<P> {
         Some(id)
     }
 
+    /// Re-home an EXISTING leaf as a root-level split on `zone`'s side
+    /// (e.g. send an already-hosted strip back to the canonical
+    /// container-bottom band), honouring the panel's fixed strip height.
+    /// Call [`Self::layout`] afterwards.
+    pub fn move_leaf_to_root_split_fixed(&mut self, leaf_id: LeafId, zone: DropZone) {
+        let space_px = self.strip_space_px(self.layout_area, zone);
+        self.tree.move_leaf_to_root_split(leaf_id, zone);
+        self.fix_strip_proportions(leaf_id, zone, space_px);
+    }
+
     // =============================================================================
     // Tab Management
     // =============================================================================
