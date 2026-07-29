@@ -1391,6 +1391,12 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
             let regions = self.app.regions();
             let now_inst = std::time::Instant::now();
+            // Register declared regions before selecting the 2D/3D paint
+            // branch. A 3D frame skips the 2D region loops below, but its
+            // declared regions must still participate in cadence scheduling;
+            // otherwise `region_states` stays empty and the legacy no-region
+            // fallback requests an immediate redraw forever.
+            register_region_schedule_states(&regions, &mut pw.region_states);
 
             // Wave 2 (W3D arc plan §1.7): a `run_with_3d`-armed app can
             // take over this window's swapchain-writing path for the
@@ -1823,6 +1829,17 @@ where
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn register_region_schedule_states(
+    regions: &[uzor::render::RenderRegion],
+    region_states: &mut HashMap<&'static str, uzor::render::RegionScheduleState>,
+) {
+    for region in regions {
+        region_states
+            .entry(region.id)
+            .or_insert_with(uzor::render::RegionScheduleState::default);
+    }
+}
+
 /// Downcast an opaque `Box<dyn AnyFactory>` to `Box<dyn RenderSurfaceFactory>`.
 ///
 /// Tries each known concrete factory type in turn.  Returns `None` and prints a
@@ -1905,3 +1922,29 @@ fn argb_to_alpha_color(argb: u32) -> vello::peniko::color::AlphaColor<vello::pen
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn _suppress_unused(_: &dyn WindowProvider, _: &Rect) {}
+
+#[cfg(test)]
+mod tests {
+    use super::register_region_schedule_states;
+    use std::collections::HashMap;
+    use uzor::core::types::Rect;
+    use uzor::render::{RegionScheduleState, RenderRegion};
+
+    #[test]
+    fn declared_regions_register_before_paint_branch_without_affecting_legacy_empty_path() {
+        let mut states: HashMap<&'static str, RegionScheduleState> = HashMap::new();
+
+        register_region_schedule_states(&[], &mut states);
+        assert!(states.is_empty(), "legacy no-region path must remain empty");
+
+        let regions = [
+            RenderRegion::capped("graph", Rect::default(), 60),
+            RenderRegion::dirty_driven("inspector", Rect::default()),
+        ];
+        register_region_schedule_states(&regions, &mut states);
+
+        assert_eq!(states.len(), 2);
+        assert!(states.contains_key("graph"));
+        assert!(states.contains_key("inspector"));
+    }
+}
