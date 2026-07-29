@@ -1021,15 +1021,43 @@ impl<P: DockPanel> DockState<P> {
             let mut target = None;
             let mut zone = None;
 
-            // Check headers first — dropping on a header always creates tabs
-            for (&id, &header_rect) in &self.panel_headers {
-                if id == drag.dragged_leaf_id {
-                    continue; // Skip the panel being dragged
+            // A torn-out TAB may target its own source leaf (dropping on
+            // the source leaf's compass edges splits that very leaf); a
+            // whole-leaf drag never targets itself.
+            let skip_self = matches!(drag.payload, DragPayload::Leaf);
+
+            // Window-level edges FIRST — when the global edge band overlaps
+            // a local target (a panel header hugging the window top), the
+            // GLOBAL drop must win, otherwise no cursor position can reach
+            // it at all.
+            if let Some(edge_rects) = &self.window_edge_rects {
+                let zones = [DropZone::Up, DropZone::Down, DropZone::Left, DropZone::Right];
+                for (i, rect) in edge_rects.iter().enumerate() {
+                    if rect.contains(x, y) {
+                        let fallback_target = self.panel_rects.keys()
+                            .find(|&&id| !skip_self || id != drag.dragged_leaf_id)
+                            .copied();
+                        if let Some(ft) = fallback_target {
+                            target = Some(ft);
+                            zone = Some(zones[i]);
+                            drag.is_window_edge = true;
+                            break;
+                        }
+                    }
                 }
-                if header_rect.contains(x, y) {
-                    target = Some(id);
-                    zone = Some(DropZone::Center);
-                    break;
+            }
+
+            // Headers — dropping on a header always creates tabs
+            if target.is_none() {
+                for (&id, &header_rect) in &self.panel_headers {
+                    if id == drag.dragged_leaf_id {
+                        continue; // Skip the panel being dragged
+                    }
+                    if header_rect.contains(x, y) {
+                        target = Some(id);
+                        zone = Some(DropZone::Center);
+                        break;
+                    }
                 }
             }
 
@@ -1042,31 +1070,6 @@ impl<P: DockPanel> DockState<P> {
                             zone = Some(DropZone::Center);
                             break;
                         }
-                }
-            }
-
-            // A torn-out TAB may target its own source leaf (dropping on
-            // the source leaf's compass edges splits that very leaf); a
-            // whole-leaf drag never targets itself.
-            let skip_self = matches!(drag.payload, DragPayload::Leaf);
-
-            // Check window-level edges (before panel body detection)
-            if target.is_none() {
-                if let Some(edge_rects) = &self.window_edge_rects {
-                    let zones = [DropZone::Up, DropZone::Down, DropZone::Left, DropZone::Right];
-                    for (i, rect) in edge_rects.iter().enumerate() {
-                        if rect.contains(x, y) {
-                            let fallback_target = self.panel_rects.keys()
-                                .find(|&&id| !skip_self || id != drag.dragged_leaf_id)
-                                .copied();
-                            if let Some(ft) = fallback_target {
-                                target = Some(ft);
-                                zone = Some(zones[i]);
-                                drag.is_window_edge = true;
-                                break;
-                            }
-                        }
-                    }
                 }
             }
 
