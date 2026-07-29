@@ -147,6 +147,11 @@ pub struct InputCoordinator {
     /// transitions (the live persistent snapshot is re-baked at frame start
     /// since 2026-07-28, so the transition baseline needs its own slot).
     hover_prev: Option<WidgetId>,
+    /// Layer plain [`Self::register`] calls land on. `None` = main. Set
+    /// around a nested render (a panel reused inside a modal) so its
+    /// plain registrations join the modal's layer instead of leaking to
+    /// the base layer under the modal barrier. Reset every frame.
+    default_layer: Option<LayerId>,
 }
 
 impl InputCoordinator {
@@ -165,7 +170,15 @@ impl InputCoordinator {
             scoped_regions: Vec::new(),
             text_fields: TextFieldStore::new(),
             hover_prev: None,
+            default_layer: None,
         }
+    }
+
+    /// Override the layer plain [`Self::register`] calls land on (`None`
+    /// = back to main). Scope it tightly around a nested render — e.g. a
+    /// panel hosted inside a modal — and always reset afterwards.
+    pub fn set_default_layer(&mut self, layer: Option<LayerId>) {
+        self.default_layer = layer;
     }
 
     /// Start new frame — clear widget registrations and layers, keep persistent state.
@@ -190,6 +203,7 @@ impl InputCoordinator {
 
         self.widgets.clear();
         self.layers.clear();
+        self.default_layer = None;
         self.layers.push(Layer {
             id: LayerId::main(),
             z_order: 0,
@@ -241,6 +255,7 @@ impl InputCoordinator {
 
         self.widgets.clear();
         self.layers.clear();
+        self.default_layer = None;
         self.layers.push(Layer {
             id: LayerId::main(),
             z_order: 0,
@@ -250,9 +265,11 @@ impl InputCoordinator {
         self.text_fields.begin_frame();
     }
 
-    /// Register widget for this frame on main layer
+    /// Register widget for this frame on the default layer (main unless
+    /// overridden via [`Self::set_default_layer`]).
     pub fn register(&mut self, id: impl Into<WidgetId>, rect: Rect, sense: Sense) {
-        self.register_on_layer(id, rect, sense, &LayerId::main());
+        let layer = self.default_layer.clone().unwrap_or_else(LayerId::main);
+        self.register_on_layer(id, rect, sense, &layer);
     }
 
     /// Register on specific layer
