@@ -313,19 +313,18 @@ impl<P: DockPanel> DockState<P> {
     }
 
 
-    /// Create tab bar for multi-tab leaf
+    /// Create tab bar for multi-tab leaf — chips share the leaf's FULL
+    /// width evenly (VSCode-style stretch, owner spec 2026-07-29), not
+    /// text-sized left-packed islands.
     fn create_tab_bar(&self, leaf_id: LeafId, leaf: &Leaf<P>, rect: PanelRect) -> TabBarInfo {
         let tab_bar_height = self.header_height;
         let mut tab_items = Vec::new();
         let mut tab_x_offset = 0.0_f32;
+        let even_w = rect.width / leaf.panels.len().max(1) as f32;
 
         for (i, panel) in leaf.panels.iter().enumerate() {
             let title = panel.title();
-            let estimated_text_w = title.len() as f32 * 7.0; // ~7px per char
-            let tab_w: f32 = (8.0 + estimated_text_w + 24.0 + 8.0).clamp(80.0, 200.0);
-
-            let remaining = rect.width - tab_x_offset;
-            let tab_w = tab_w.min(remaining).max(0.0);
+            let tab_w = even_w.max(0.0);
 
             let tab_rect = PanelRect::new(
                 rect.x + tab_x_offset,
