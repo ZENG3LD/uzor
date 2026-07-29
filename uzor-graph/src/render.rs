@@ -180,7 +180,11 @@ pub fn draw_edges<N, E>(
     let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut dim_segments: Vec<LineSegment> = Vec::new();
-    let mut styled_segments: Vec<(LineSegment, EdgeVisualStyle, bool, f64)> = Vec::new();
+    let mut styled_body_batches: Vec<StyledEdgeBatch> = Vec::new();
+    let mut styled_arrow_batches: Vec<StyledEdgeBatch> = Vec::new();
+    let mut styled_body_batch_indices: HashMap<ResolvedEdgeStyle, usize> = HashMap::new();
+    let mut styled_arrow_batch_indices: HashMap<ResolvedEdgeStyle, usize> = HashMap::new();
+    let mut styled_count = 0;
 
     for (eid, edge) in graph.edges() {
         if ctx.hidden.contains(&edge.from) || ctx.hidden.contains(&edge.to) {
@@ -201,7 +205,30 @@ pub fn draw_edges<N, E>(
                 .get_node(edge.to)
                 .map(|node| ctx.camera.node_screen_radius(node.radius))
                 .unwrap_or(0.0);
-            styled_segments.push((seg, style.clone(), dimmed, target_radius));
+            let resolved = ResolvedEdgeStyle::new(style, dimmed, ctx.theme);
+            let (body, arrowhead) = styled_edge_geometry(seg, style, target_radius, resolved.width());
+            push_styled_segment(
+                &mut styled_body_batches,
+                &mut styled_body_batch_indices,
+                resolved.clone(),
+                body,
+            );
+            if let Some(arrowhead) = arrowhead {
+                let arrow_style = resolved.with_solid_dash();
+                push_styled_segment(
+                    &mut styled_arrow_batches,
+                    &mut styled_arrow_batch_indices,
+                    arrow_style.clone(),
+                    arrowhead[0],
+                );
+                push_styled_segment(
+                    &mut styled_arrow_batches,
+                    &mut styled_arrow_batch_indices,
+                    arrow_style,
+                    arrowhead[1],
+                );
+            }
+            styled_count += 1;
         } else if dimmed {
             dim_segments.push(seg);
         } else {
@@ -209,7 +236,7 @@ pub fn draw_edges<N, E>(
         }
     }
 
-    let drawn = segments.len() + dim_segments.len() + styled_segments.len();
+    let drawn = segments.len() + dim_segments.len() + styled_count;
     // Round caps + >=1.5px width: sub-1.5px butt-capped hairlines at an
     // angle read as a beaded staircase on a standard-DPI display even
     // with correct AA (live-verified 2026-07-18); industry engines
@@ -224,22 +251,103 @@ pub fn draw_edges<N, E>(
     if !segments.is_empty() {
         render.draw_line_batch(&segments, &ctx.theme.edge_color, ctx.theme.edge_width);
     }
-    for (segment, style, dimmed, target_radius) in &styled_segments {
-        draw_styled_edge(render, *segment, style, *dimmed, *target_radius, ctx.theme);
+    for batch in &styled_body_batches {
+        draw_styled_edge_batch(render, batch);
     }
+    // Arrowheads are a separate solid pass so they remain legible over
+    // every body and edges with the same resolved arrow style collapse
+    // into one backend call even when their body dash patterns differ.
+    for batch in &styled_arrow_batches {
+        draw_styled_edge_batch(render, batch);
+    }
+    render.set_line_dash(&[]);
+    render.set_global_alpha(1.0);
     render.set_line_cap("butt");
     render.restore();
     drawn
 }
 
-fn draw_styled_edge(
-    render: &mut dyn RenderContext,
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResolvedEdgeStyle {
+    color: String,
+    width_bits: u64,
+    alpha_bits: u64,
+    dash_bits: Vec<u64>,
+}
+
+impl ResolvedEdgeStyle {
+    fn new(style: &EdgeVisualStyle, dimmed: bool, theme: &GraphTheme) -> Self {
+        let color = style
+            .tint
+            .clone()
+            .unwrap_or_else(|| if dimmed { theme.edge_dim_color.clone() } else { theme.edge_color.clone() });
+        let width = style
+            .width
+            .map(|value| value.max(0.1) as f64)
+            .unwrap_or(if dimmed { theme.edge_dim_width } else { theme.edge_width });
+        let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
+            * if dimmed { theme.dim_alpha } else { 1.0 };
+        let dash = style
+            .dash
+            .as_ref()
+            .and_then(|pattern| pattern.resolved())
+            .unwrap_or_default()
+            .into_iter()
+            .map(f64::from)
+            .map(f64::to_bits)
+            .collect();
+        Self {
+            color,
+            width_bits: width.to_bits(),
+            alpha_bits: alpha.to_bits(),
+            dash_bits: dash,
+        }
+    }
+
+    fn with_solid_dash(mut self) -> Self {
+        self.dash_bits.clear();
+        self
+    }
+
+    fn width(&self) -> f64 {
+        f64::from_bits(self.width_bits)
+    }
+
+    fn alpha(&self) -> f64 {
+        f64::from_bits(self.alpha_bits)
+    }
+
+    fn dash(&self) -> Vec<f64> {
+        self.dash_bits.iter().copied().map(f64::from_bits).collect()
+    }
+}
+
+struct StyledEdgeBatch {
+    style: ResolvedEdgeStyle,
+    segments: Vec<LineSegment>,
+}
+
+fn push_styled_segment(
+    batches: &mut Vec<StyledEdgeBatch>,
+    indices: &mut HashMap<ResolvedEdgeStyle, usize>,
+    style: ResolvedEdgeStyle,
+    segment: LineSegment,
+) {
+    if let Some(index) = indices.get(&style).copied() {
+        batches[index].segments.push(segment);
+    } else {
+        let index = batches.len();
+        indices.insert(style.clone(), index);
+        batches.push(StyledEdgeBatch { style, segments: vec![segment] });
+    }
+}
+
+fn styled_edge_geometry(
     mut segment: LineSegment,
     style: &EdgeVisualStyle,
-    dimmed: bool,
     target_radius: f64,
-    theme: &GraphTheme,
-) {
+    width: f64,
+) -> (LineSegment, Option<[LineSegment; 2]>) {
     if let Some(offset) = style.lateral_offset.filter(|value| value.is_finite()) {
         let dx = segment.x2 - segment.x1;
         let dy = segment.y2 - segment.y1;
@@ -254,30 +362,7 @@ fn draw_styled_edge(
         }
     }
 
-    let color = style
-        .tint
-        .as_deref()
-        .unwrap_or(if dimmed { &theme.edge_dim_color } else { &theme.edge_color });
-    let width = style
-        .width
-        .map(|value| value.max(0.1) as f64)
-        .unwrap_or(if dimmed { theme.edge_dim_width } else { theme.edge_width });
-    let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
-        * if dimmed { theme.dim_alpha } else { 1.0 };
-    let dash: Vec<f64> = style
-        .dash
-        .as_ref()
-        .and_then(|pattern| pattern.resolved())
-        .unwrap_or_default()
-        .into_iter()
-        .map(f64::from)
-        .collect();
-
-    render.set_global_alpha(alpha);
-    render.set_line_dash(&dash);
-    render.draw_line_batch(&[segment], color, width);
-
-    if style.directed {
+    let arrowhead = if style.directed {
         let dx = segment.x2 - segment.x1;
         let dy = segment.y2 - segment.y1;
         let length = (dx * dx + dy * dy).sqrt();
@@ -291,20 +376,28 @@ fn draw_styled_edge(
             let wing = arrow_length * 0.45;
             let back_x = tip_x - ux * arrow_length;
             let back_y = tip_y - uy * arrow_length;
-            render.set_line_dash(&[]);
-            render.draw_line_batch(
-                &[
-                    LineSegment { x1: tip_x, y1: tip_y, x2: back_x - uy * wing, y2: back_y + ux * wing },
-                    LineSegment { x1: tip_x, y1: tip_y, x2: back_x + uy * wing, y2: back_y - ux * wing },
-                ],
-                color,
-                width,
-            );
+            Some([
+                LineSegment { x1: tip_x, y1: tip_y, x2: back_x - uy * wing, y2: back_y + ux * wing },
+                LineSegment { x1: tip_x, y1: tip_y, x2: back_x + uy * wing, y2: back_y - ux * wing },
+            ])
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
+    (segment, arrowhead)
+}
 
-    render.set_line_dash(&[]);
-    render.set_global_alpha(1.0);
+fn draw_styled_edge_batch(render: &mut dyn RenderContext, batch: &StyledEdgeBatch) {
+    let dash = batch.style.dash();
+    render.set_global_alpha(batch.style.alpha());
+    render.set_line_dash(&dash);
+    render.draw_line_batch(
+        &batch.segments,
+        &batch.style.color,
+        batch.style.width(),
+    );
 }
 
 /// Per-frame node/label draw counts. [`crate::engine::GraphEngine::draw`]
@@ -1415,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_edges_constructs_custom_dash_width_tint_alpha_and_direction_arrowhead() {
+    fn draw_edges_keeps_dashed_directed_bodies_and_solid_arrowheads_geometrically_distinct() {
         let mut graph = Graph::new();
         let a = graph.push_node((), "a", "x", 2.0);
         let b = graph.push_node((), "b", "x", 2.0);
@@ -1450,6 +1543,57 @@ mod tests {
         assert!((render.line_batches[0].4 - 0.35).abs() < 1e-6);
         assert_eq!(render.line_batches[1].0, 2);
         assert!(render.line_batches[1].3.is_empty(), "arrowhead wings stay solid");
+        let body = render.line_segments[0][0];
+        let arrow_left = render.line_segments[1][0];
+        let arrow_right = render.line_segments[1][1];
+        assert_ne!(
+            (body.x1, body.y1, body.x2, body.y2),
+            (arrow_left.x1, arrow_left.y1, arrow_left.x2, arrow_left.y2),
+            "the arrowhead must retain its own geometry instead of duplicating the body",
+        );
+        assert_ne!(
+            (arrow_left.x1, arrow_left.y1, arrow_left.x2, arrow_left.y2),
+            (arrow_right.x1, arrow_right.y1, arrow_right.x2, arrow_right.y2),
+            "the two arrowhead wings must remain distinct",
+        );
+        assert_eq!((arrow_left.x1, arrow_left.y1), (arrow_right.x1, arrow_right.y1), "both solid wings must share one computed tip");
+    }
+
+    #[test]
+    fn draw_edges_batches_many_same_style_bodies_and_arrowheads_into_two_backend_calls() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        for _ in 0..64 {
+            let edge = graph.push_edge(a, b, 1.0, ());
+            graph.set_edge_style(edge, Some(EdgeVisualStyle {
+                tint: Some("#55ccaa".into()),
+                alpha: Some(0.7),
+                width: Some(2.5),
+                dash: Some(crate::style::DashPattern::Pattern(vec![5.0, 3.0])),
+                lateral_offset: None,
+                directed: true,
+            }));
+        }
+        let particles = vec![Particle::at(-20.0, 0.0), Particle::at(20.0, 0.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![a, b];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let mut render = ColorOrderRecorder::default();
+
+        assert_eq!(draw_edges(&mut render, &graph, &particles, &ctx), 64);
+        assert_eq!(render.line_batches.len(), 2, "one body batch plus one solid arrowhead batch must replace 128 per-edge calls");
+        assert_eq!(render.line_batches[0].0, 64);
+        assert_eq!(render.line_batches[0].3, vec![5.0, 3.0]);
+        assert_eq!(render.line_batches[1].0, 128);
+        assert!(render.line_batches[1].3.is_empty());
     }
 
     #[test]
@@ -1484,11 +1628,11 @@ mod tests {
 
         assert_eq!(draw_edges(&mut render, &graph, &particles, &ctx), 2);
 
-        assert_eq!(render.line_segments.len(), 4, "each styled directed edge emits its main segment and arrowhead batch");
+        assert_eq!(render.line_segments.len(), 2, "same-style bodies and arrowheads collapse into one batch per geometry layer");
         let positive_segment = render.line_segments[0][0];
+        let negative_segment = render.line_segments[0][1];
         let positive_arrow = render.line_segments[1][0];
-        let negative_segment = render.line_segments[2][0];
-        let negative_arrow = render.line_segments[3][0];
+        let negative_arrow = render.line_segments[1][2];
         assert!((positive_segment.y1 - negative_segment.y1 - 12.0).abs() < 1e-6);
         assert!((positive_segment.y2 - negative_segment.y2 - 12.0).abs() < 1e-6);
         assert!((positive_arrow.y1 - negative_arrow.y1 - 12.0).abs() < 1e-6, "arrowhead tip must move with its styled segment");
