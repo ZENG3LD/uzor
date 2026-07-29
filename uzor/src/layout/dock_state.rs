@@ -740,32 +740,20 @@ impl<P: DockPanel> DockState<P> {
             props: Vec<f64>,
         }
 
-        /// Fixed-point water-fill for one branch.
-        /// Returns `Some(new_props)` only when current proportions violate minimums.
-        fn water_fill(available: f32, weights: &[f64], mins: &[f32]) -> Option<Vec<f64>> {
-            let n = weights.len();
-            if n == 0 || available <= 0.0 {
-                return None;
-            }
-
-            let w_sum: f64 = weights.iter().sum::<f64>().max(f64::EPSILON);
-            let norm: Vec<f64> = weights.iter().map(|w| w / w_sum).collect();
-
-            let avail_f = available as f64;
-            let all_ok = norm.iter().zip(mins.iter())
-                .all(|(p, m)| p * avail_f + 1e-6 >= *m as f64);
-            if all_ok {
-                return None;
-            }
+        /// Classic water-fill over free (non-fixed) children — returns the
+        /// children's shares of `available` (summing to 1).
+        fn water_fill_free(available: f32, norm: &[f64], mins: &[f32]) -> Vec<f64> {
+            let n = norm.len();
+            let avail_f = (available as f64).max(f64::EPSILON);
 
             let total_min: f32 = mins.iter().sum();
             if total_min >= available {
-                let sum_min = total_min.max(f32::EPSILON) as f64;
-                return Some(mins.iter().map(|&m| m as f64 / sum_min).collect());
+                let sum_min = (total_min as f64).max(f64::EPSILON);
+                return mins.iter().map(|&m| m as f64 / sum_min).collect();
             }
 
             let mut frozen = vec![false; n];
-            let mut out = norm.clone();
+            let mut out = norm.to_vec();
 
             loop {
                 let frozen_min: f64 = (0..n)
@@ -800,6 +788,68 @@ impl<P: DockPanel> DockState<P> {
                     }
                 }
                 if !newly_frozen { break; }
+            }
+
+            let s: f64 = out.iter().sum();
+            if s > f64::EPSILON {
+                for v in &mut out { *v /= s; }
+            }
+            out
+        }
+
+        /// Fixed-point water-fill for one branch.
+        /// `fixed[i] = Some(px)` pins child `i` at EXACTLY that many pixels
+        /// (one-row strips must never stretch when the tree restructures);
+        /// the rest water-fill over the remaining pool by their minimums.
+        /// Returns `Some(new_props)` only when current proportions violate
+        /// a minimum or a fixed extent.
+        fn water_fill(
+            available: f32,
+            weights: &[f64],
+            mins: &[f32],
+            fixed: &[Option<f32>],
+        ) -> Option<Vec<f64>> {
+            let n = weights.len();
+            if n == 0 || available <= 0.0 {
+                return None;
+            }
+
+            let w_sum: f64 = weights.iter().sum::<f64>().max(f64::EPSILON);
+            let norm: Vec<f64> = weights.iter().map(|w| w / w_sum).collect();
+
+            let avail_f = available as f64;
+            let all_ok = (0..n).all(|i| match fixed[i] {
+                Some(f) => (norm[i] * avail_f - f as f64).abs() <= 0.75,
+                None => norm[i] * avail_f + 1e-6 >= mins[i] as f64,
+            });
+            if all_ok {
+                return None;
+            }
+
+            if fixed.iter().all(|f| f.is_none()) {
+                return Some(water_fill_free(available, &norm, mins));
+            }
+
+            // Pin fixed children at exactly their pixels, water-fill the
+            // rest over what remains.
+            let fixed_total: f64 = (0..n).filter_map(|i| fixed[i].map(|v| v as f64)).sum();
+            let rest_pool = (avail_f - fixed_total).max(0.0);
+            let rest: Vec<usize> = (0..n).filter(|&i| fixed[i].is_none()).collect();
+
+            let mut out = vec![0.0f64; n];
+            for i in 0..n {
+                if let Some(f) = fixed[i] {
+                    out[i] = (f as f64 / avail_f).min(1.0);
+                }
+            }
+            if !rest.is_empty() && rest_pool > 0.0 {
+                let rest_w_sum: f64 = rest.iter().map(|&i| norm[i]).sum::<f64>().max(f64::EPSILON);
+                let rest_norm: Vec<f64> = rest.iter().map(|&i| norm[i] / rest_w_sum).collect();
+                let rest_mins: Vec<f32> = rest.iter().map(|&i| mins[i]).collect();
+                let shares = water_fill_free(rest_pool as f32, &rest_norm, &rest_mins);
+                for (k, &i) in rest.iter().enumerate() {
+                    out[i] = shares[k] * rest_pool / avail_f;
+                }
             }
 
             let s: f64 = out.iter().sum();
@@ -842,13 +892,27 @@ impl<P: DockPanel> DockState<P> {
                 } else {
                     branch.children.iter().map(|c| mgr.min_height_for_node(c)).collect()
                 };
+                // Fixed-extent children: a direct LEAF whose active panel
+                // declares a strip height is pinned at exactly that many
+                // pixels in a VERTICAL branch — strips never stretch, no
+                // matter how the tree restructures around them.
+                let fixed: Vec<Option<f32>> = if vertical {
+                    branch.children.iter().map(|c| match c {
+                        PanelNode::Leaf(l) => l
+                            .active_panel()
+                            .and_then(|p| p.preferred_strip_height()),
+                        _ => None,
+                    }).collect()
+                } else {
+                    vec![None; n]
+                };
                 let weights: Vec<f64> = if branch.proportions.len() == n {
                     branch.proportions.clone()
                 } else {
                     vec![1.0; n]
                 };
 
-                let effective_props: Vec<f64> = match water_fill(available, &weights, &mins) {
+                let effective_props: Vec<f64> = match water_fill(available, &weights, &mins, &fixed) {
                     Some(new_props) => {
                         pending.push(Pending { id: branch.id, props: new_props.clone() });
                         new_props
