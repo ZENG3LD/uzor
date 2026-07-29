@@ -338,6 +338,7 @@ impl RenderHub {
         use crate::factories::{
             VelloGpuSurfaceFactory, VelloHybridSurfaceFactory,
             WgpuInstancedSurfaceFactory, TinySkiaSurfaceFactory, VelloCpuSurfaceFactory,
+            UrxSurfaceFactory,
         };
         if !self.pool.initialized.contains(&backend) {
             return None;
@@ -348,6 +349,10 @@ impl RenderHub {
             RenderBackend::InstancedWgpu => Box::new(WgpuInstancedSurfaceFactory::new()),
             RenderBackend::TinySkia      => Box::new(TinySkiaSurfaceFactory::new()),
             RenderBackend::VelloCpu      => Box::new(VelloCpuSurfaceFactory::new(1.0)),
+            RenderBackend::UrxCpu
+            | RenderBackend::UrxWgpu
+            | RenderBackend::UrxHybrid
+            | RenderBackend::UrxWgpuFull => Box::new(UrxSurfaceFactory::new()),
             _                            => return None,
         };
         Some(factory)
@@ -432,5 +437,21 @@ mod tests {
         let mut hub = RenderHub::autodetect(RenderFamily::Vello);
         hub.settings_mut().recalc_mode = "always".into();
         assert_eq!(hub.settings().recalc_mode, "always");
+    }
+
+    #[test]
+    fn factory_for_returns_native_surface_factory_for_every_urx_backend() {
+        let handle = uzor::layout::window::RawHandle::RawWindowHandle(Box::new(42u32));
+
+        for backend in [
+            RenderBackend::UrxCpu,
+            RenderBackend::UrxWgpu,
+            RenderBackend::UrxHybrid,
+            RenderBackend::UrxWgpuFull,
+        ] {
+            let hub = RenderHub::fixed(backend);
+            let factory = hub.factory_for(backend).expect("URX backend must have a factory");
+            assert!(factory.supports(&handle, backend));
+        }
     }
 }

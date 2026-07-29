@@ -60,6 +60,7 @@ pub use factories::{
     VelloGpuSurfaceFactory,
     VelloHybridSurfaceFactory,
     WgpuInstancedSurfaceFactory,
+    UrxSurfaceFactory,
     GpuPrewarm,
     prewarm_vello_gpu,
     GpuDeviceReady,

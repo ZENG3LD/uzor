@@ -952,6 +952,73 @@ impl RenderSurfaceFactory for WgpuInstancedSurfaceFactory {
     }
 }
 
+// ─── UrxSurfaceFactory ────────────────────────────────────────────────────────
+
+/// Native presentation factory for all URX backends.
+///
+/// Every URX submit path presents through a wgpu swapchain on desktop.
+/// `UrxCpu` rasterises on the CPU and uploads its pixmap into the shared target
+/// texture; the other URX variants render or composite directly on the GPU.
+/// Backend-specific renderer resources remain lazy and are created by the
+/// corresponding `submit_urx_*` path.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct UrxSurfaceFactory;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UrxSurfaceFactory {
+    /// Create a native URX surface factory.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for UrxSurfaceFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RenderSurfaceFactory for UrxSurfaceFactory {
+    fn create_render_state(
+        &self,
+        handle: &RawHandle,
+        backend: RenderBackend,
+        size: SurfaceSize,
+    ) -> Result<WindowRenderState, SurfaceError> {
+        if !matches!(
+            backend,
+            RenderBackend::UrxCpu
+                | RenderBackend::UrxWgpu
+                | RenderBackend::UrxHybrid
+                | RenderBackend::UrxWgpuFull
+        ) {
+            return Err(SurfaceError::UnsupportedBackend(backend));
+        }
+
+        let pair = extract_handle_pair(handle, backend)?;
+        let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
+        Ok(WindowRenderState::new_gpu_no_vello(
+            gpu_pool,
+            surface,
+            dev_id,
+            backend,
+            1.0,
+        ))
+    }
+
+    fn supports(&self, handle: &RawHandle, backend: RenderBackend) -> bool {
+        matches!(
+            backend,
+            RenderBackend::UrxCpu
+                | RenderBackend::UrxWgpu
+                | RenderBackend::UrxHybrid
+                | RenderBackend::UrxWgpuFull
+        ) && matches!(handle, RawHandle::RawWindowHandle(_))
+    }
+}
+
 // ─── Canvas2dSurfaceFactory ───────────────────────────────────────────────────
 
 /// Surface factory for the HTML Canvas 2D backend (wasm32 only).
@@ -1171,6 +1238,27 @@ mod tests {
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
         assert!(!f.supports(&handle, RenderBackend::VelloGpu));
         assert!(!f.supports(&handle, RenderBackend::TinySkia));
+    }
+
+    // ── UrxSurfaceFactory ─────────────────────────────────────────────────────
+
+    #[test]
+    fn urx_surface_factory_supports_all_urx_backends_only_on_native_handles() {
+        let f = UrxSurfaceFactory::new();
+        let handle = RawHandle::RawWindowHandle(Box::new(42u32));
+
+        for backend in [
+            RenderBackend::UrxCpu,
+            RenderBackend::UrxWgpu,
+            RenderBackend::UrxHybrid,
+            RenderBackend::UrxWgpuFull,
+        ] {
+            assert!(f.supports(&handle, backend));
+            assert!(!f.supports(&canvas_handle(), backend));
+        }
+
+        assert!(!f.supports(&handle, RenderBackend::VelloGpu));
+        assert!(!f.supports(&handle, RenderBackend::InstancedWgpu));
     }
 
     // ── Canvas2dSurfaceFactory ────────────────────────────────────────────────
