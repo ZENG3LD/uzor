@@ -233,6 +233,21 @@ impl Default for DragDropState {
 // Panel Drag State (application-level)
 // =============================================================================
 
+/// What a panel drag is carrying.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DragPayload {
+    /// The whole leaf (all its tabs travel together) — the classic
+    /// header/grip drag.
+    Leaf,
+    /// A single tab torn out of `dragged_leaf_id`'s stack by its chip.
+    /// On drop the panel LEAVES the stack (Center → joins the target's
+    /// stack; side → a fresh leaf splits the target); on cancel it stays.
+    Tab {
+        /// Index of the tab in the source leaf's `panels`
+        tab_idx: usize,
+    },
+}
+
 /// Drag state for panel being dragged by header
 ///
 /// This is a higher-level state used by the application layer to track
@@ -242,6 +257,8 @@ impl Default for DragDropState {
 pub struct PanelDragState {
     /// Panel being dragged
     pub dragged_leaf_id: LeafId,
+    /// What the drag carries — the whole leaf or a single torn-out tab
+    pub payload: DragPayload,
     /// Current mouse position (panel-local coords)
     pub current_x: f32,
     pub current_y: f32,
@@ -258,6 +275,7 @@ impl PanelDragState {
     pub fn new(dragged_leaf_id: LeafId, x: f32, y: f32) -> Self {
         Self {
             dragged_leaf_id,
+            payload: DragPayload::Leaf,
             current_x: x,
             current_y: y,
             target_leaf_id: None,

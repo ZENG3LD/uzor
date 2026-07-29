@@ -181,3 +181,21 @@ pub fn detect_drop_zone(x: f32, y: f32, width: f32, height: f32) -> DropZone {
         DropZone::Down
     }
 }
+
+/// Sides-only variant of [`detect_drop_zone`]: the panel body is cut into
+/// four triangular quadrants by its (normalized) diagonals, each mapping to
+/// a side split — no Center, no dead area. For consumers that disable
+/// tabify-on-body ([`crate::layout::DockState::set_body_center_drop`]).
+///
+/// Pure math.
+pub fn detect_drop_zone_sides_only(x: f32, y: f32, width: f32, height: f32) -> DropZone {
+    let fx = (x / width.max(1.0)).clamp(0.0, 1.0);
+    let fy = (y / height.max(1.0)).clamp(0.0, 1.0);
+    if fx < fy {
+        if fx < 1.0 - fy { DropZone::Left } else { DropZone::Down }
+    } else if fy < 1.0 - fx {
+        DropZone::Up
+    } else {
+        DropZone::Right
+    }
+}

@@ -942,6 +942,16 @@ impl<P: DockPanel> DockingTree<P> {
 
     // --- Drag & Drop Operations ---
 
+    /// Drop `dragged_id` onto `target_id`'s side `zone`: the TARGET leaf is
+    /// wrapped in a new binary branch along the zone's axis, with the dragged
+    /// leaf on the zone side (VSCode/tessera `wrap_leaf_with` semantics — the
+    /// drop splits the hovered panel itself and never restructures its parent
+    /// row/column).
+    ///
+    /// The previous implementation inserted the dragged leaf into the
+    /// target's PARENT branch and re-inferred the layout from child count, so
+    /// "drop Up onto a leaf in a 2-column row" produced a 3-column row
+    /// instead of a vertical split of the hovered panel.
     pub fn move_leaf_to_branch(&mut self, dragged_id: LeafId, target_id: LeafId, zone: DropZone) {
         if dragged_id == target_id { return; }
 
@@ -956,29 +966,124 @@ impl<P: DockPanel> DockingTree<P> {
         Self::collapse_single_children_branch(&mut self.root);
         Self::fix_branch_layouts(&mut self.root);
 
-        // 3. Verify target still exists after removal/collapse
-        if self.find_leaf(target_id).is_none() { return; }
-
-        // 4. Find target's parent branch after tree restructuring
-        let target_parent_id = match self.find_parent_of_leaf(target_id) {
-            Some(p) => p.id,
+        // 3. Snapshot target after removal/collapse (bail if it vanished)
+        let target_leaf = match self.find_leaf(target_id) {
+            Some(l) => l.clone(),
             None => return,
         };
 
-        // 5. Insert dragged leaf as sibling of target
-        let after = matches!(zone, DropZone::Right | DropZone::Down);
+        // 4. Wrap the target leaf with a new binary branch on the zone axis
+        let (layout, dragged_first) = match zone {
+            DropZone::Left  => (WindowLayout::SplitHorizontal, true),
+            DropZone::Right => (WindowLayout::SplitHorizontal, false),
+            DropZone::Up    => (WindowLayout::SplitVertical,   true),
+            DropZone::Down  => (WindowLayout::SplitVertical,   false),
+            DropZone::Center => return,
+        };
+        let dragged_node = PanelNode::Leaf(dragged_leaf);
+        let target_node  = PanelNode::Leaf(target_leaf);
+        let children = if dragged_first {
+            vec![dragged_node, target_node]
+        } else {
+            vec![target_node, dragged_node]
+        };
+        let branch_id = self.next_branch_id();
+        let new_branch = PanelNode::Branch(Branch {
+            id: branch_id,
+            children,
+            layout,
+            custom_rects: Vec::new(),
+            proportions: vec![0.5, 0.5],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        });
+        // The original target leaf lives on INSIDE the branch (same id) —
+        // exactly the `split_leaf` replacement pattern.
+        self.replace_node_leaf(target_id, new_branch);
+    }
 
-        if let Some(parent) = self.find_branch_mut(target_parent_id) {
-            let target_pos = match parent.children.iter().position(|c| c.leaf_id() == Some(target_id)) {
-                Some(p) => p,
-                None => return,
-            };
-            let insert_pos = if after { target_pos + 1 } else { target_pos };
-            parent.children.insert(insert_pos.min(parent.children.len()), PanelNode::Leaf(dragged_leaf));
-            parent.custom_rects.clear();
-            parent.proportions.clear();
-            parent.layout = Self::infer_layout(parent.children.len());
+    /// Split `leaf_id` on the `zone` side with a brand-new panel — the
+    /// four-directional generalization of [`Self::split_leaf`] (which only
+    /// places the new neighbour Right/Bottom). The original leaf id stays
+    /// valid inside the new binary branch; returns the new neighbour's id.
+    pub fn split_leaf_zone(
+        &mut self,
+        leaf_id: LeafId,
+        zone: DropZone,
+        new_panel: P,
+    ) -> Option<LeafId> {
+        let leaf_clone = self.find_leaf(leaf_id)?.clone();
+        let (layout, new_first) = match zone {
+            DropZone::Left  => (WindowLayout::SplitHorizontal, true),
+            DropZone::Right => (WindowLayout::SplitHorizontal, false),
+            DropZone::Up    => (WindowLayout::SplitVertical,   true),
+            DropZone::Down  => (WindowLayout::SplitVertical,   false),
+            DropZone::Center => return None,
+        };
+        let new_id = self.next_leaf_id();
+        let new_node = PanelNode::Leaf(Leaf::new(new_id, new_panel));
+        let original_node = PanelNode::Leaf(leaf_clone);
+        let children = if new_first {
+            vec![new_node, original_node]
+        } else {
+            vec![original_node, new_node]
+        };
+        let branch_id = self.next_branch_id();
+        let new_branch = PanelNode::Branch(Branch {
+            id: branch_id,
+            children,
+            layout,
+            custom_rects: Vec::new(),
+            proportions: vec![0.5, 0.5],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        });
+        self.replace_node_leaf(leaf_id, new_branch);
+        Some(new_id)
+    }
+
+    /// Wrap the whole tree in a new root branch with a brand-new leaf on
+    /// the `zone` side — the new-panel analogue of
+    /// [`Self::move_leaf_to_root_split`]. An empty tree just gets the leaf.
+    pub fn add_leaf_root_split(&mut self, panel: P, zone: DropZone) -> Option<LeafId> {
+        if self.leaf_count() == 0 {
+            return Some(self.add_leaf(panel));
         }
+        let (layout, new_first) = match zone {
+            DropZone::Left  => (WindowLayout::SplitHorizontal, true),
+            DropZone::Right => (WindowLayout::SplitHorizontal, false),
+            DropZone::Up    => (WindowLayout::SplitVertical,   true),
+            DropZone::Down  => (WindowLayout::SplitVertical,   false),
+            DropZone::Center => return None,
+        };
+        let new_id = self.next_leaf_id();
+        let old_root = std::mem::replace(&mut self.root, Branch {
+            id: BranchId(0), // placeholder
+            children: Vec::new(),
+            layout: WindowLayout::Single,
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            cross_ratio: None,
+            preserve_if_empty: false,
+        });
+        let new_node = PanelNode::Leaf(Leaf::new(new_id, panel));
+        let old_root_node = PanelNode::Branch(old_root);
+        let children = if new_first {
+            vec![new_node, old_root_node]
+        } else {
+            vec![old_root_node, new_node]
+        };
+        let branch_id = self.next_branch_id();
+        self.root = Branch {
+            id: branch_id,
+            children,
+            layout,
+            custom_rects: Vec::new(),
+            proportions: vec![0.5, 0.5],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        };
+        Some(new_id)
     }
 
     pub fn move_leaf_to_root_split(&mut self, dragged_id: LeafId, zone: DropZone) {

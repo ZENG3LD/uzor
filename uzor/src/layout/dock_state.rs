@@ -46,7 +46,7 @@ use crate::layout::docking::{
     Separator, SeparatorOrientation, SeparatorState, SeparatorLevel,
     SnapBackAnimation, TabBarInfo, TabItem, TabReorderState,
     FloatingWindow, FloatingWindowId, FloatingDragState,
-    HitResult, CornerHandle, DropZone, PanelDragState,
+    HitResult, CornerHandle, DropZone, PanelDragState, DragPayload,
     WindowLayout,
 };
 use std::collections::HashMap;
@@ -104,7 +104,25 @@ pub struct DockState<P: DockPanel> {
     /// Per-leaf minimum size overrides in pixels (width, height).
     /// Falls back to `panel.min_size()` when not set.
     leaf_min_sizes: HashMap<LeafId, (f32, f32)>,
+    /// Whether a drop on a panel BODY may resolve to `DropZone::Center`
+    /// (tabify). When disabled the body is classified sides-only — the four
+    /// diagonal quadrants each map to a side split, so no cursor position is
+    /// a dead drop. Consumers without tab UI disable this.
+    body_center_drop: bool,
+    /// Consumer veto/override for drop targeting (panel-type constraints —
+    /// e.g. one-row strips only dock Up/Down). Applied to every candidate
+    /// `(dragged, target, zone)` while a drag is live.
+    drop_policy: Option<DropPolicyFn<P>>,
 }
+
+/// Consumer drop-targeting policy. Arguments: the dragged panel, the
+/// target leaf's ACTIVE panel (`None` only for the window-edge fallback
+/// target), the detected [`DropZone`], `is_window_edge`, and the cursor
+/// position inside the target rect normalized to 0..1 (`(0.5, 0.5)` when
+/// no target rect applies). Returns the zone to use, or `None` to reject
+/// this target entirely.
+pub type DropPolicyFn<P> =
+    Box<dyn Fn(&P, Option<&P>, DropZone, bool, (f32, f32)) -> Option<DropZone> + Send + Sync>;
 
 impl<P: DockPanel> DockState<P> {
     /// Create new docking manager with empty tree
@@ -128,6 +146,8 @@ impl<P: DockPanel> DockState<P> {
             active_leaf: None,
             header_height: 24.0,
             leaf_min_sizes: HashMap::new(),
+            body_center_drop: true,
+            drop_policy: None,
         }
     }
 
@@ -165,6 +185,8 @@ impl<P: DockPanel> DockState<P> {
             active_leaf,
             header_height: 24.0,
             leaf_min_sizes: HashMap::new(),
+            body_center_drop: true,
+            drop_policy: None,
         }
     }
 
@@ -191,6 +213,8 @@ impl<P: DockPanel> DockState<P> {
             active_leaf,
             header_height: 24.0,
             leaf_min_sizes: HashMap::new(),
+            body_center_drop: true,
+            drop_policy: None,
         }
     }
 
@@ -887,6 +911,35 @@ impl<P: DockPanel> DockState<P> {
     pub fn start_panel_drag(&mut self, leaf_id: LeafId, x: f32, y: f32) {
         self.panel_drag = Some(PanelDragState {
             dragged_leaf_id: leaf_id,
+            payload: DragPayload::Leaf,
+            current_x: x,
+            current_y: y,
+            target_leaf_id: None,
+            drop_zone: None,
+            is_window_edge: false,
+        });
+    }
+
+    /// Start a TAB drag — tear `tab_idx` out of `leaf_id`'s stack by its
+    /// chip. Targeting runs exactly like a leaf drag; on drop the single
+    /// panel leaves the stack (Center → joins the target's stack, side →
+    /// a fresh leaf splits the target, edge → root split); cancelling
+    /// leaves the stack untouched.
+    pub fn start_tab_drag(&mut self, leaf_id: LeafId, tab_idx: usize, x: f32, y: f32) {
+        // Only real multi-tab stacks tear by chip — a single-panel leaf
+        // travels whole via the leaf drag (and `apply_tab_drop` relies on
+        // the source leaf surviving `remove_tab`).
+        let valid = self
+            .tree
+            .leaf(leaf_id)
+            .map(|l| l.panels.len() > 1 && tab_idx < l.panels.len())
+            .unwrap_or(false);
+        if !valid {
+            return;
+        }
+        self.panel_drag = Some(PanelDragState {
+            dragged_leaf_id: leaf_id,
+            payload: DragPayload::Tab { tab_idx },
             current_x: x,
             current_y: y,
             target_leaf_id: None,
@@ -929,6 +982,11 @@ impl<P: DockPanel> DockState<P> {
                 }
             }
 
+            // A torn-out TAB may target its own source leaf (dropping on
+            // the source leaf's compass edges splits that very leaf); a
+            // whole-leaf drag never targets itself.
+            let skip_self = matches!(drag.payload, DragPayload::Leaf);
+
             // Check window-level edges (before panel body detection)
             if target.is_none() {
                 if let Some(edge_rects) = &self.window_edge_rects {
@@ -936,7 +994,7 @@ impl<P: DockPanel> DockState<P> {
                     for (i, rect) in edge_rects.iter().enumerate() {
                         if rect.contains(x, y) {
                             let fallback_target = self.panel_rects.keys()
-                                .find(|&&id| id != drag.dragged_leaf_id)
+                                .find(|&&id| !skip_self || id != drag.dragged_leaf_id)
                                 .copied();
                             if let Some(ft) = fallback_target {
                                 target = Some(ft);
@@ -950,17 +1008,47 @@ impl<P: DockPanel> DockState<P> {
             }
 
             // Fall back to panel body detection with drop zone algorithm
+            let mut target_frac = (0.5_f32, 0.5_f32);
             if target.is_none() {
                 for (&id, &rect) in &self.panel_rects {
-                    if id == drag.dragged_leaf_id {
+                    if skip_self && id == drag.dragged_leaf_id {
                         continue;
                     }
                     if rect.contains(x, y) {
                         target = Some(id);
                         let local_x = x - rect.x;
                         let local_y = y - rect.y;
-                        zone = Some(Self::detect_drop_zone(local_x, local_y, rect.width, rect.height));
+                        target_frac = (
+                            (local_x / rect.width.max(1.0)).clamp(0.0, 1.0),
+                            (local_y / rect.height.max(1.0)).clamp(0.0, 1.0),
+                        );
+                        let mut z = Self::detect_drop_zone(local_x, local_y, rect.width, rect.height);
+                        if !self.body_center_drop && z == DropZone::Center {
+                            z = crate::layout::docking::lib::detect_drop_zone_sides_only(
+                                local_x, local_y, rect.width, rect.height,
+                            );
+                        }
+                        zone = Some(z);
                         break;
+                    }
+                }
+            }
+
+            // Consumer drop policy — veto or override the candidate.
+            if let (Some(t), Some(z), Some(policy)) = (target, zone, self.drop_policy.as_ref()) {
+                let dragged_panel = self.tree.leaf(drag.dragged_leaf_id).and_then(|l| match drag.payload {
+                    DragPayload::Leaf => l.active_panel(),
+                    DragPayload::Tab { tab_idx } => l.panels.get(tab_idx),
+                });
+                if let Some(dp) = dragged_panel {
+                    let target_panel = self.tree.leaf(t).and_then(|l| l.active_panel());
+                    match policy(dp, target_panel, z, drag.is_window_edge, target_frac) {
+                        Some(nz) => zone = Some(nz),
+                        None => {
+                            target = None;
+                            zone = None;
+                            drag.is_window_edge = false;
+                        }
                     }
                 }
             }
@@ -970,9 +1058,23 @@ impl<P: DockPanel> DockState<P> {
         }
     }
 
+    /// Install a consumer drop-targeting policy (see [`DropPolicyFn`]).
+    pub fn set_drop_policy(&mut self, policy: DropPolicyFn<P>) {
+        self.drop_policy = Some(policy);
+    }
+
     /// End panel drag - perform the drop action, or float the leaf if no target
     pub fn end_panel_drag(&mut self, area_width: f32, area_height: f32) -> Option<FloatingWindowId> {
         let drag = self.panel_drag.take()?;
+
+        // Torn-out tab payload: the panel leaves its stack only on a valid
+        // drop; a miss cancels (no floating for single tabs).
+        if let DragPayload::Tab { tab_idx } = drag.payload {
+            if let (Some(target_id), Some(zone)) = (drag.target_leaf_id, drag.drop_zone) {
+                self.apply_tab_drop(drag.dragged_leaf_id, tab_idx, target_id, zone, drag.is_window_edge);
+            }
+            return None;
+        }
 
         let target_id = match drag.target_leaf_id {
             Some(id) => id,
@@ -1027,13 +1129,138 @@ impl<P: DockPanel> DockState<P> {
                 self.tree.remove_leaf(dragged_id);
             }
             DropZone::Left | DropZone::Right | DropZone::Up | DropZone::Down => {
+                // Divided space along the zone axis — for the fixed-strip
+                // proportion rewrite below. Captured BEFORE the move
+                // (rects are stale after tree surgery until re-layout).
+                let space_px = if is_window_edge {
+                    self.strip_space_px(self.layout_area, zone)
+                } else {
+                    self.panel_rects
+                        .get(&target_id)
+                        .map(|r| self.strip_space_px(*r, zone))
+                        .unwrap_or(0.0)
+                };
                 if is_window_edge {
                     self.tree.move_leaf_to_root_split(dragged_id, zone);
                 } else {
                     self.tree.move_leaf_to_branch(dragged_id, target_id, zone);
                 }
+                self.fix_strip_proportions(dragged_id, zone, space_px);
             }
         }
+    }
+
+    /// Torn-out tab drop: extract `tab_idx` from `source_id`'s stack and
+    /// place it — Center joins the target's stack; a side splits the
+    /// target with a fresh leaf; a window edge root-splits the tree.
+    fn apply_tab_drop(
+        &mut self,
+        source_id: LeafId,
+        tab_idx: usize,
+        target_id: LeafId,
+        zone: DropZone,
+        is_window_edge: bool,
+    ) {
+        let panel = match self.tree.leaf(source_id).and_then(|l| l.panels.get(tab_idx)) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        match zone {
+            DropZone::Center => {
+                if target_id == source_id {
+                    return; // rejoining its own stack is a no-op
+                }
+                self.tree.remove_tab(source_id, tab_idx);
+                self.tree.add_tab(target_id, panel);
+            }
+            DropZone::Left | DropZone::Right | DropZone::Up | DropZone::Down => {
+                let space_px = if is_window_edge {
+                    self.strip_space_px(self.layout_area, zone)
+                } else {
+                    self.panel_rects
+                        .get(&target_id)
+                        .map(|r| self.strip_space_px(*r, zone))
+                        .unwrap_or(0.0)
+                };
+                self.tree.remove_tab(source_id, tab_idx);
+                // NB: the source leaf survives remove_tab (a chip drag
+                // only exists on multi-tab stacks), so `target_id` stays
+                // valid even when target == source.
+                let new_id = if is_window_edge {
+                    self.tree.add_leaf_root_split(panel, zone)
+                } else {
+                    self.tree.split_leaf_zone(target_id, zone, panel)
+                };
+                if let Some(id) = new_id {
+                    self.fix_strip_proportions(id, zone, space_px);
+                }
+            }
+        }
+    }
+
+    /// Extent of `rect` along the axis an Up/Down|Left/Right split divides.
+    fn strip_space_px(&self, rect: PanelRect, zone: DropZone) -> f32 {
+        match zone {
+            DropZone::Up | DropZone::Down => rect.height,
+            DropZone::Left | DropZone::Right => rect.width,
+            DropZone::Center => 0.0,
+        }
+    }
+
+    /// After a side drop created a fresh binary branch holding `leaf_id`,
+    /// rewrite that branch's proportions when the docked panel declares a
+    /// fixed strip height ([`DockPanel::preferred_strip_height`]) — the
+    /// strip gets exactly its pixels of `space_px`, the neighbour the
+    /// rest. Only vertical (Up/Down) splits qualify; equal split
+    /// otherwise.
+    fn fix_strip_proportions(&mut self, leaf_id: LeafId, zone: DropZone, space_px: f32) {
+        if !matches!(zone, DropZone::Up | DropZone::Down) {
+            return;
+        }
+        let strip_px = match self
+            .tree
+            .leaf(leaf_id)
+            .and_then(|l| l.active_panel())
+            .and_then(|p| p.preferred_strip_height())
+        {
+            Some(px) => px,
+            None => return,
+        };
+        if space_px <= strip_px + 1.0 {
+            return;
+        }
+        let rest = (space_px - strip_px) as f64;
+        let strip = strip_px as f64;
+        let parent_id = match self.tree.find_parent_of_leaf(leaf_id).map(|b| b.id) {
+            Some(id) => id,
+            None => return,
+        };
+        if let Some(branch) = self.tree.find_branch_mut(parent_id) {
+            if branch.children.len() == 2 {
+                let strip_first = branch
+                    .children
+                    .first()
+                    .and_then(|c| c.leaf_id())
+                    .map(|id| id == leaf_id)
+                    .unwrap_or(false);
+                branch.proportions = if strip_first {
+                    vec![strip, rest]
+                } else {
+                    vec![rest, strip]
+                };
+            }
+        }
+    }
+
+    /// Spawn a brand-new panel as a root-level split on `zone`'s side
+    /// (e.g. a one-row strip docked to the container bottom), honouring
+    /// the panel's fixed strip height. Returns the fresh leaf id. Call
+    /// [`Self::layout`] afterwards.
+    pub fn spawn_leaf_root_split(&mut self, panel: P, zone: DropZone) -> Option<LeafId> {
+        let space_px = self.strip_space_px(self.layout_area, zone);
+        let id = self.tree.add_leaf_root_split(panel, zone)?;
+        self.fix_strip_proportions(id, zone, space_px);
+        Some(id)
     }
 
     // =============================================================================
@@ -1350,6 +1577,40 @@ impl<P: DockPanel> DockState<P> {
         ]);
     }
 
+    /// Compute window edge drop zones as FULL-LENGTH bands of `thickness`
+    /// px hugging each side of the layout area — the coarse "grab the
+    /// container edge" variant of [`Self::compute_window_edge_rects`]'s
+    /// 28px midpoint squares. A drop in a band root-splits the tree on
+    /// that side. Order matches the drag detector: [top, bottom, left,
+    /// right]; corners resolve to top/bottom (checked first).
+    ///
+    /// Call after [`Self::layout`] (bands derive from the layout area).
+    pub fn compute_window_edge_bands(&mut self, thickness: f32) {
+        let area = self.layout_area;
+        let t = thickness
+            .min(area.width / 2.0)
+            .min(area.height / 2.0)
+            .max(0.0);
+        self.window_edge_rects = Some([
+            // Top
+            PanelRect::new(area.x, area.y, area.width, t),
+            // Bottom
+            PanelRect::new(area.x, area.y + area.height - t, area.width, t),
+            // Left
+            PanelRect::new(area.x, area.y, t, area.height),
+            // Right
+            PanelRect::new(area.x + area.width - t, area.y, t, area.height),
+        ]);
+    }
+
+    /// Enable/disable `DropZone::Center` (tabify) on panel-BODY drops.
+    /// Disabled → the body classifies sides-only (diagonal quadrants), so
+    /// every position is a live side split. Header/tab-bar drops still
+    /// resolve to Center. Default: enabled.
+    pub fn set_body_center_drop(&mut self, enabled: bool) {
+        self.body_center_drop = enabled;
+    }
+
     // =============================================================================
     // Accessors
     // =============================================================================
@@ -1511,6 +1772,13 @@ impl<P: DockPanel> DockState<P> {
 
     pub fn layout_area(&self) -> PanelRect {
         self.layout_area
+    }
+
+    /// Height of a panel header / multi-tab chip bar (the strip
+    /// `create_tab_bar` lays chips in). Content under a stacked leaf
+    /// starts this many px below the leaf's rect top.
+    pub fn tab_bar_height(&self) -> f32 {
+        self.header_height
     }
 
     pub fn window_edge_rects(&self) -> Option<&[PanelRect; 4]> {
@@ -1927,5 +2195,59 @@ mod tests {
             .unwrap_or(0);
         assert_eq!(props_len, 0,
             "TwoTopOneBottom drag must not write proportions");
+    }
+}
+
+#[cfg(test)]
+mod center_drop_tests {
+    use super::*;
+    use crate::layout::docking::{DockPanel, SplitKind};
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct Q(&'static str);
+    impl DockPanel for Q {
+        fn title(&self) -> &str { self.0 }
+        fn type_id(&self) -> &'static str { "q" }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    /// A grip drag dropped on another leaf's CENTER must tab-join: the
+    /// dragged leaf's panels move into the target leaf, the dragged leaf
+    /// is removed.
+    #[test]
+    fn center_drop_tab_joins() {
+        let mut ds = DockState::<Q>::new();
+        let a = ds.tree_mut().add_leaf(Q("a"));
+        let b = ds.tree_mut().split_leaf(a, SplitKind::SplitRight, Q("b")).unwrap();
+        ds.layout(PanelRect::new(0.0, 0.0, 1000.0, 800.0));
+
+        // Drag leaf B by its grip, hover the CENTER of leaf A, drop.
+        ds.start_panel_drag(b, 900.0, 400.0);
+        ds.update_panel_drag(250.0, 400.0); // center of A (0..500 x 0..800)
+        let drag = ds.panel_drag_state().expect("drag alive");
+        assert_eq!(drag.target_leaf_id, Some(a), "target must be leaf A");
+        assert_eq!(drag.drop_zone, Some(DropZone::Center), "zone must be Center");
+        ds.end_panel_drag(1000.0, 800.0);
+
+        let leaf_a = ds.tree().leaf(a).expect("A survives");
+        assert_eq!(leaf_a.panels.len(), 2, "A must hold both panels as tabs");
+        assert!(ds.tree().leaf(b).is_none(), "B leaf must be gone");
+    }
+
+    /// Same drop with a drop policy installed that passes everything
+    /// through — the policy must not break Center.
+    #[test]
+    fn center_drop_with_passthrough_policy() {
+        let mut ds = DockState::<Q>::new();
+        let a = ds.tree_mut().add_leaf(Q("a"));
+        let b = ds.tree_mut().split_leaf(a, SplitKind::SplitRight, Q("b")).unwrap();
+        ds.set_drop_policy(Box::new(|_, _, zone, _, _| Some(zone)));
+        ds.layout(PanelRect::new(0.0, 0.0, 1000.0, 800.0));
+
+        ds.start_panel_drag(b, 900.0, 400.0);
+        ds.update_panel_drag(250.0, 400.0);
+        assert_eq!(ds.panel_drag_state().unwrap().drop_zone, Some(DropZone::Center));
+        ds.end_panel_drag(1000.0, 800.0);
+        assert_eq!(ds.tree().leaf(a).unwrap().panels.len(), 2);
     }
 }

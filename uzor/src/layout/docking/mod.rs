@@ -29,7 +29,7 @@ pub use id::{LeafId, BranchId, NodeId};
 pub use rect::PanelRect;
 pub use tree::{PanelTree, PanelStore, Tile, Container, Tabs, Linear, Grid, Shares, LinearDirection, GridLayout};
 pub use drop_zone::{DropZone, DropZoneDetector, CompassZone};
-pub use drag::{DragDropState, LockState, DragSource, HoverTarget, PanelDragState};
+pub use drag::{DragDropState, LockState, DragSource, HoverTarget, PanelDragState, DragPayload};
 pub use separator::{Separator, SeparatorOrientation, SeparatorState, SeparatorLevel, SeparatorController};
 pub use snap_back::SnapBackAnimation;
 pub use tabs::{TabBar, TabInfo, TabHit, TabDragController, TabDragState, TabReorderState, TabBarInfo, TabItem};
@@ -59,5 +59,15 @@ pub trait DockPanel: Clone + Send + Sync {
     /// Whether this panel can be closed by the user
     fn closable(&self) -> bool {
         true
+    }
+
+    /// Fixed height in px this panel wants when docked as a horizontal
+    /// strip (an Up/Down split or a top/bottom root split). `Some(h)` →
+    /// the engine rewrites the fresh split's proportions so the panel
+    /// gets exactly `h` px of the divided space instead of half of it
+    /// (thin one-row strips — tickers, status bars — must keep their own
+    /// height wherever they dock). `None` (default) → equal split.
+    fn preferred_strip_height(&self) -> Option<f32> {
+        None
     }
 }
