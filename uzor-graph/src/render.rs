@@ -392,6 +392,28 @@ pub fn draw_nodes<N, E>(
     particles: &[Particle],
     ctx: &DrawContext<'_>,
 ) -> NodeDrawStats {
+    draw_nodes_impl(render, graph, particles, ctx, true)
+}
+
+/// Draw the same node geometry, semantic markers, and interaction rings
+/// as [`draw_nodes`], but bypass all node-label candidate, LOD, degree
+/// normalization, and text-rendering work.
+pub fn draw_nodes_without_labels<N, E>(
+    render: &mut dyn RenderContext,
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    ctx: &DrawContext<'_>,
+) -> NodeDrawStats {
+    draw_nodes_impl(render, graph, particles, ctx, false)
+}
+
+fn draw_nodes_impl<N, E>(
+    render: &mut dyn RenderContext,
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    ctx: &DrawContext<'_>,
+    labels_enabled: bool,
+) -> NodeDrawStats {
     render.save();
     let mut by_color: HashMap<String, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
@@ -466,12 +488,16 @@ pub fn draw_nodes<N, E>(
         render.set_global_alpha(1.0);
     }
 
-    let label_set = labels_to_draw(graph, particles, ctx);
+    let label_set = labels_enabled.then(|| labels_to_draw(graph, particles, ctx));
     // Whole-graph max degree (not just the currently-visible subset) —
     // invariant across pan/zoom, so the same node always normalizes to
     // the same degree-boost regardless of what else happens to be on
     // screen this frame (Wave 2.3 determinism gate).
-    let max_degree = graph.nodes().map(|(id, _)| graph.degree(id)).max().unwrap_or(0).max(1);
+    let max_degree = if label_set.is_some() {
+        graph.nodes().map(|(id, _)| graph.degree(id)).max().unwrap_or(0).max(1)
+    } else {
+        1
+    };
     let mut labels_drawn = 0usize;
 
     for &id in ctx.visible {
@@ -510,6 +536,9 @@ pub fn draw_nodes<N, E>(
             render.stroke();
         }
 
+        let Some(label_set) = &label_set else {
+            continue;
+        };
         if !label_set.contains(&id) {
             // Wave 2.3 dim-interaction fix: a dimmed node's label is
             // skipped entirely (no draw call at all), not just faded —

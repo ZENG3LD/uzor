@@ -578,6 +578,10 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     /// Labels actually drawn on the last [`GraphEngine::draw`] call —
     /// see [`GraphEngine::labels_drawn_last_frame`].
     labels_drawn_last_frame: usize,
+    /// Whether ordinary node labels participate in the render pass.
+    /// Disabled consumers skip label candidate construction, LOD
+    /// selection, degree normalization, and label painting entirely.
+    node_labels_enabled: bool,
     visible: Vec<NodeIndex>,
     last_tick: LayoutTickResult,
     last_frame_at: Option<Instant>,
@@ -642,6 +646,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
             label_halo: DEFAULT_LABEL_HALO.to_owned(),
             labels_drawn_last_frame: 0,
+            node_labels_enabled: true,
             visible: Vec::new(),
             last_tick: LayoutTickResult { alpha: 1.0, max_displacement: 0.0, settled: false },
             last_frame_at: None,
@@ -955,7 +960,11 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         };
         gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
         gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
-        let node_stats = gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
+        let node_stats = if self.node_labels_enabled {
+            gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx)
+        } else {
+            gr_render::draw_nodes_without_labels(render, &self.graph, &self.particles, &ctx)
+        };
         self.labels_drawn_last_frame = node_stats.labels_drawn;
         gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
 
@@ -1310,6 +1319,22 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     pub fn set_label_halo(&mut self, color: impl Into<String>) {
         self.label_halo = color.into();
         self.dirty = true;
+    }
+
+    /// Whether ordinary node labels are rendered. Enabled by default.
+    ///
+    /// Disabling this is stronger than setting label density to zero:
+    /// the renderer bypasses label candidate construction and the full
+    /// label-LOD pipeline instead of merely producing an empty quota.
+    pub fn node_labels_enabled(&self) -> bool {
+        self.node_labels_enabled
+    }
+
+    pub fn set_node_labels_enabled(&mut self, enabled: bool) {
+        if self.node_labels_enabled != enabled {
+            self.node_labels_enabled = enabled;
+            self.dirty = true;
+        }
     }
 
     /// Every paint color/font `crate::render`'s draw functions read (graph-
@@ -2605,6 +2630,36 @@ mod tests {
         render_to_png(&spec, |ctx| engine.draw(ctx)).expect("headless render must succeed");
 
         assert_eq!(engine.labels_drawn_last_frame(), 2, "both nodes sit in separate grid cells and must both draw a label");
+    }
+
+    #[test]
+    fn disabled_node_labels_render_no_text_and_ignore_label_contents() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let build_engine = |first_label: &str, second_label: &str| {
+            let mut graph = Graph::new();
+            let a = graph.push_node((), first_label, "x", 4.0);
+            let b = graph.push_node((), second_label, "x", 4.0);
+            graph.push_edge(a, b, 1.0, ());
+            let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+            assert!(engine.node_labels_enabled(), "node labels must remain enabled by default");
+            engine.set_canvas_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0)]);
+            engine.camera.zoom = 2.0;
+            engine.set_node_labels_enabled(false);
+            assert!(!engine.node_labels_enabled());
+            engine
+        };
+
+        let mut first = build_engine("label-a", "label-b");
+        let mut second = build_engine("completely-different-a", "completely-different-b");
+        let spec = ExportSpec { width_px: 400, height_px: 300, dpr: 1.0, background: None };
+        let first_png = render_to_png(&spec, |ctx| first.draw(ctx)).expect("first headless render must succeed");
+        let second_png = render_to_png(&spec, |ctx| second.draw(ctx)).expect("second headless render must succeed");
+
+        assert_eq!(first.labels_drawn_last_frame(), 0);
+        assert_eq!(second.labels_drawn_last_frame(), 0);
+        assert_eq!(first_png, second_png, "disabled labels must make label contents irrelevant to the rendered frame");
     }
 
     // ── W2.4 selection model (box-select, group drag, cluster-from-selection) ─
