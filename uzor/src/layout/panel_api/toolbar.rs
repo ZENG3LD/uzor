@@ -44,6 +44,10 @@ pub enum ToolbarItemDef {
         min_width: f64,
         /// Optional tooltip text shown on hover
         tooltip: Option<&'static str>,
+        /// Draw a line through the label — the "feature currently OFF"
+        /// presentation for toggle chips whose label is the feature name
+        /// itself (e.g. an "Imb" chip: plain = on, struck = off).
+        strikethrough: bool,
     },
     /// Icon-only button
     IconButton {
@@ -86,7 +90,16 @@ impl ToolbarItemDef {
             disabled: false,
             min_width: 0.0,
             tooltip: None,
+            strikethrough: false,
         }
+    }
+
+    /// Strike the label through (Button only) — see the field docs.
+    pub fn with_strikethrough(mut self, on: bool) -> Self {
+        if let Self::Button { strikethrough: ref mut s, .. } = &mut self {
+            *s = on;
+        }
+        self
     }
 
     pub fn icon_button(id: &'static str, icon: impl Into<ToolbarIconId>) -> Self {
