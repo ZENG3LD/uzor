@@ -12,16 +12,14 @@
 
 use bytemuck::{Pod, Zeroable};
 
-/// A capsule-SDF line segment instance — 56 bytes packed.
+/// A capsule-SDF line segment instance — 44 bytes packed.
 ///
-/// Memory layout (56 bytes):
+/// Memory layout (44 bytes):
 /// - start:      8 bytes  ([f32; 2])
 /// - end:        8 bytes  ([f32; 2])
 /// - color:      4 bytes  (u32, packed RGBA8)
 /// - width:      4 bytes  (f32)
 /// - cap_flags:  4 bytes  (f32 — 0=round-round, 1=butt-start, 2=butt-end, 3=butt-both)
-/// - _pad0:      4 bytes
-/// - _pad1:      8 bytes
 /// - clip_rect: 16 bytes  ([f32; 4])
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
@@ -31,14 +29,12 @@ pub(crate) struct LineInstance {
     pub color: u32,
     pub width: f32,
     pub cap_flags: f32,
-    pub _pad0: f32,
-    pub _pad1: [f32; 2],
     pub clip_rect: [f32; 4],
 }
 
 const _: () = assert!(
-    std::mem::size_of::<LineInstance>() == 56,
-    "LineInstance must stay 56 bytes — WGSL struct in shaders.rs mirrors this layout"
+    std::mem::size_of::<LineInstance>() == 44,
+    "LineInstance must stay 44 bytes"
 );
 
 /// Vertex buffer layout for `LineInstance` — matches the byte offsets
@@ -53,9 +49,7 @@ pub(crate) fn line_instance_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexAttribute { shader_location: 2, format: Uint32, offset: 16 },
         wgpu::VertexAttribute { shader_location: 3, format: Float32, offset: 20 },
         wgpu::VertexAttribute { shader_location: 4, format: Float32, offset: 24 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32, offset: 28 },
-        wgpu::VertexAttribute { shader_location: 6, format: Float32x2, offset: 32 },
-        wgpu::VertexAttribute { shader_location: 7, format: Float32x4, offset: 40 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 28 },
     ];
 
     wgpu::VertexBufferLayout {
@@ -195,7 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_instance_is_56_bytes() {
-        assert_eq!(std::mem::size_of::<LineInstance>(), 56);
+    fn line_instance_is_44_bytes() {
+        assert_eq!(std::mem::size_of::<LineInstance>(), 44);
     }
 }

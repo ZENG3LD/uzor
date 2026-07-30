@@ -7,7 +7,7 @@
 //! - Blend stack → check src-over math by reading pixels post-paint
 
 use uzor_urx_core::math::{Affine, Brush, Color, Rect, Vec2};
-use uzor_urx_core::scene::{DrawCommand, Scene, Stroke};
+use uzor_urx_core::scene::{DrawCommand, LineBatchSegment, Scene, Stroke};
 use uzor_urx_cpu::{CpuBackend, Pixmap};
 
 fn s() -> CpuBackend { CpuBackend::new() }
@@ -138,6 +138,47 @@ fn line_horizontal_paints_pixels() {
     assert!(c[1] > 200 && c[2] > 200 && c[3] > 200, "on-line pixel cyan, got {:?}", c);
     // Far off the line → transparent.
     assert_eq!(p.get_pixel(10, 5), [0, 0, 0, 0]);
+}
+
+#[test]
+fn line_batch_matches_independent_lines_pixel_for_pixel() {
+    let segments = vec![
+        LineBatchSegment {
+            from: Vec2 { x: 2.0, y: 5.0 },
+            to: Vec2 { x: 18.0, y: 5.0 },
+        },
+        LineBatchSegment {
+            from: Vec2 { x: 4.0, y: 14.0 },
+            to: Vec2 { x: 16.0, y: 9.0 },
+        },
+    ];
+    let stroke = Stroke { width: 2.0, ..Stroke::default() };
+    let brush = Brush::Solid(Color::from_rgba8(0, 255, 255, 255));
+
+    let mut batched_scene = Scene::new();
+    batched_scene.push(DrawCommand::LineBatch {
+        segments: segments.clone(),
+        stroke: stroke.clone(),
+        brush: brush.clone(),
+        transform: Affine::IDENTITY,
+    });
+
+    let mut independent_scene = Scene::new();
+    for segment in segments {
+        independent_scene.push(DrawCommand::Line {
+            from: segment.from,
+            to: segment.to,
+            stroke: stroke.clone(),
+            brush: brush.clone(),
+            transform: Affine::IDENTITY,
+        });
+    }
+
+    let mut batched = Pixmap::new(20, 20);
+    let mut independent = Pixmap::new(20, 20);
+    s().render(&batched_scene, &mut batched).unwrap();
+    s().render(&independent_scene, &mut independent).unwrap();
+    assert_eq!(batched.pixels(), independent.pixels());
 }
 
 #[test]

@@ -960,13 +960,22 @@ fn compose_urx_native_into_swap(
     scene_opt:  Option<uzor_urx_core::Scene>,
     base_color: [f32; 4],
 ) {
-    // Lazy-init, independent of Phase 4.5's own lazy-init (Wave 5b) —
-    // this phase may run alone on a frame with no post-3D overlay.
-    if state.urx_native_renderer.is_none() {
-        state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+    // The ordinary 2D submit path shares this renderer slot and may have
+    // resolved its own SubmitParams to 1x. Compose has an independent
+    // owner-configured AA setting, so rebuild only when the resolved native
+    // sample count differs; otherwise the first path used by a window would
+    // accidentally choose AA for every later path.
+    let sample_count = if state.urx_compose_msaa_sample_count > 1 { 4 } else { 1 };
+    if state
+        .urx_native_renderer
+        .as_ref()
+        .is_none_or(|renderer| renderer.sample_count() != sample_count)
+    {
+        state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::with_sample_count(
             device.clone(),
             queue.clone(),
             wgpu::TextureFormat::Rgba8Unorm,
+            sample_count,
         ));
     }
 

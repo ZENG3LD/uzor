@@ -120,6 +120,23 @@ pub struct Viewport {
     pub height: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreparedFrameKey {
+    revision: u64,
+    viewport: Viewport,
+}
+
+struct PreparedFrame {
+    key: PreparedFrameKey,
+    frame: EncodedFrame,
+}
+
+impl PreparedFrame {
+    fn matches(&self, revision: u64, viewport: Viewport) -> bool {
+        self.key == PreparedFrameKey { revision, viewport }
+    }
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Uniforms {
@@ -322,6 +339,7 @@ pub struct NativeUrxRenderer {
     gradient_lut: GradientLutAtlas,
     image_cache: NativeImageCache,
     frame_scratch: encode::EncodedFrame,
+    prepared_frame: Option<PreparedFrame>,
     blend_layer_max_depth: usize,
     /// `UrxConfig::text_gamma_enabled` (URX text-gamma design,
     /// 2026-07-26), read once here and threaded through to
@@ -525,6 +543,7 @@ impl NativeUrxRenderer {
             gradient_lut,
             image_cache,
             frame_scratch: encode::EncodedFrame::default(),
+            prepared_frame: None,
             blend_layer_max_depth: cfg.blend_layer_max_depth,
             text_gamma_enabled: cfg.text_gamma_enabled,
         }
@@ -533,6 +552,11 @@ impl NativeUrxRenderer {
     /// `format` this renderer's pipelines were built for.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// Resolved multisample count baked into this renderer's pipelines.
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
     }
 
     /// Viewport hint — pre-allocates the MSAA target for `width x
@@ -598,6 +622,44 @@ impl NativeUrxRenderer {
         view: &wgpu::TextureView,
         viewport: Viewport,
     ) -> Result<(), NativeRenderError> {
+        self.invalidate_prepared_frame();
+        self.render_into_encoder_impl(scene, None, encoder, view, viewport)
+    }
+
+    /// Render a caller-revisioned scene while retaining its CPU-encoded
+    /// frame in this renderer. A subsequent call hits only when both
+    /// `revision` and `viewport` match exactly. The caller owns revision
+    /// correctness: it must change whenever any scene content changes.
+    ///
+    /// The retained frame is local to this renderer and occupies one
+    /// bounded slot. A hit skips scene validation/tessellation/encoding,
+    /// but still advances per-frame caches, uploads the retained
+    /// instances, and records the complete replay into `encoder`.
+    pub fn render_retained_into_encoder(
+        &mut self,
+        scene: &uzor_urx_core::scene::Scene,
+        revision: u64,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: Viewport,
+    ) -> Result<(), NativeRenderError> {
+        self.render_into_encoder_impl(scene, Some(revision), encoder, view, viewport)
+    }
+
+    fn invalidate_prepared_frame(&mut self) {
+        if let Some(prepared) = self.prepared_frame.take() {
+            self.frame_scratch = prepared.frame;
+        }
+    }
+
+    fn render_into_encoder_impl(
+        &mut self,
+        scene: &uzor_urx_core::scene::Scene,
+        retained_revision: Option<u64>,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: Viewport,
+    ) -> Result<(), NativeRenderError> {
         let frame_profile = crate::profile::FrameGuard::enter();
         let frame_id = frame_profile.id();
         let profile = frame_profile.enabled();
@@ -633,18 +695,42 @@ impl NativeUrxRenderer {
                 viewport.height,
             ),
         );
-        let profile_t0 = profile.then(std::time::Instant::now);
-        let frame = encode::encode_scene_reusing(
-            std::mem::take(&mut self.frame_scratch),
-            scene,
-            viewport,
-            &mut self.tess_cache,
-            Some(&mut self.glyph_atlas),
-            Some(&mut self.gradient_lut),
-            self.blend_layer_max_depth,
-            self.text_gamma_enabled,
+        let prepared = self.prepared_frame.take();
+        let prepared_scene_cache_hit = retained_revision
+            .zip(prepared.as_ref())
+            .is_some_and(|(revision, prepared)| prepared.matches(revision, viewport));
+        crate::profile::stage(
+            "prepared_scene_cache",
+            format_args!(
+                "prepared_scene_cache_hit={} revision={}",
+                prepared_scene_cache_hit,
+                retained_revision.unwrap_or(0),
+            ),
         );
-        let encode_scene_us = profile_t0.map(|t| t.elapsed().as_micros());
+        let (frame, encode_scene_us) = if prepared_scene_cache_hit {
+            (
+                prepared
+                    .expect("prepared_scene_cache_hit requires a retained frame")
+                    .frame,
+                profile.then_some(0),
+            )
+        } else {
+            let reusable = prepared
+                .map(|prepared| prepared.frame)
+                .unwrap_or_else(|| std::mem::take(&mut self.frame_scratch));
+            let profile_t0 = profile.then(std::time::Instant::now);
+            let frame = encode::encode_scene_reusing(
+                reusable,
+                scene,
+                viewport,
+                &mut self.tess_cache,
+                Some(&mut self.glyph_atlas),
+                Some(&mut self.gradient_lut),
+                self.blend_layer_max_depth,
+                self.text_gamma_enabled,
+            );
+            (frame, profile_t0.map(|t| t.elapsed().as_micros()))
+        };
         let tess_after = profile.then(|| self.tess_cache.stats());
         let tess_profile = self.tess_cache.frame_profile();
         crate::profile::stage(
@@ -767,7 +853,7 @@ impl NativeUrxRenderer {
                      gpu_stencil_upload_bytes={} gpu_stencil_capacity_before_instances={} \
                      gpu_stencil_capacity_after_instances={} gpu_stencil_growth_bytes={} \
                      gpu_stencil_reserve_us={} gpu_stencil_upload_us={} \
-                     encode_scene_us={} upload_uniform_us={} upload_quad_us={} upload_line_us={} upload_path_us={} \
+                     prepared_scene_cache_hit={} encode_scene_us={} upload_uniform_us={} upload_quad_us={} upload_line_us={} upload_path_us={} \
                      upload_glyph_us={} upload_stencil_us={} upload_composite_us={} upload_gradient_us={} upload_image_us={} \
                      flush_glyph_us={} flush_gradient_us={} replay_ops_us={}",
                     scene.len(),
@@ -808,6 +894,7 @@ impl NativeUrxRenderer {
                     stencil_upload.growth_bytes,
                     stencil_upload.reserve_us,
                     stencil_upload.upload_us,
+                    prepared_scene_cache_hit,
                     encode_scene_us.unwrap_or(0),
                     upload_uniform_us.unwrap_or(0),
                     upload_quad_us.unwrap_or(0),
@@ -825,7 +912,14 @@ impl NativeUrxRenderer {
             );
         }
 
-        self.frame_scratch = frame;
+        if let Some(revision) = retained_revision {
+            self.prepared_frame = Some(PreparedFrame {
+                key: PreparedFrameKey { revision, viewport },
+                frame,
+            });
+        } else {
+            self.frame_scratch = frame;
+        }
         Ok(())
     }
 
@@ -1206,6 +1300,21 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frame_key_requires_exact_revision_and_viewport() {
+        let prepared = PreparedFrame {
+            key: PreparedFrameKey {
+                revision: 41,
+                viewport: Viewport { width: 1280, height: 720 },
+            },
+            frame: EncodedFrame::default(),
+        };
+        assert!(prepared.matches(41, Viewport { width: 1280, height: 720 }));
+        assert!(!prepared.matches(42, Viewport { width: 1280, height: 720 }));
+        assert!(!prepared.matches(41, Viewport { width: 1279, height: 720 }));
+        assert!(!prepared.matches(41, Viewport { width: 1280, height: 721 }));
+    }
+
+    #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn gradient_lut_and_image_cache_stats_default_to_zero() {
         let Some((device, queue)) = test_device() else { return };
@@ -1312,6 +1421,83 @@ mod tests {
         });
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         (target, view)
+    }
+
+    fn render_center_pixel(
+        renderer: &mut NativeUrxRenderer,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        format: wgpu::TextureFormat,
+        scene: &Scene,
+        revision: Option<u64>,
+        size: u32,
+    ) -> [u8; 4] {
+        let (target, view) = make_target(device, format, size);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let viewport = Viewport { width: size, height: size };
+        match revision {
+            Some(revision) => renderer
+                .render_retained_into_encoder(scene, revision, &mut encoder, &view, viewport)
+                .expect("retained scene render must succeed"),
+            None => renderer
+                .render_into_encoder(scene, &mut encoder, &view, viewport)
+                .expect("immediate scene render must succeed"),
+        }
+        queue.submit(Some(encoder.finish()));
+        let pixels = readback_rgba(device, queue, &target, size, size);
+        let i = (((size / 2) * size + size / 2) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn retained_frame_cache_hits_and_invalidates_on_revision_viewport_and_immediate_render() {
+        let Some((device, queue)) = test_device() else { return };
+        const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+        let mut renderer = NativeUrxRenderer::with_sample_count(device.clone(), queue.clone(), FORMAT, 1);
+        let scene = |rgba: [u8; 4], size: u32| {
+            let mut scene = Scene::new();
+            scene.push(solid_rect(0.0, 0.0, size as f64, size as f64, rgba));
+            scene
+        };
+
+        let red_64 = scene([220, 40, 40, 255], 64);
+        let blue_64 = scene([40, 40, 220, 255], 64);
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &red_64, Some(7), 64),
+            [220, 40, 40, 255],
+            "first retained render must encode revision 7",
+        );
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &blue_64, Some(7), 64),
+            [220, 40, 40, 255],
+            "same revision and viewport must replay the retained frame without re-encoding",
+        );
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &blue_64, Some(8), 64),
+            [40, 40, 220, 255],
+            "revision change must miss and encode the new scene",
+        );
+
+        let green_32 = scene([40, 220, 40, 255], 32);
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &green_32, Some(8), 32),
+            [40, 220, 40, 255],
+            "viewport change must miss even when the revision is unchanged",
+        );
+
+        let red_32 = scene([220, 40, 40, 255], 32);
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &red_32, None, 32),
+            [220, 40, 40, 255],
+            "ordinary rendering must draw the immediate scene",
+        );
+        let blue_32 = scene([40, 40, 220, 255], 32);
+        assert_eq!(
+            render_center_pixel(&mut renderer, &device, &queue, FORMAT, &blue_32, Some(8), 32),
+            [40, 40, 220, 255],
+            "ordinary rendering must invalidate a matching retained revision and viewport",
+        );
     }
 
     #[test]

@@ -13,7 +13,9 @@
 //! real batching); swapping in the instanced path later doesn't change
 //! this module's public shape.
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
@@ -25,10 +27,10 @@ use uzor_figures::theme::FigureTheme;
 
 use crate::camera::Camera2D;
 use crate::cluster::ClusterRegistry;
-use crate::graph::{Graph, NodeIndex};
+use crate::graph::{EdgeIndex, Graph, NodeIndex};
 use crate::label_grid::{self, LabelCandidate, LabelLodConfig};
 use crate::particle::Particle;
-use crate::style::{EdgeVisualStyle, NodeMarker, NodeVisualStyle};
+use crate::style::{DashPattern, EdgeVisualStyle, NodeMarker, NodeVisualStyle};
 use crate::theme::{default_category_palette, GraphTheme};
 
 /// Re-exported from `label_grid` (Wave 2.3 moved the constants there —
@@ -160,6 +162,88 @@ pub struct DrawContext<'a> {
     pub theme: &'a GraphTheme,
 }
 
+struct VisibleEdgeCandidates {
+    edge_ids: Vec<EdgeIndex>,
+    candidates_scanned: usize,
+    used_full_scan: bool,
+    used_bitmap_order: bool,
+    order_slots_scanned: usize,
+}
+
+const BITMAP_ORDER_MIN_CANDIDATES: usize = 256;
+
+/// Collect the union of the visible nodes' adjacency lists, restoring
+/// `Graph::edges()`'s ascending-index order after deduplication. Sorting
+/// is required because `ctx.visible` is a viewport result rather than a
+/// topology-order contract; the old full scan always painted a lower
+/// `EdgeIndex` first within each edge batch. Dense views fall back to
+/// the old ordered scan when their adjacency entries would equal or
+/// exceed the graph's entire edge count.
+fn visible_edge_candidates<N, E>(
+    graph: &Graph<N, E>,
+    visible: &[NodeIndex],
+) -> VisibleEdgeCandidates {
+    let adjacency_candidate_count: usize = visible
+        .iter()
+        .map(|&node| graph.incident_edges(node).len())
+        .sum();
+    if adjacency_candidate_count >= graph.edge_count() {
+        let visible_set: HashSet<NodeIndex> = visible.iter().copied().collect();
+        let edge_ids = graph
+            .edges()
+            .filter_map(|(edge_id, edge)| {
+                (visible_set.contains(&edge.from) || visible_set.contains(&edge.to))
+                    .then_some(edge_id)
+            })
+            .collect();
+        return VisibleEdgeCandidates {
+            edge_ids,
+            candidates_scanned: graph.edge_count(),
+            used_full_scan: true,
+            used_bitmap_order: false,
+            order_slots_scanned: graph.edge_count(),
+        };
+    }
+
+    if adjacency_candidate_count >= BITMAP_ORDER_MIN_CANDIDATES
+        && graph.edge_count() <= adjacency_candidate_count.saturating_mul(4)
+    {
+        let mut seen = vec![false; graph.edge_count()];
+        for &node in visible {
+            for edge in graph.incident_edges(node) {
+                seen[edge.index()] = true;
+            }
+        }
+        let edge_ids = seen
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, present)| present.then_some(EdgeIndex(index as u32)))
+            .collect();
+        return VisibleEdgeCandidates {
+            edge_ids,
+            candidates_scanned: adjacency_candidate_count,
+            used_full_scan: false,
+            used_bitmap_order: true,
+            order_slots_scanned: graph.edge_count(),
+        };
+    }
+
+    let mut edge_ids = Vec::new();
+    for &node in visible {
+        let incident = graph.incident_edges(node);
+        edge_ids.extend_from_slice(incident);
+    }
+    edge_ids.sort_unstable_by_key(|edge| edge.index());
+    edge_ids.dedup_by_key(|edge| edge.index());
+    VisibleEdgeCandidates {
+        edge_ids,
+        candidates_scanned: adjacency_candidate_count,
+        used_full_scan: false,
+        used_bitmap_order: false,
+        order_slots_scanned: adjacency_candidate_count,
+    }
+}
+
 /// Draw every visible edge, dimming any edge outside an active
 /// [`FocusSet`]. Edges touching a node hidden by cluster collapse
 /// (`ctx.hidden`) are skipped entirely — `draw_cluster_edges` draws the
@@ -178,56 +262,57 @@ pub fn draw_edges<N, E>(
 ) -> usize {
     let prepare_started = std::time::Instant::now();
     render.save();
-    let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
+    let candidate_scan = visible_edge_candidates(graph, ctx.visible);
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut dim_segments: Vec<LineSegment> = Vec::new();
-    let mut styled_body_batches: Vec<StyledEdgeBatch> = Vec::new();
-    let mut styled_arrow_batches: Vec<StyledEdgeBatch> = Vec::new();
-    let mut styled_body_batch_indices: HashMap<ResolvedEdgeStyle, usize> = HashMap::new();
-    let mut styled_arrow_batch_indices: HashMap<ResolvedEdgeStyle, usize> = HashMap::new();
+    let estimated_style_groups = (candidate_scan.edge_ids.len() / 32)
+        .clamp(8, 2048)
+        .min(candidate_scan.edge_ids.len().max(1));
+    let mut styled_body_batches = StyledEdgeBatchTable::with_capacity(estimated_style_groups);
+    let mut styled_arrow_batches = StyledEdgeBatchTable::with_capacity(estimated_style_groups);
+    let mut screen_nodes = vec![CachedEdgeScreenNode::missing(); graph.node_count()];
+    let mut screen_nodes_transformed = 0;
     let mut styled_count = 0;
+    let focus_active = ctx.focus.is_active();
+    let has_hidden = !ctx.hidden.is_empty();
 
-    for (eid, edge) in graph.edges() {
-        if ctx.hidden.contains(&edge.from) || ctx.hidden.contains(&edge.to) {
+    for &eid in &candidate_scan.edge_ids {
+        let edge = graph.edge(eid);
+        if has_hidden
+            && (ctx.hidden.contains(&edge.from) || ctx.hidden.contains(&edge.to))
+        {
             continue;
         }
-        if !visible_set.contains(&edge.from) && !visible_set.contains(&edge.to) {
-            continue;
-        }
-        let (Some(a), Some(b)) = (particles.get(edge.from.index()), particles.get(edge.to.index())) else {
+        let Some(a) = cached_edge_screen_node(
+            graph,
+            particles,
+            ctx,
+            edge.from,
+            &mut screen_nodes,
+            &mut screen_nodes_transformed,
+        ) else {
             continue;
         };
-        let (ax, ay) = ctx.camera.world_to_screen((a.x as f64, a.y as f64), ctx.viewport);
-        let (bx, by) = ctx.camera.world_to_screen((b.x as f64, b.y as f64), ctx.viewport);
-        let seg = LineSegment { x1: ax, y1: ay, x2: bx, y2: by };
-        let dimmed = ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(eid));
+        let Some(b) = cached_edge_screen_node(
+            graph,
+            particles,
+            ctx,
+            edge.to,
+            &mut screen_nodes,
+            &mut screen_nodes_transformed,
+        ) else {
+            continue;
+        };
+        let seg = LineSegment { x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+        let dimmed = focus_active && !ctx.focus.is_selected(u64::from(eid));
         if let Some(style) = &edge.style {
-            let target_radius = graph
-                .get_node(edge.to)
-                .map(|node| ctx.camera.node_screen_radius(node.radius))
-                .unwrap_or(0.0);
             let resolved = ResolvedEdgeStyle::new(style, dimmed, ctx.theme);
-            let (body, arrowhead) = styled_edge_geometry(seg, style, target_radius, resolved.width());
-            push_styled_segment(
-                &mut styled_body_batches,
-                &mut styled_body_batch_indices,
-                resolved.clone(),
-                body,
-            );
+            let (body, arrowhead) =
+                styled_edge_geometry(seg, style, b.radius, resolved.width());
+            styled_body_batches.push_segment(resolved, body);
             if let Some(arrowhead) = arrowhead {
                 let arrow_style = resolved.with_solid_dash();
-                push_styled_segment(
-                    &mut styled_arrow_batches,
-                    &mut styled_arrow_batch_indices,
-                    arrow_style.clone(),
-                    arrowhead[0],
-                );
-                push_styled_segment(
-                    &mut styled_arrow_batches,
-                    &mut styled_arrow_batch_indices,
-                    arrow_style,
-                    arrowhead[1],
-                );
+                styled_arrow_batches.push_pair(arrow_style, arrowhead);
             }
             styled_count += 1;
         } else if dimmed {
@@ -242,13 +327,29 @@ pub fn draw_edges<N, E>(
         "graph_2d_edges",
         "prepare_end",
         format_args!(
-            "drawn={} plain={} dim={} styled={} body_batches={} arrow_batches={} duration_us={}",
+            "drawn={} plain={} dim={} styled={} graph_edges={} candidate_scan_mode={} candidates_scanned={} order_slots_scanned={} unique_candidates={} screen_nodes_transformed={} body_batches={} body_style_fast_hits={} body_style_hash_lookups={} arrow_batches={} arrow_style_fast_hits={} arrow_style_hash_lookups={} duration_us={}",
             drawn,
             segments.len(),
             dim_segments.len(),
             styled_count,
-            styled_body_batches.len(),
-            styled_arrow_batches.len(),
+            graph.edge_count(),
+            if candidate_scan.used_full_scan {
+                "full"
+            } else if candidate_scan.used_bitmap_order {
+                "adjacency_bitmap"
+            } else {
+                "adjacency_sort"
+            },
+            candidate_scan.candidates_scanned,
+            candidate_scan.order_slots_scanned,
+            candidate_scan.edge_ids.len(),
+            screen_nodes_transformed,
+            styled_body_batches.batches.len(),
+            styled_body_batches.fast_hits,
+            styled_body_batches.hash_lookups,
+            styled_arrow_batches.batches.len(),
+            styled_arrow_batches.fast_hits,
+            styled_arrow_batches.hash_lookups,
             prepare_started.elapsed().as_micros(),
         ),
     );
@@ -267,13 +368,13 @@ pub fn draw_edges<N, E>(
     if !segments.is_empty() {
         render.draw_line_batch(&segments, &ctx.theme.edge_color, ctx.theme.edge_width);
     }
-    for batch in &styled_body_batches {
+    for batch in &styled_body_batches.batches {
         draw_styled_edge_batch(render, batch);
     }
     // Arrowheads are a separate solid pass so they remain legible over
     // every body and edges with the same resolved arrow style collapse
     // into one backend call even when their body dash patterns differ.
-    for batch in &styled_arrow_batches {
+    for batch in &styled_arrow_batches.batches {
         draw_styled_edge_batch(render, batch);
     }
     render.set_line_dash(&[]);
@@ -288,45 +389,79 @@ pub fn draw_edges<N, E>(
     drawn
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct ResolvedEdgeStyle {
-    color: String,
-    width_bits: u64,
-    alpha_bits: u64,
-    dash_bits: Vec<u64>,
+const DEFAULT_EDGE_DASH: [f32; 2] = [8.0, 5.0];
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ResolvedEdgeDash<'a> {
+    Solid,
+    Values(ResolvedEdgeDashValues<'a>),
 }
 
-impl ResolvedEdgeStyle {
-    fn new(style: &EdgeVisualStyle, dimmed: bool, theme: &GraphTheme) -> Self {
+#[derive(Clone, Copy)]
+struct ResolvedEdgeDashValues<'a>(&'a [f32]);
+
+impl PartialEq for ResolvedEdgeDashValues<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(other.0)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+    }
+}
+
+impl Eq for ResolvedEdgeDashValues<'_> {}
+
+impl std::hash::Hash for ResolvedEdgeDashValues<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.0.len(), state);
+        for value in self.0 {
+            std::hash::Hash::hash(&value.to_bits(), state);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ResolvedEdgeStyle<'a> {
+    color: &'a str,
+    width_bits: u64,
+    alpha_bits: u64,
+    dash: ResolvedEdgeDash<'a>,
+}
+
+impl<'a> ResolvedEdgeStyle<'a> {
+    fn new(style: &'a EdgeVisualStyle, dimmed: bool, theme: &'a GraphTheme) -> Self {
         let color = style
             .tint
-            .clone()
-            .unwrap_or_else(|| if dimmed { theme.edge_dim_color.clone() } else { theme.edge_color.clone() });
+            .as_deref()
+            .unwrap_or(if dimmed { &theme.edge_dim_color } else { &theme.edge_color });
         let width = style
             .width
             .map(|value| value.max(0.1) as f64)
             .unwrap_or(if dimmed { theme.edge_dim_width } else { theme.edge_width });
         let alpha = style.alpha.unwrap_or(1.0).clamp(0.0, 1.0) as f64
             * if dimmed { theme.dim_alpha } else { 1.0 };
-        let dash = style
-            .dash
-            .as_ref()
-            .and_then(|pattern| pattern.resolved())
-            .unwrap_or_default()
-            .into_iter()
-            .map(f64::from)
-            .map(f64::to_bits)
-            .collect();
+        let dash = match style.dash.as_ref() {
+            Some(DashPattern::Dashed) => ResolvedEdgeDash::Values(ResolvedEdgeDashValues(&DEFAULT_EDGE_DASH)),
+            Some(DashPattern::Pattern(values))
+                if !values.is_empty()
+                    && values.iter().all(|value| value.is_finite() && *value > 0.0) =>
+            {
+                ResolvedEdgeDash::Values(ResolvedEdgeDashValues(values))
+            }
+            _ => ResolvedEdgeDash::Solid,
+        };
         Self {
             color,
             width_bits: width.to_bits(),
             alpha_bits: alpha.to_bits(),
-            dash_bits: dash,
+            dash,
         }
     }
 
     fn with_solid_dash(mut self) -> Self {
-        self.dash_bits.clear();
+        self.dash = ResolvedEdgeDash::Solid;
         self
     }
 
@@ -339,28 +474,147 @@ impl ResolvedEdgeStyle {
     }
 
     fn dash(&self) -> Vec<f64> {
-        self.dash_bits.iter().copied().map(f64::from_bits).collect()
+        match self.dash {
+            ResolvedEdgeDash::Solid => Vec::new(),
+            ResolvedEdgeDash::Values(values) => values.0.iter().copied().map(f64::from).collect(),
+        }
     }
 }
 
-struct StyledEdgeBatch {
-    style: ResolvedEdgeStyle,
+struct StyledEdgeBatch<'a> {
+    style: ResolvedEdgeStyle<'a>,
     segments: Vec<LineSegment>,
 }
 
-fn push_styled_segment(
-    batches: &mut Vec<StyledEdgeBatch>,
-    indices: &mut HashMap<ResolvedEdgeStyle, usize>,
-    style: ResolvedEdgeStyle,
-    segment: LineSegment,
-) {
-    if let Some(index) = indices.get(&style).copied() {
-        batches[index].segments.push(segment);
-    } else {
-        let index = batches.len();
-        indices.insert(style.clone(), index);
-        batches.push(StyledEdgeBatch { style, segments: vec![segment] });
+struct FastStyleHasher(u64);
+
+impl Default for FastStyleHasher {
+    fn default() -> Self {
+        Self(0xcbf29ce484222325)
     }
+}
+
+impl Hasher for FastStyleHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+
+type StyleBatchIndices<'a> =
+    HashMap<ResolvedEdgeStyle<'a>, usize, BuildHasherDefault<FastStyleHasher>>;
+
+struct StyledEdgeBatchTable<'a> {
+    batches: Vec<StyledEdgeBatch<'a>>,
+    indices: StyleBatchIndices<'a>,
+    last: Option<(ResolvedEdgeStyle<'a>, usize)>,
+    fast_hits: usize,
+    hash_lookups: usize,
+}
+
+impl<'a> StyledEdgeBatchTable<'a> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            batches: Vec::with_capacity(capacity),
+            indices: HashMap::with_capacity_and_hasher(
+                capacity,
+                BuildHasherDefault::<FastStyleHasher>::default(),
+            ),
+            last: None,
+            fast_hits: 0,
+            hash_lookups: 0,
+        }
+    }
+
+    fn batch_index(&mut self, style: ResolvedEdgeStyle<'a>) -> usize {
+        if let Some((last_style, index)) = self.last {
+            if last_style == style {
+                self.fast_hits += 1;
+                return index;
+            }
+        }
+
+        self.hash_lookups += 1;
+        let index = match self.indices.entry(style) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let index = self.batches.len();
+                entry.insert(index);
+                self.batches.push(StyledEdgeBatch {
+                    style,
+                    segments: Vec::with_capacity(4),
+                });
+                index
+            }
+        };
+        self.last = Some((style, index));
+        index
+    }
+
+    fn push_segment(&mut self, style: ResolvedEdgeStyle<'a>, segment: LineSegment) {
+        let index = self.batch_index(style);
+        self.batches[index].segments.push(segment);
+    }
+
+    fn push_pair(&mut self, style: ResolvedEdgeStyle<'a>, segments: [LineSegment; 2]) {
+        let index = self.batch_index(style);
+        self.batches[index].segments.extend_from_slice(&segments);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CachedEdgeScreenNode {
+    x: f64,
+    y: f64,
+    radius: f64,
+    present: bool,
+}
+
+impl CachedEdgeScreenNode {
+    const fn missing() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            radius: 0.0,
+            present: false,
+        }
+    }
+}
+
+fn cached_edge_screen_node<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    ctx: &DrawContext<'_>,
+    node_id: NodeIndex,
+    cache: &mut [CachedEdgeScreenNode],
+    transformed: &mut usize,
+) -> Option<CachedEdgeScreenNode> {
+    let slot = cache.get_mut(node_id.index())?;
+    if slot.present {
+        return Some(*slot);
+    }
+    let particle = particles.get(node_id.index())?;
+    let (x, y) = ctx
+        .camera
+        .world_to_screen((particle.x as f64, particle.y as f64), ctx.viewport);
+    let radius = graph
+        .get_node(node_id)
+        .map(|node| ctx.camera.node_screen_radius(node.radius))
+        .unwrap_or(0.0);
+    *slot = CachedEdgeScreenNode {
+        x,
+        y,
+        radius,
+        present: true,
+    };
+    *transformed += 1;
+    Some(*slot)
 }
 
 fn styled_edge_geometry(
@@ -410,7 +664,7 @@ fn styled_edge_geometry(
     (segment, arrowhead)
 }
 
-fn draw_styled_edge_batch(render: &mut dyn RenderContext, batch: &StyledEdgeBatch) {
+fn draw_styled_edge_batch(render: &mut dyn RenderContext, batch: &StyledEdgeBatch<'_>) {
     let dash = batch.style.dash();
     render.set_global_alpha(batch.style.alpha());
     render.set_line_dash(&dash);
@@ -769,9 +1023,7 @@ fn draw_node_semantics(
         }
         Some(NodeMarker::Boundary) => {
             let extent = radius + 4.0 + width;
-            render.begin_path();
-            render.rect(sx - extent, sy - extent, extent * 2.0, extent * 2.0);
-            render.stroke();
+            render.stroke_rect(sx - extent, sy - extent, extent * 2.0, extent * 2.0);
         }
         Some(NodeMarker::Frontier) => {
             render.set_line_dash(&[4.0, 3.0]);
@@ -1464,6 +1716,201 @@ mod tests {
         fn dpr(&self) -> f64 {
             1.0
         }
+    }
+
+    #[test]
+    fn edge_prepare_reuses_screen_transforms_and_consecutive_style_groups() {
+        let mut graph = G::new();
+        let a = graph.push_node((), "a", "x", 3.0);
+        let particles = vec![Particle::at(12.0, 34.0)];
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible = vec![a];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(
+            &camera,
+            viewport,
+            &visible,
+            &focus,
+            &selection,
+            None,
+            &hidden,
+            &forced,
+            &lod,
+            &theme,
+        );
+        let mut screen_cache = vec![CachedEdgeScreenNode::missing(); graph.node_count()];
+        let mut transformed = 0;
+        let first = cached_edge_screen_node(
+            &graph,
+            &particles,
+            &ctx,
+            a,
+            &mut screen_cache,
+            &mut transformed,
+        )
+        .unwrap();
+        let second = cached_edge_screen_node(
+            &graph,
+            &particles,
+            &ctx,
+            a,
+            &mut screen_cache,
+            &mut transformed,
+        )
+        .unwrap();
+        assert_eq!(transformed, 1, "one node shared by many edges is transformed once per frame");
+        assert_eq!((first.x, first.y, first.radius), (second.x, second.y, second.radius));
+
+        let edge_style = EdgeVisualStyle {
+            tint: Some("#55ccaa".into()),
+            alpha: Some(0.7),
+            width: Some(2.5),
+            dash: Some(DashPattern::Pattern(vec![5.0, 3.0])),
+            lateral_offset: None,
+            directed: true,
+        };
+        let resolved = ResolvedEdgeStyle::new(&edge_style, false, &theme);
+        let segment = LineSegment {
+            x1: 0.0,
+            y1: 1.0,
+            x2: 2.0,
+            y2: 3.0,
+        };
+        let mut body_batches = StyledEdgeBatchTable::with_capacity(2);
+        let mut arrow_batches = StyledEdgeBatchTable::with_capacity(2);
+        for _ in 0..64 {
+            body_batches.push_segment(resolved, segment);
+            arrow_batches.push_pair(resolved.with_solid_dash(), [segment, segment]);
+        }
+        assert_eq!(body_batches.batches.len(), 1);
+        assert_eq!(body_batches.batches[0].segments.len(), 64);
+        assert_eq!(body_batches.hash_lookups, 1);
+        assert_eq!(body_batches.fast_hits, 63);
+        assert_eq!(arrow_batches.batches.len(), 1);
+        assert_eq!(arrow_batches.batches[0].segments.len(), 128);
+        assert_eq!(arrow_batches.hash_lookups, 1);
+        assert_eq!(arrow_batches.fast_hits, 63);
+    }
+
+    #[test]
+    fn visible_edge_candidates_match_full_scan_order_and_reduce_scanned_edges() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        let c = graph.push_node((), "c", "x", 2.0);
+        let d = graph.push_node((), "d", "x", 2.0);
+        let noise: Vec<_> = (0..20)
+            .map(|index| graph.push_node((), format!("noise-{index}"), "noise", 2.0))
+            .collect();
+
+        graph.push_edge(noise[0], noise[1], 1.0, ());
+        let ab = graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(noise[1], noise[2], 1.0, ());
+        let bc = graph.push_edge(b, c, 1.0, ());
+        let cc = graph.push_edge(c, c, 1.0, ());
+        let da = graph.push_edge(d, a, 1.0, ());
+        for pair in noise[2..].windows(2) {
+            graph.push_edge(pair[0], pair[1], 1.0, ());
+        }
+
+        // Deliberately out of graph order and with a repeated node. A
+        // self-loop also appears twice in that node's adjacency list.
+        let visible = vec![c, a, c];
+        let scan = visible_edge_candidates(&graph, &visible);
+        let visible_set: HashSet<_> = visible.iter().copied().collect();
+        let full_scan_order: Vec<_> = graph
+            .edges()
+            .filter_map(|(edge_id, edge)| {
+                (visible_set.contains(&edge.from) || visible_set.contains(&edge.to))
+                    .then_some(edge_id)
+            })
+            .collect();
+
+        assert_eq!(scan.edge_ids, full_scan_order);
+        assert_eq!(scan.edge_ids, vec![ab, bc, cc, da]);
+        assert_eq!(
+            scan.candidates_scanned, 8,
+            "only adjacency entries for the three visible-list entries are scanned",
+        );
+        assert!(!scan.used_full_scan);
+        assert!(
+            scan.candidates_scanned < graph.edge_count(),
+            "the sparse visible set must inspect fewer candidates than a full edge scan",
+        );
+
+        let all_visible: Vec<_> = graph.nodes().map(|(node, _)| node).collect();
+        let dense_scan = visible_edge_candidates(&graph, &all_visible);
+        let all_edges: Vec<_> = graph.edges().map(|(edge, _)| edge).collect();
+        assert!(dense_scan.used_full_scan);
+        assert_eq!(dense_scan.candidates_scanned, graph.edge_count());
+        assert_eq!(dense_scan.edge_ids, all_edges);
+
+        let particles: Vec<_> = graph
+            .nodes()
+            .map(|(node, _)| Particle::at(node.index() as f32 * 10.0, node.index() as f32 * 3.0))
+            .collect();
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let lod = LabelLodConfig::default();
+        let theme = GraphTheme::dark();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced, &lod, &theme);
+        let expected_segments: Vec<_> = full_scan_order
+            .iter()
+            .map(|&edge_id| {
+                let edge = graph.edge(edge_id);
+                let from = particles[edge.from.index()];
+                let to = particles[edge.to.index()];
+                let (x1, y1) = camera.world_to_screen((from.x as f64, from.y as f64), viewport);
+                let (x2, y2) = camera.world_to_screen((to.x as f64, to.y as f64), viewport);
+                (x1, y1, x2, y2)
+            })
+            .collect();
+        let mut render = ColorOrderRecorder::default();
+
+        assert_eq!(draw_edges(&mut render, &graph, &particles, &ctx), expected_segments.len());
+        let rendered_segments: Vec<_> = render.line_segments[0]
+            .iter()
+            .map(|segment| (segment.x1, segment.y1, segment.x2, segment.y2))
+            .collect();
+        assert_eq!(rendered_segments, expected_segments);
+    }
+
+    #[test]
+    fn visible_edge_candidates_use_bitmap_order_for_wave_sized_sparse_adjacency() {
+        let mut graph = G::new();
+        let hub = graph.push_node((), "hub", "x", 2.0);
+        let noise_a = graph.push_node((), "noise-a", "x", 2.0);
+        let noise_b = graph.push_node((), "noise-b", "x", 2.0);
+        let spokes: Vec<_> = (0..300)
+            .map(|index| graph.push_node((), format!("spoke-{index}"), "x", 2.0))
+            .collect();
+        let mut expected = Vec::with_capacity(spokes.len());
+        for spoke in spokes {
+            graph.push_edge(noise_a, noise_b, 1.0, ());
+            expected.push(graph.push_edge(hub, spoke, 1.0, ()));
+            graph.push_edge(noise_b, noise_a, 1.0, ());
+        }
+
+        let scan = visible_edge_candidates(&graph, &[hub]);
+
+        assert!(scan.used_bitmap_order);
+        assert!(!scan.used_full_scan);
+        assert_eq!(scan.candidates_scanned, 300);
+        assert_eq!(scan.order_slots_scanned, 900);
+        assert_eq!(
+            scan.edge_ids, expected,
+            "bitmap extraction must retain exact ascending EdgeIndex paint order",
+        );
     }
 
     #[test]

@@ -247,16 +247,14 @@ struct Uniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
-// Instance data — must match LineInstance in pipelines/line.rs (56 bytes).
+// Instance data — must match LineInstance in pipelines/line.rs (44 bytes).
 struct LineInstance {
     @location(0) start:        vec2<f32>,
     @location(1) end:          vec2<f32>,
     @location(2) color_packed: u32,
     @location(3) width:        f32,
     @location(4) cap_flags:    f32,
-    @location(5) _pad0:        f32,
-    @location(6) _pad1:        vec2<f32>,
-    @location(7) clip_rect:    vec4<f32>,
+    @location(5) clip_rect:    vec4<f32>,
 };
 
 struct LineVsOut {

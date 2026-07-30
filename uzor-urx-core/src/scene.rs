@@ -77,6 +77,17 @@ pub enum LineJoin { Miter, Round, Bevel }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineCap { Butt, Round, Square }
 
+/// One independent segment in a [`DrawCommand::LineBatch`].
+///
+/// Keeping the segment list explicit avoids routing high-volume graph edges
+/// through a compound `BezPath`, which every backend would otherwise have to
+/// validate and rediscover as independent lines on every frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineBatchSegment {
+    pub from: Vec2,
+    pub to: Vec2,
+}
+
 /// Opaque handle to a registered image. The URX engine maintains the
 /// mapping from `ImageId` → backend texture (atlas slot on WGPU,
 /// `Vec<u8>` pixmap on CPU, both on Hybrid).
@@ -138,6 +149,17 @@ pub enum DrawCommand {
         to:      Vec2,
         stroke:  Stroke,
         brush:   Brush,
+        transform: Affine,
+    },
+    /// Independent line segments sharing one style and transform.
+    ///
+    /// This is intentionally a first-class primitive rather than a
+    /// `StrokePath`: independent graph edges do not have joins between
+    /// segments, and native backends can upload them directly as instances.
+    LineBatch {
+        segments: Vec<LineBatchSegment>,
+        stroke:   Stroke,
+        brush:    Brush,
         transform: Affine,
     },
     /// Filled arbitrary path (curves flattened on CPU per scanline,

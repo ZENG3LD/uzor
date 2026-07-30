@@ -768,6 +768,18 @@ fn shift_scene_origin(scene: &mut Scene, dx: f64, dy: f64) {
                 *from = Vec2 { x: from.x + dx, y: from.y + dy };
                 *to   = Vec2 { x: to.x   + dx, y: to.y   + dy };
             }
+            DrawCommand::LineBatch { segments, .. } => {
+                for segment in segments {
+                    segment.from = Vec2 {
+                        x: segment.from.x + dx,
+                        y: segment.from.y + dy,
+                    };
+                    segment.to = Vec2 {
+                        x: segment.to.x + dx,
+                        y: segment.to.y + dy,
+                    };
+                }
+            }
             DrawCommand::FillPath { transform, .. } |
             DrawCommand::StrokePath { transform, .. } => {
                 // Premultiply the shift into the path's transform —

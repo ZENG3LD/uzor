@@ -153,6 +153,19 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
             }
             Ok(())
         }
+        DrawCommand::LineBatch { segments, stroke, brush: _, transform } => {
+            if !is_finite_affine(*transform)
+                || !stroke.width.is_finite()
+                || !stroke.miter_limit.is_finite()
+                || !is_finite_dash_opt(&stroke.dash)
+                || segments
+                    .iter()
+                    .any(|segment| !is_finite_vec2(segment.from) || !is_finite_vec2(segment.to))
+            {
+                return Err(ValidationIssue::NonFinite);
+            }
+            Ok(())
+        }
         DrawCommand::FillPath { path, rule: _, brush: _, transform } => {
             if !is_finite_affine(*transform) || !is_finite_bezpath(path) {
                 return Err(ValidationIssue::NonFinite);
@@ -289,6 +302,20 @@ mod tests {
             transform: Affine::IDENTITY,
         };
         assert!(validate_command(&cmd).is_ok());
+    }
+
+    #[test]
+    fn validate_command_flags_nonfinite_line_batch_segment() {
+        let cmd = DrawCommand::LineBatch {
+            segments: vec![crate::scene::LineBatchSegment {
+                from: Vec2::new(0.0, 0.0),
+                to: Vec2::new(f64::NAN, 10.0),
+            }],
+            stroke: crate::scene::Stroke::default(),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
     }
 
     // ── FillPath/StrokePath path-point validation (bug fix: these used

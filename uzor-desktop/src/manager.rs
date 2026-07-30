@@ -1511,28 +1511,31 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         }
                     }
                 } else if use_regions_inline {
-                    // CPU path: paint every region into the shared
-                    // pixmap in declaration order.  Each region
-                    // handler is expected to know its own rect (from
-                    // `WindowCtx.layout`), since CPU rasterisers
-                    // don't support per-region scene compositing.
-                    render_state.with_render_context(|render_ctx| {
-                        let mut ctx = WindowCtx::<P> {
-                            key,
-                            layout,
-                            render: render_ctx,
-                            rect,
-                            render_control: &mut hub_ctrl,
-                        };
+                    // Inline backends retain one complete shared frame rather
+                    // than independent region scenes. If no region is due,
+                    // leave that frame untouched and submit it again. Once any
+                    // region is due, rebuild every region in declaration order
+                    // so the retained frame never mixes old and new partial
+                    // composition.
+                    if regions_need_full_inline_repaint(&regions, region_states, now_inst) {
+                        render_state.with_render_context(|render_ctx| {
+                            let mut ctx = WindowCtx::<P> {
+                                key,
+                                layout,
+                                render: render_ctx,
+                                rect,
+                                render_control: &mut hub_ctrl,
+                            };
+                            for region in &regions {
+                                app.draw_region(region.id, &mut ctx);
+                            }
+                        });
                         for region in &regions {
-                            app.draw_region(region.id, &mut ctx);
+                            let state = region_states
+                                .entry(region.id)
+                                .or_insert_with(uzor::render::RegionScheduleState::default);
+                            state.last_painted = Some(now_inst);
                         }
-                    });
-                    for region in &regions {
-                        let state = region_states
-                            .entry(region.id)
-                            .or_insert_with(uzor::render::RegionScheduleState::default);
-                        state.last_painted = Some(now_inst);
                     }
                 } else {
                     render_state.with_render_context(|render_ctx| {
@@ -1621,13 +1624,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             let now_inst = std::time::Instant::now();
             pw.last_frame = now_inst;
 
-            // Mark all currently-known regions as painted at this instant.
-            // Dirty-driven regions are kept dirty=true until cleared by app.
-            // FPS-capped regions use last_painted to schedule next wake-up.
-            for state in pw.region_states.values_mut() {
-                state.last_painted = Some(now_inst);
-            }
-
             // Legacy event-driven path: when the app declares no regions,
             // fall back to the always-redraw loop (mouse/event driven).
             if pw.region_states.is_empty() {
@@ -1690,6 +1686,7 @@ where
                 if size.width > 0 && size.height > 0 {
                     if let Some(pw) = self.windows.get_mut(&id) {
                         pw.render_state.resize_surface(size.width, size.height);
+                        invalidate_region_schedule_states(&mut pw.region_states);
                     }
                 }
                 if let Some(pw) = self.windows.get(&id) {
@@ -1938,6 +1935,32 @@ fn register_region_schedule_states(
     }
 }
 
+/// Inline backends retain one full composed frame, so one due region requires
+/// rebuilding all declared regions. Missing scheduler state is treated as due
+/// to keep a newly declared region from disappearing behind an old frame.
+fn regions_need_full_inline_repaint(
+    regions: &[uzor::render::RenderRegion],
+    region_states: &HashMap<&'static str, uzor::render::RegionScheduleState>,
+    now: std::time::Instant,
+) -> bool {
+    regions.iter().any(|region| {
+        region_states
+            .get(region.id)
+            .map_or(true, |state| state.due(region, now))
+    })
+}
+
+/// A resize changes layout-space coordinates even when application data did
+/// not change. Clearing the paint timestamps makes every declared region due
+/// once, so retained scenes are rebuilt for the new viewport.
+fn invalidate_region_schedule_states(
+    region_states: &mut HashMap<&'static str, uzor::render::RegionScheduleState>,
+) {
+    for state in region_states.values_mut() {
+        state.last_painted = None;
+    }
+}
+
 /// Downcast an opaque `Box<dyn AnyFactory>` to `Box<dyn RenderSurfaceFactory>`.
 ///
 /// Tries each known concrete factory type in turn.  Returns `None` and prints a
@@ -2025,6 +2048,7 @@ fn _suppress_unused(_: &dyn WindowProvider, _: &Rect) {}
 mod tests {
     use super::{
         dispatch_mapped_platform_event, register_region_schedule_states,
+        invalidate_region_schedule_states, regions_need_full_inline_repaint,
         scheduled_control_flow,
     };
     use std::cell::Cell;
@@ -2068,6 +2092,43 @@ mod tests {
             scheduled_control_flow(false, state.next_due(&region, now), now),
             ControlFlow::Wait,
         ));
+    }
+
+    #[test]
+    fn inline_region_gate_rebuilds_all_only_when_any_region_is_due() {
+        let now = Instant::now();
+        let mut graph = RenderRegion::dirty_driven("graph", Rect::default());
+        graph.dirty = false;
+        let mut inspector = RenderRegion::dirty_driven("inspector", Rect::default());
+        inspector.dirty = false;
+        let regions = [graph, inspector];
+        let mut states: HashMap<&'static str, RegionScheduleState> = HashMap::new();
+        states.insert("graph", RegionScheduleState { last_painted: Some(now) });
+        states.insert("inspector", RegionScheduleState { last_painted: Some(now) });
+
+        assert!(!regions_need_full_inline_repaint(&regions, &states, now));
+
+        let mut due_regions = regions.clone();
+        due_regions[1].dirty = true;
+        assert!(regions_need_full_inline_repaint(&due_regions, &states, now));
+
+        states.remove("inspector");
+        assert!(
+            regions_need_full_inline_repaint(&regions, &states, now),
+            "a newly declared region must force one complete rebuild",
+        );
+    }
+
+    #[test]
+    fn resize_invalidation_makes_all_known_regions_due() {
+        let now = Instant::now();
+        let mut states: HashMap<&'static str, RegionScheduleState> = HashMap::new();
+        states.insert("graph", RegionScheduleState { last_painted: Some(now) });
+        states.insert("inspector", RegionScheduleState { last_painted: Some(now) });
+
+        invalidate_region_schedule_states(&mut states);
+
+        assert!(states.values().all(|state| state.last_painted.is_none()));
     }
 
     #[test]

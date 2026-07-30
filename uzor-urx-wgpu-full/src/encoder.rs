@@ -195,6 +195,27 @@ pub fn encode_scene_with_paths(
                     cap_to_gpu(stroke.cap),
                 ));
             }
+            DrawCommand::LineBatch { segments, stroke, brush, transform: _ } => {
+                let color = match brush {
+                    Brush::Solid(c) => rgba8(*c),
+                    _ => continue,
+                };
+                if !(stroke.width > 0.0) {
+                    continue;
+                }
+                out.reserve(segments.len());
+                for segment in segments {
+                    out.push(SceneCmd::stroke(
+                        segment.from.x as f32,
+                        segment.from.y as f32,
+                        segment.to.x as f32,
+                        segment.to.y as f32,
+                        stroke.width,
+                        color,
+                        cap_to_gpu(stroke.cap),
+                    ));
+                }
+            }
             DrawCommand::StrokePath { path, stroke, brush, transform: _ } => {
                 // Flatten the Bézier path into a polyline at `flatten`
                 // tolerance (0.25 px). Each `MoveTo` starts a new
@@ -357,4 +378,41 @@ pub fn encode_scene_with_paths(
         }
     }
     (out, points)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uzor_urx_core::math::{Affine, Brush, Color, Vec2};
+    use uzor_urx_core::scene::{DrawCommand, LineBatchSegment, Scene, Stroke};
+
+    #[test]
+    fn line_batch_encodes_one_stroke_command_per_segment() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::LineBatch {
+            segments: vec![
+                LineBatchSegment {
+                    from: Vec2::new(1.0, 2.0),
+                    to: Vec2::new(3.0, 4.0),
+                },
+                LineBatchSegment {
+                    from: Vec2::new(5.0, 6.0),
+                    to: Vec2::new(7.0, 8.0),
+                },
+            ],
+            stroke: Stroke { width: 2.0, ..Stroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
+            transform: Affine::IDENTITY,
+        });
+
+        let commands = encode_scene(&scene);
+        assert_eq!(commands.len(), 2);
+        assert!(commands
+            .iter()
+            .all(|command| command.kind == crate::cmd::CmdKind::Stroke as u32));
+        assert_eq!(
+            [commands[0].slot0, commands[0].slot1, commands[0].slot2, commands[0].slot3],
+            [1.0, 2.0, 3.0, 4.0],
+        );
+    }
 }

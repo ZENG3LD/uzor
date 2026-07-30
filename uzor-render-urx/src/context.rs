@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use kurbo::{
-    Affine as KAffine, BezPath, Cap, Join, Point as KPoint, Rect as KRect, Shape, Vec2,
+    Affine as KAffine, BezPath, Cap, Join, Point as KPoint, Rect as KRect, Vec2,
 };
 use peniko::{
     Brush as PenikoBrush, Color, ColorStop, ColorStops, Extend, Gradient,
@@ -23,7 +23,7 @@ use peniko::{
 
 use uzor_urx_core::scene::{
     Dash as UrxDash, DrawCommand, FillRule, FontId, Glyph, LineCap as UrxLineCap,
-    LineJoin as UrxLineJoin, Scene, Stroke as UrxStroke,
+    LineBatchSegment, LineJoin as UrxLineJoin, Scene, Stroke as UrxStroke,
 };
 
 use uzor::fonts::{self, FontFamily};
@@ -101,6 +101,13 @@ struct ShadowState {
     color: Color,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum PathHint {
+    Empty,
+    FullCircle { cx: f64, cy: f64, radius: f64 },
+    Generic,
+}
+
 // ── UrxRenderContext ────────────────────────────────────────────────────────
 
 /// `uzor::RenderContext` impl that buffers draw events into an
@@ -117,6 +124,12 @@ struct ShadowState {
 /// ```
 pub struct UrxRenderContext {
     scene: Scene,
+    /// Monotonic identity of the currently buffered scene.
+    ///
+    /// A new revision starts only when the producer begins rebuilding the
+    /// frame. Submitting or re-submitting the retained scene does not change
+    /// it, so a backend can safely use this value as a coarse cache key.
+    revision: u64,
     width:  u32,
     height: u32,
     dpr:    f64,
@@ -138,6 +151,9 @@ pub struct UrxRenderContext {
 
     /// Current Canvas2D-style path buffer.
     path: BezPath,
+    /// Exact primitive identity for the subset that can bypass generic path
+    /// tessellation without changing the public path API.
+    path_hint: PathHint,
 
     /// Drop shadow (optional). Emitted as a translated pre-pass before the
     /// main draw on `fill_rect` / `fill` / `fill_text` ops.
@@ -154,6 +170,7 @@ impl UrxRenderContext {
     pub fn new(dpr: f64) -> Self {
         Self {
             scene:         Scene::new(),
+            revision:      0,
             width:         0,
             height:        0,
             dpr,
@@ -170,6 +187,7 @@ impl UrxRenderContext {
             text_baseline: TextBaseline::Middle,
             blend_mode:    UzorBlendMode::Normal,
             path:          BezPath::new(),
+            path_hint:     PathHint::Empty,
             shadow:        None,
             clip_pushes:   0,
             state_stack:   Vec::new(),
@@ -200,11 +218,13 @@ impl UrxRenderContext {
 
     /// Reset for a new frame. Discards any buffered draws + state.
     pub fn begin_frame(&mut self, width: u32, height: u32) {
+        self.revision = self.revision.saturating_add(1);
         self.scene.reset();
         self.width  = width;
         self.height = height;
         self.transform = KAffine::IDENTITY;
         self.path.truncate(0);
+        self.path_hint = PathHint::Empty;
         self.shadow = None;
         self.clip_pushes = 0;
         self.state_stack.clear();
@@ -216,8 +236,19 @@ impl UrxRenderContext {
         std::mem::replace(&mut self.scene, Scene::new())
     }
 
+    /// Clear submitted commands while retaining the scene's allocation.
+    ///
+    /// Submitters that only need to borrow [`Self::scene`] should call this
+    /// after rendering instead of taking and dropping the whole scene.
+    pub fn recycle_scene(&mut self) {
+        self.scene.reset();
+    }
+
     /// Read-only access (for tests / inspection).
     pub fn scene(&self) -> &Scene { &self.scene }
+
+    /// Monotonic revision of the buffered scene.
+    pub fn revision(&self) -> u64 { self.revision }
 
     pub fn size(&self) -> (u32, u32) { (self.width, self.height) }
 
@@ -446,13 +477,20 @@ impl Painter for UrxRenderContext {
         };
     }
 
-    fn begin_path(&mut self) { self.path.truncate(0); }
-    fn move_to(&mut self, x: f64, y: f64) { self.path.move_to(KPoint::new(x, y)); }
+    fn begin_path(&mut self) {
+        self.path.truncate(0);
+        self.path_hint = PathHint::Empty;
+    }
+    fn move_to(&mut self, x: f64, y: f64) {
+        self.path_hint = PathHint::Generic;
+        self.path.move_to(KPoint::new(x, y));
+    }
     fn line_to(&mut self, x: f64, y: f64) {
         // Canvas2D tolerates `lineTo` on an empty path (starts a
         // subpath at that point). kurbo panics — open the subpath.
         self.ensure_subpath_open(KPoint::new(x, y));
         self.path.line_to(KPoint::new(x, y));
+        self.path_hint = PathHint::Generic;
     }
     fn close_path(&mut self) {
         // No-op if no subpath is open — Canvas2D semantics.
@@ -460,9 +498,11 @@ impl Painter for UrxRenderContext {
             && !matches!(self.path.elements().last(), Some(kurbo::PathEl::ClosePath))
         {
             self.path.close_path();
+            self.path_hint = PathHint::Generic;
         }
     }
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        self.path_hint = PathHint::Generic;
         self.path.move_to(KPoint::new(x, y));
         self.path.line_to(KPoint::new(x + w, y));
         self.path.line_to(KPoint::new(x + w, y + h));
@@ -476,11 +516,13 @@ impl Painter for UrxRenderContext {
         // closed path. Emit MoveTo to the arc's starting point when
         // needed (Canvas2D semantics: arc on a fresh path starts a new
         // subpath at the first arc point).
+        let path_was_empty = self.path.elements().is_empty();
+        let sweep = end - start;
         let arc = kurbo::Arc::new(
             KPoint::new(cx, cy),
             Vec2::new(radius, radius),
             start,
-            end - start,
+            sweep,
             0.0,
         );
         self.ensure_subpath_open(KPoint::new(
@@ -490,8 +532,20 @@ impl Painter for UrxRenderContext {
         for el in arc.append_iter(0.1) {
             self.path.push(el);
         }
+        self.path_hint = if path_was_empty
+            && cx.is_finite()
+            && cy.is_finite()
+            && radius.is_finite()
+            && radius >= 0.0
+            && (sweep.abs() - std::f64::consts::TAU).abs() <= 1e-9
+        {
+            PathHint::FullCircle { cx, cy, radius }
+        } else {
+            PathHint::Generic
+        };
     }
     fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, _rot: f64, start: f64, end: f64) {
+        self.path_hint = PathHint::Generic;
         let arc = kurbo::Arc::new(
             KPoint::new(cx, cy),
             Vec2::new(rx, ry),
@@ -508,6 +562,7 @@ impl Painter for UrxRenderContext {
         }
     }
     fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
+        self.path_hint = PathHint::Generic;
         // kurbo `quad_to` requires an open subpath. Canvas2D starts
         // one implicitly at the control point's previous position;
         // we fall back to the curve start (close enough — only fires
@@ -516,6 +571,7 @@ impl Painter for UrxRenderContext {
         self.path.quad_to(KPoint::new(cpx, cpy), KPoint::new(x, y));
     }
     fn bezier_curve_to(&mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64) {
+        self.path_hint = PathHint::Generic;
         self.ensure_subpath_open(KPoint::new(cp1x, cp1y));
         self.path.curve_to(
             KPoint::new(cp1x, cp1y),
@@ -528,6 +584,18 @@ impl Painter for UrxRenderContext {
         if self.path.elements().is_empty() { return; }
         let stroke = self.current_stroke();
         let brush = self.effective_stroke_brush();
+        if stroke.dash.is_none() {
+            if let PathHint::FullCircle { cx, cy, radius } = self.path_hint {
+                self.scene.push(DrawCommand::StrokeRect {
+                    rect: KRect::new(cx - radius, cy - radius, cx + radius, cy + radius),
+                    radii: Some([radius as f32; 4]),
+                    stroke,
+                    brush,
+                    transform: self.transform,
+                });
+                return;
+            }
+        }
         self.scene.push(DrawCommand::StrokePath {
             path:      self.path.clone(),
             stroke,
@@ -689,26 +757,21 @@ impl GradientPainter for UrxRenderContext {
     }
 }
 
-// ── BatchPainter (uses defaults; defaults are fine — they unroll to N
-// individual `stroke()`/`fill()` calls which we already handle) ─────────────
+// ── BatchPainter ────────────────────────────────────────────────────────────
 
 impl BatchPainter for UrxRenderContext {
-    // All methods have default impls in the trait that delegate to single
-    // ops; we accept them as-is. A future optimisation can emit one big
-    // FillPath per batch instead.
     fn draw_line_batch(&mut self, lines: &[LineSegment], color: &str, width: f64) {
         if lines.is_empty() { return; }
         self.set_stroke_color(color);
         self.set_stroke_width(width);
         let stroke = self.current_stroke();
         let brush = self.effective_stroke_brush();
-        let mut path = BezPath::new();
-        for line in lines {
-            path.move_to(KPoint::new(line.x1, line.y1));
-            path.line_to(KPoint::new(line.x2, line.y2));
-        }
-        self.scene.push(DrawCommand::StrokePath {
-            path,
+        let segments = lines.iter().map(|line| LineBatchSegment {
+            from: Vec2::new(line.x1, line.y1),
+            to:   Vec2::new(line.x2, line.y2),
+        }).collect();
+        self.scene.push(DrawCommand::LineBatch {
+            segments,
             stroke,
             brush,
             transform: self.transform,
@@ -717,19 +780,15 @@ impl BatchPainter for UrxRenderContext {
     fn draw_circle_batch(&mut self, circles: &[CircleBatch], color: &str) {
         if circles.is_empty() { return; }
         self.set_fill_color(color);
-        let mut path = BezPath::new();
-        for c in circles {
-            let circle = kurbo::Circle::new(KPoint::new(c.cx, c.cy), c.r);
-            // kurbo::Shape::path_elements yields the iterator we extend with.
-            path.extend(circle.into_path(0.1));
-        }
         let brush = self.effective_fill_brush();
-        self.scene.push(DrawCommand::FillPath {
-            path,
-            rule: FillRule::NonZero,
-            brush,
-            transform: self.transform,
-        });
+        for c in circles {
+            self.scene.push(DrawCommand::FillRect {
+                rect: KRect::new(c.cx - c.r, c.cy - c.r, c.cx + c.r, c.cy + c.r),
+                radii: Some([c.r as f32; 4]),
+                brush: brush.clone(),
+                transform: self.transform,
+            });
+        }
     }
 }
 
@@ -1028,7 +1087,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn solid_line_batch_emits_one_compound_stroke_path() {
+    fn solid_line_batch_emits_one_line_batch() {
         let mut ctx = UrxRenderContext::new(1.0);
         ctx.begin_frame(100, 100);
         BatchPainter::draw_line_batch(
@@ -1045,13 +1104,18 @@ mod tests {
         assert_eq!(scene.commands.len(), 1);
         assert!(matches!(
             &scene.commands[0],
-            DrawCommand::StrokePath { path, stroke, .. }
-                if path.elements().len() == 4 && stroke.dash.is_none()
+            DrawCommand::LineBatch { segments, stroke, .. }
+                if segments.len() == 2
+                    && segments[0].from == Vec2::new(1.0, 2.0)
+                    && segments[0].to == Vec2::new(3.0, 4.0)
+                    && segments[1].from == Vec2::new(5.0, 6.0)
+                    && segments[1].to == Vec2::new(7.0, 8.0)
+                    && stroke.dash.is_none()
         ));
     }
 
     #[test]
-    fn dashed_line_batch_retains_compound_stroke_path_semantics() {
+    fn dashed_line_batch_retains_batch_stroke_semantics() {
         let mut ctx = UrxRenderContext::new(1.0);
         ctx.begin_frame(100, 100);
         Painter::set_line_dash(&mut ctx, &[8.0, 5.0]);
@@ -1069,7 +1133,135 @@ mod tests {
         assert_eq!(scene.commands.len(), 1);
         assert!(matches!(
             &scene.commands[0],
-            DrawCommand::StrokePath { stroke, .. } if stroke.dash.is_some()
+            DrawCommand::LineBatch { segments, stroke, .. }
+                if segments.len() == 2 && stroke.dash.is_some()
+        ));
+    }
+
+    #[test]
+    fn circle_batch_emits_sdf_round_rects_with_original_geometry() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        BatchPainter::draw_circle_batch(
+            &mut ctx,
+            &[
+                CircleBatch { cx: 10.0, cy: 20.0, r: 3.0 },
+                CircleBatch { cx: 40.0, cy: 50.0, r: 7.5 },
+            ],
+            "#ffffff",
+        );
+
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 2);
+        let expected = [
+            (KRect::new(7.0, 17.0, 13.0, 23.0), [3.0; 4]),
+            (KRect::new(32.5, 42.5, 47.5, 57.5), [7.5; 4]),
+        ];
+        for (command, (expected_rect, expected_radii)) in scene.commands.iter().zip(expected) {
+            match command {
+                DrawCommand::FillRect { rect, radii: Some(radii), .. } => {
+                    assert_eq!(*rect, expected_rect);
+                    assert_eq!(*radii, expected_radii);
+                }
+                other => panic!("expected SDF FillRect circle, got {:?}", other),
+            }
+        }
+        assert!(!scene.commands.iter().any(|command| matches!(command, DrawCommand::FillPath { .. })));
+    }
+
+    #[test]
+    fn recycle_scene_keeps_command_capacity() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        for x in 0..32 {
+            ShapeHelpers::fill_rect(&mut ctx, x as f64, 0.0, 1.0, 1.0);
+        }
+        let capacity = ctx.scene.commands.capacity();
+
+        ctx.recycle_scene();
+
+        assert!(ctx.scene.commands.is_empty());
+        assert_eq!(ctx.scene.commands.capacity(), capacity);
+    }
+
+    #[test]
+    fn begin_frame_advances_revision_and_reuses_scene_capacity() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        assert_eq!(ctx.revision(), 0);
+
+        ctx.begin_frame(100, 100);
+        let first_revision = ctx.revision();
+        for x in 0..32 {
+            ShapeHelpers::fill_rect(&mut ctx, x as f64, 0.0, 1.0, 1.0);
+        }
+        let capacity = ctx.scene().commands.capacity();
+
+        ctx.begin_frame(200, 150);
+
+        assert_eq!(ctx.revision(), first_revision + 1);
+        assert!(ctx.scene().is_empty());
+        assert_eq!(ctx.scene().commands.capacity(), capacity);
+        assert_eq!(ctx.size(), (200, 150));
+    }
+
+    #[test]
+    fn retained_scene_and_revision_survive_read_only_access() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        ShapeHelpers::fill_rect(&mut ctx, 1.0, 2.0, 3.0, 4.0);
+        let revision = ctx.revision();
+
+        assert_eq!(ctx.scene().len(), 1);
+        assert_eq!(ctx.scene().len(), 1);
+        assert_eq!(ctx.revision(), revision);
+    }
+
+    #[test]
+    fn full_circle_stroke_emits_native_rounded_stroke_rect() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        Painter::begin_path(&mut ctx);
+        Painter::arc(&mut ctx, 30.0, 40.0, 12.0, 0.0, std::f64::consts::TAU);
+        Painter::stroke(&mut ctx);
+
+        assert!(matches!(
+            &ctx.scene().commands[..],
+            [DrawCommand::StrokeRect {
+                rect,
+                radii: Some(radii),
+                ..
+            }] if *rect == KRect::new(18.0, 28.0, 42.0, 52.0)
+                && *radii == [12.0; 4]
+        ));
+    }
+
+    #[test]
+    fn partial_or_extended_circle_path_keeps_generic_stroke_semantics() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        Painter::begin_path(&mut ctx);
+        Painter::arc(&mut ctx, 30.0, 40.0, 12.0, 0.0, std::f64::consts::PI);
+        Painter::line_to(&mut ctx, 30.0, 40.0);
+        Painter::stroke(&mut ctx);
+
+        assert!(matches!(
+            &ctx.scene().commands[..],
+            [DrawCommand::StrokePath { .. }]
+        ));
+    }
+
+    #[test]
+    fn dashed_full_circle_keeps_generic_path_dash_phase() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        Painter::set_line_dash(&mut ctx, &[4.0, 3.0]);
+        Painter::begin_path(&mut ctx);
+        Painter::arc(&mut ctx, 30.0, 40.0, 12.0, 0.0, std::f64::consts::TAU);
+        Painter::stroke(&mut ctx);
+
+        assert!(matches!(
+            &ctx.scene().commands[..],
+            [DrawCommand::StrokePath { stroke, .. }] if stroke.dash.is_some()
         ));
     }
     use uzor::render::Painter;

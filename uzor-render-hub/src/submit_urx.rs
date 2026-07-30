@@ -36,21 +36,34 @@ use crate::factory::{SurfaceMode, WindowRenderState};
 use crate::metrics::RenderMetrics;
 use crate::submit::SubmitParams;
 
-/// Pull this frame's `Scene` out of the shared URX context. `None` if the
-/// consumer never produced anything (e.g. the very first frame before any
-/// paint callback fires).
-fn take_urx_scene(state: &mut WindowRenderState) -> Option<Scene> {
-    state.urx_ctx.as_mut().map(|c| c.take_scene())
+/// Borrow the buffered scene for one submit without consuming it.
+///
+/// The producer's next `begin_frame` clears the scene while retaining its
+/// allocation. Keeping the submitted scene here lets cadence-gated windows
+/// present the same complete frame again without rebuilding application
+/// geometry.
+fn with_urx_scene<R>(
+    state: &mut WindowRenderState,
+    submit: impl FnOnce(&mut WindowRenderState, &Scene, u64) -> R,
+) -> Option<R> {
+    let context = state.urx_ctx.take()?;
+    let result = submit(state, context.scene(), context.revision());
+    state.urx_ctx = Some(context);
+    Some(result)
 }
 
 // ── UrxCpu ──────────────────────────────────────────────────────────────────
 
 pub fn submit_urx_cpu(state: &mut WindowRenderState, metrics: &mut RenderMetrics) -> bool {
-    let scene = match take_urx_scene(state) {
-        Some(s) => s,
-        None => return false,
-    };
+    with_urx_scene(state, |state, scene, _revision| submit_urx_cpu_scene(state, scene, metrics))
+        .unwrap_or(false)
+}
 
+fn submit_urx_cpu_scene(
+    state: &mut WindowRenderState,
+    scene: &Scene,
+    metrics: &mut RenderMetrics,
+) -> bool {
     // Determine surface size + kind without holding any borrow into state.surface.
     enum SurfaceKind { Gpu, Software, #[cfg(target_arch = "wasm32")] Canvas2d }
     let (width, height, kind) = match &state.surface {
@@ -73,7 +86,7 @@ pub fn submit_urx_cpu(state: &mut WindowRenderState, metrics: &mut RenderMetrics
         let backend = match state.urx_cpu_backend.as_ref() { Some(b) => b, None => return false };
         let pixmap  = match state.urx_cpu_pixmap.as_mut()   { Some(p) => p, None => return false };
         pixmap.fill([0, 0, 0, 0]);
-        match backend.render(&scene, pixmap) {
+        match backend.render(scene, pixmap) {
             Ok(_)  => true,
             Err(e) => { eprintln!("[render-hub] urx-cpu render error: {:?}", e); false }
         }
@@ -175,16 +188,41 @@ fn ensure_urx_cpu_resources(state: &mut WindowRenderState, width: u32, height: u
 // `RenderBackend::InstancedWgpu`'s own (untouched, still-legacy,
 // still-manually-selectable) submit path.
 
+/// Resolve the framework AA request to the counts supported by the native URX
+/// path. `8` and `16` mean "MSAA enabled" and use the renderer's stable 4x
+/// pipeline; all other values mirror `submit::aa_for`'s area-AA fallback by
+/// disabling native MSAA.
+fn native_urx_sample_count(msaa_samples: u8) -> u32 {
+    match msaa_samples {
+        8 | 16 => 4,
+        _ => 1,
+    }
+}
+
+fn native_urx_renderer_needs_rebuild(current: Option<u32>, requested: u32) -> bool {
+    current != Some(requested)
+}
+
 pub fn submit_urx_wgpu(
     state: &mut WindowRenderState,
     params: &SubmitParams,
     metrics: &mut RenderMetrics,
 ) -> bool {
-    let scene = match take_urx_scene(state) {
-        Some(s) => s,
-        None => return false,
-    };
+    with_urx_scene(state, |state, scene, revision| {
+        submit_urx_wgpu_scene(state, scene, revision, params, metrics)
+    })
+        .unwrap_or(false)
+}
+
+fn submit_urx_wgpu_scene(
+    state: &mut WindowRenderState,
+    scene: &Scene,
+    scene_revision: u64,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
+) -> bool {
     let profiled_command_count = scene.len();
+    let sample_count = native_urx_sample_count(params.msaa_samples);
 
     let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
         eprintln!("[render-hub] urx_wgpu requires SurfaceMode::Gpu");
@@ -224,11 +262,15 @@ pub fn submit_urx_wgpu(
     // added to `WindowRenderState` (`factory.rs`), fixed at
     // `Rgba8Unorm` (never the swapchain's own, possibly-sRGB format —
     // see `compose_urx_native_into_swap`'s own doc comment for why).
-    if state.urx_native_renderer.is_none() {
-        state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+    // Rebuild only when the resolved AA mode changes because wgpu bakes
+    // sample count into every render pipeline.
+    let current_sample_count = state.urx_native_renderer.as_ref().map(|renderer| renderer.sample_count());
+    if native_urx_renderer_needs_rebuild(current_sample_count, sample_count) {
+        state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::with_sample_count(
             device.clone(),
             queue.clone(),
             wgpu::TextureFormat::Rgba8Unorm,
+            sample_count,
         ));
     }
 
@@ -240,8 +282,9 @@ pub fn submit_urx_wgpu(
         // (`factory.rs::recreate_target_with_cpu_usage`, unconditional
         // on every `resize_surface`) — the same guarantee Wave 5a
         // leaned on.
-        if let Err(e) = renderer.render_into_encoder(
-            &scene,
+        if let Err(e) = renderer.render_retained_into_encoder(
+            scene,
+            scene_revision,
             &mut encoder,
             &surface.target_view,
             uzor_urx_wgpu::Viewport { width, height },
@@ -257,8 +300,6 @@ pub fn submit_urx_wgpu(
     // (same "handled inside the blit pass" shape
     // `submit_urx_wgpu_full` already documents for its own unused
     // `params`).
-    let _ = params;
-
     // Reuse the existing blit tail — same pattern `submit_urx_cpu`'s
     // own upload-then-blit already uses, just fed by a GPU-rendered
     // `target_view` instead of an uploaded CPU pixmap.
@@ -269,7 +310,7 @@ pub fn submit_urx_wgpu(
     metrics.present_us = present_t0.elapsed().as_micros() as u64;
     if std::env::var_os("UZOR_PROFILE_FRAMES").is_some() {
         eprintln!(
-            "[uzor-urx-profile] commands={profiled_command_count} \
+            "[uzor-urx-profile] revision={scene_revision} commands={profiled_command_count} \
              encode_us={} present_us={}",
             metrics.render_to_texture_us,
             metrics.present_us,
@@ -421,11 +462,18 @@ pub fn submit_urx_hybrid(
     params: &SubmitParams,
     metrics: &mut RenderMetrics,
 ) -> bool {
-    let scene = match take_urx_scene(state) {
-        Some(s) => s,
-        None => return false,
-    };
+    with_urx_scene(state, |state, scene, _revision| {
+        submit_urx_hybrid_scene(state, scene, params, metrics)
+    })
+        .unwrap_or(false)
+}
 
+fn submit_urx_hybrid_scene(
+    state: &mut WindowRenderState,
+    scene: &Scene,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
+) -> bool {
     let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
         eprintln!("[render-hub] urx_hybrid requires SurfaceMode::Gpu");
         return false;
@@ -458,7 +506,7 @@ pub fn submit_urx_hybrid(
         let backend = state.urx_cpu_backend.as_ref().expect("inited above");
         let pixmap  = state.urx_cpu_pixmap.as_mut().expect("inited above");
         pixmap.fill([0, 0, 0, 0]);
-        backend.render(&scene, pixmap).is_ok()
+        backend.render(scene, pixmap).is_ok()
     };
     if !render_ok { return false; }
 
@@ -520,11 +568,18 @@ pub fn submit_urx_wgpu_full(
     params: &SubmitParams,
     metrics: &mut RenderMetrics,
 ) -> bool {
-    let scene = match take_urx_scene(state) {
-        Some(s) => s,
-        None => return false,
-    };
+    with_urx_scene(state, |state, scene, _revision| {
+        submit_urx_wgpu_full_scene(state, scene, params, metrics)
+    })
+        .unwrap_or(false)
+}
 
+fn submit_urx_wgpu_full_scene(
+    state: &mut WindowRenderState,
+    scene: &Scene,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
+) -> bool {
     let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
         eprintln!("[render-hub] urx_wgpu_full requires SurfaceMode::Gpu");
         return false;
@@ -565,7 +620,7 @@ pub fn submit_urx_wgpu_full(
 
     let r2t_t0 = std::time::Instant::now();
     if let Some(ref mut backend) = state.urx_wgpu_full_backend {
-        if let Err(e) = backend.submit(&scene, &mut encoder, &surface_view) {
+        if let Err(e) = backend.submit(scene, &mut encoder, &surface_view) {
             eprintln!("[render-hub] urx_wgpu_full submit error: {:?}", e);
         }
     }
@@ -582,9 +637,60 @@ pub fn submit_urx_wgpu_full(
 
 #[cfg(test)]
 mod tests {
+    use uzor::layout::window::SoftwarePresenter;
+    use uzor::render::ShapeHelpers;
     use uzor_urx_core::math::{Affine, Brush, Color, Gradient};
     use uzor_urx_core::scene::{DrawCommand, Scene};
     use uzor_urx_core::Rect;
+
+    struct NoopPresenter;
+
+    impl SoftwarePresenter for NoopPresenter {
+        fn present(&mut self, _pixels: &[u8], _width: u32, _height: u32) {}
+        fn resize(&mut self, _width: u32, _height: u32) {}
+    }
+
+    #[test]
+    fn with_urx_scene_restores_and_retains_submitted_scene() {
+        let mut state = crate::factory::WindowRenderState::new_cpu(64, 64, Box::new(NoopPresenter));
+        let mut context = uzor_render_urx::UrxRenderContext::new(1.0);
+        context.begin_frame(64, 64);
+        for x in 0..32 {
+            ShapeHelpers::fill_rect(&mut context, x as f64, 0.0, 1.0, 1.0);
+        }
+        let capacity = context.scene().commands.capacity();
+        let revision = context.revision();
+        state.urx_ctx = Some(context);
+
+        let submitted_len = super::with_urx_scene(&mut state, |state, scene, submitted_revision| {
+            assert!(state.urx_ctx.is_none());
+            assert_eq!(submitted_revision, revision);
+            scene.len()
+        });
+
+        assert_eq!(submitted_len, Some(32));
+        let context = state.urx_ctx.as_ref().expect("context must be restored after submit");
+        assert_eq!(context.scene().len(), 32);
+        assert_eq!(context.scene().commands.capacity(), capacity);
+        assert_eq!(context.revision(), revision);
+    }
+
+    #[test]
+    fn native_urx_msaa_requests_resolve_to_supported_pipeline_counts() {
+        assert_eq!(super::native_urx_sample_count(0), 1);
+        assert_eq!(super::native_urx_sample_count(1), 1);
+        assert_eq!(super::native_urx_sample_count(4), 1);
+        assert_eq!(super::native_urx_sample_count(8), 4);
+        assert_eq!(super::native_urx_sample_count(16), 4);
+    }
+
+    #[test]
+    fn native_urx_renderer_rebuild_gate_only_tracks_resolved_count_changes() {
+        assert!(super::native_urx_renderer_needs_rebuild(None, 1));
+        assert!(!super::native_urx_renderer_needs_rebuild(Some(1), 1));
+        assert!(super::native_urx_renderer_needs_rebuild(Some(1), 4));
+        assert!(!super::native_urx_renderer_needs_rebuild(Some(4), 4));
+    }
 
     /// Headless wgpu device — same shape as `uzor-urx-wgpu`'s own
     /// `renderer.rs::test_device`/`tests/common/mod.rs::init_device`.

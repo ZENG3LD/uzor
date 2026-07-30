@@ -270,6 +270,37 @@ impl CpuBackend {
                         stroke_line_aa(target, &clip, *from, *to, stroke.width, color, transform);
                     }
                 }
+                DrawCommand::LineBatch { segments, stroke, brush, transform } => {
+                    let color = brush_to_color(brush);
+                    let target = layer_stack.current_target(pixmap);
+                    if stroke.dash.is_some() {
+                        for segment in segments {
+                            let mut path = BezPath::new();
+                            path.move_to((segment.from.x, segment.from.y));
+                            path.line_to((segment.to.x, segment.to.y));
+                            crate::path::stroke_path_aa(
+                                target,
+                                &clip,
+                                &path,
+                                stroke,
+                                color,
+                                transform,
+                            );
+                        }
+                    } else {
+                        for segment in segments {
+                            stroke_line_aa(
+                                target,
+                                &clip,
+                                segment.from,
+                                segment.to,
+                                stroke.width,
+                                color,
+                                transform,
+                            );
+                        }
+                    }
+                }
                 DrawCommand::FillPath { path, rule, brush, transform } => {
                     let target = layer_stack.current_target(pixmap);
                     // Coordinator's 2026-07-25 fix: a real gradient now

@@ -67,7 +67,8 @@ pub fn render_parallel(
                 }
             }
             DrawCommand::StrokeRect { brush, stroke, .. }
-            | DrawCommand::Line { brush, stroke, .. } => {
+            | DrawCommand::Line { brush, stroke, .. }
+            | DrawCommand::LineBatch { brush, stroke, .. } => {
                 if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)
                                   | uzor_urx_core::math::Brush::Image(_))
                     || stroke.dash.is_some()
@@ -112,6 +113,20 @@ pub fn render_parallel(
                 DrawCommand::Line { from, to, stroke, brush, transform } => {
                     let color = brush_to_color(brush);
                     stroke_line_strip(strip, &clip, *from, *to, stroke.width, color, transform);
+                }
+                DrawCommand::LineBatch { segments, stroke, brush, transform } => {
+                    let color = brush_to_color(brush);
+                    for segment in segments {
+                        stroke_line_strip(
+                            strip,
+                            &clip,
+                            segment.from,
+                            segment.to,
+                            stroke.width,
+                            color,
+                            transform,
+                        );
+                    }
                 }
                 DrawCommand::FillPath { .. } | DrawCommand::StrokePath { .. } => {
                     // Path raster has internal edge-table state that

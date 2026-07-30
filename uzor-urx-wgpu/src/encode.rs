@@ -420,7 +420,7 @@ fn try_reserve_geometry_with_limit<T>(
         });
     }
     let capacity_before = instances.capacity();
-    let reserve_t0 = crate::profile::enabled().then(std::time::Instant::now);
+    let mut reserve_us = 0;
     if requested_instances > instances.capacity() {
         let target_capacity = instances
             .capacity()
@@ -442,6 +442,7 @@ fn try_reserve_geometry_with_limit<T>(
                 target_capacity,
             ),
         );
+        let reserve_t0 = crate::profile::enabled().then(std::time::Instant::now);
         if instances.try_reserve_exact(target_capacity - instances.len()).is_err() {
             return Err(GeometryCapacityError {
                 stage: "cpu_geometry_reserve",
@@ -453,6 +454,7 @@ fn try_reserve_geometry_with_limit<T>(
                 max_bytes,
             });
         }
+        reserve_us = reserve_t0.map_or(0, |started| started.elapsed().as_micros());
     }
     Ok(GeometryReserveProfile {
         requested_bytes,
@@ -460,7 +462,7 @@ fn try_reserve_geometry_with_limit<T>(
             .capacity()
             .saturating_sub(capacity_before)
             .saturating_mul(instance_size),
-        reserve_us: reserve_t0.map_or(0, |started| started.elapsed().as_micros()),
+        reserve_us,
     })
 }
 
@@ -1513,6 +1515,18 @@ pub(crate) fn encode_scene_reusing(
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_line(&mut frame, tess_cache, *from, *to, stroke, brush, transform, clip_rect);
             }
+            DrawCommand::LineBatch { segments, stroke, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
+                encode_line_batch(
+                    &mut frame,
+                    tess_cache,
+                    segments,
+                    stroke,
+                    brush,
+                    transform,
+                    clip_rect,
+                );
+            }
             DrawCommand::FillPath { path, rule, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_fill_path(&mut frame, tess_cache, lut.as_deref_mut(), path, *rule, brush, transform, clip_rect);
@@ -2052,10 +2066,101 @@ fn encode_line(
         color: packed_color(color),
         width,
         cap_flags,
-        _pad0: 0.0,
-        _pad1: [0.0; 2],
         clip_rect,
     });
+}
+
+/// Native bulk form of independent [`DrawCommand::Line`] primitives.
+///
+/// The common solid/no-dash graph path reserves once and appends one
+/// `LineInstance` per segment without constructing or rescanning a compound
+/// `BezPath`. Less common dash/brush cases deliberately reuse `encode_line`
+/// per segment so the batch has exactly the same degradation and painter
+/// semantics as independent `Line` commands.
+fn encode_line_batch(
+    frame: &mut EncodedFrame,
+    tess_cache: &mut TessCache,
+    segments: &[uzor_urx_core::scene::LineBatchSegment],
+    stroke: &Stroke,
+    brush: &Brush,
+    transform: &Affine,
+    clip_rect: [f32; 4],
+) {
+    if segments.is_empty() {
+        return;
+    }
+    if stroke.dash.is_some() || !matches!(brush, Brush::Solid(_)) {
+        for segment in segments {
+            encode_line(
+                frame,
+                tess_cache,
+                segment.from,
+                segment.to,
+                stroke,
+                brush,
+                transform,
+                clip_rect,
+            );
+        }
+        return;
+    }
+    let Brush::Solid(color) = brush else {
+        unreachable!("non-solid brushes returned through encode_line above");
+    };
+    let width = stroke.width.max(0.0);
+    if width <= 0.0 {
+        return;
+    }
+    let cap_flags = match stroke.cap {
+        LineCap::Round => 0.0,
+        LineCap::Butt => 3.0,
+        LineCap::Square => {
+            degrade("native_line_square_cap_to_round");
+            0.0
+        }
+    };
+    let start = frame.lines.len() as u32;
+    match try_reserve_geometry(&mut frame.lines, segments.len(), "line") {
+        Ok(reserve) => frame.geometry_profile.record(reserve),
+        Err(error) => {
+            frame.geometry_capacity_error = Some(error);
+            return;
+        }
+    }
+    let color = packed_color(*color);
+    if *transform == Affine::IDENTITY {
+        for segment in segments {
+            frame.lines.push(LineInstance {
+                start: [segment.from.x as f32, segment.from.y as f32],
+                end: [segment.to.x as f32, segment.to.y as f32],
+                color,
+                width,
+                cap_flags,
+                clip_rect,
+            });
+        }
+    } else {
+        for segment in segments {
+            let from = transform_point_full(
+                transform,
+                Point::new(segment.from.x, segment.from.y),
+            );
+            let to = transform_point_full(
+                transform,
+                Point::new(segment.to.x, segment.to.y),
+            );
+            frame.lines.push(LineInstance {
+                start: [from.x as f32, from.y as f32],
+                end: [to.x as f32, to.y as f32],
+                color,
+                width,
+                cap_flags,
+                clip_rect,
+            });
+        }
+    }
+    let stencil_ref = frame.current_stencil_ref;
+    frame.bump_batch_by(BatchKind::Line, start, segments.len() as u32, stencil_ref);
 }
 
 /// Emit every triangle of a (already tessellated, LOCAL-space) mesh as
@@ -2231,8 +2336,6 @@ fn try_encode_independent_solid_line_path(
             color: packed,
             width: stroke.width,
             cap_flags,
-            _pad0: 0.0,
-            _pad1: [0.0; 2],
             clip_rect,
         });
     }
@@ -2660,6 +2763,87 @@ mod tests {
             (frame.lines[0].width - 4.0).abs() < 0.01,
             "stroke width must stay DEVICE-CONSTANT under scale (design §0.2), not scale to 8.0"
         );
+    }
+
+    #[test]
+    fn explicit_line_batch_bulk_encodes_without_path_tessellation() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::LineBatch {
+            segments: vec![
+                uzor_urx_core::scene::LineBatchSegment {
+                    from: Vec2 { x: 1.0, y: 2.0 },
+                    to: Vec2 { x: 3.0, y: 4.0 },
+                },
+                uzor_urx_core::scene::LineBatchSegment {
+                    from: Vec2 { x: 5.0, y: 6.0 },
+                    to: Vec2 { x: 7.0, y: 8.0 },
+                },
+            ],
+            stroke: SceneStroke {
+                width: 2.0,
+                cap: LineCap::Butt,
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::scale(2.0),
+        });
+
+        let frame = encode_scene(
+            &scene,
+            viewport(),
+            &mut cache(),
+            None,
+            None,
+            max_depth(),
+            false,
+        );
+        assert!(frame.triangles.is_empty());
+        assert_eq!(frame.lines.len(), 2);
+        assert_eq!(frame.lines[0].start, [2.0, 4.0]);
+        assert_eq!(frame.lines[1].end, [14.0, 16.0]);
+        assert_eq!(frame.draw_batches().len(), 1);
+        assert_eq!(frame.draw_batches()[0].count, 2);
+    }
+
+    #[test]
+    fn identity_line_batch_preserves_source_coordinates_exactly() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::LineBatch {
+            segments: vec![
+                uzor_urx_core::scene::LineBatchSegment {
+                    from: Vec2 { x: -12.5, y: 3.25 },
+                    to: Vec2 { x: 40.75, y: -8.5 },
+                },
+                uzor_urx_core::scene::LineBatchSegment {
+                    from: Vec2 { x: 0.0, y: 1.0 },
+                    to: Vec2 { x: 2.0, y: 3.0 },
+                },
+            ],
+            stroke: SceneStroke {
+                width: 2.0,
+                cap: LineCap::Butt,
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+        });
+
+        let frame = encode_scene(
+            &scene,
+            viewport(),
+            &mut cache(),
+            None,
+            None,
+            max_depth(),
+            false,
+        );
+
+        assert_eq!(frame.lines.len(), 2);
+        assert_eq!(frame.lines[0].start, [-12.5, 3.25]);
+        assert_eq!(frame.lines[0].end, [40.75, -8.5]);
+        assert_eq!(frame.lines[1].start, [0.0, 1.0]);
+        assert_eq!(frame.lines[1].end, [2.0, 3.0]);
+        assert_eq!(frame.draw_batches().len(), 1);
     }
 
     #[test]

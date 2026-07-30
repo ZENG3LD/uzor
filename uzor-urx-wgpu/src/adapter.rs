@@ -131,6 +131,19 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 ctx.stroke();
                 unapply_transform(ctx, transform);
             }
+            DrawCommand::LineBatch { segments, stroke, brush, transform } => {
+                let color = brush_to_solid_color(brush);
+                ctx.set_stroke_color(&color_to_css(color));
+                ctx.set_stroke_width(stroke.width as f64);
+                apply_transform(ctx, transform);
+                ctx.begin_path();
+                for segment in segments {
+                    ctx.move_to(segment.from.x, segment.from.y);
+                    ctx.line_to(segment.to.x, segment.to.y);
+                }
+                ctx.stroke();
+                unapply_transform(ctx, transform);
+            }
             DrawCommand::FillPath { path, rule: _rule, brush, transform } => {
                 let color = brush_to_solid_color(brush);
                 ctx.set_fill_color(&color_to_css(color));
