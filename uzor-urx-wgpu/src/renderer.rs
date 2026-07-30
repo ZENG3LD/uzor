@@ -64,11 +64,53 @@ use crate::pipelines::glyph::GlyphPipeline;
 use crate::pipelines::gradient::GradientPipeline;
 use crate::pipelines::image::ImagePipeline;
 use crate::pipelines::line::LinePipeline;
-use crate::pipelines::path::PathPipeline;
+use crate::pipelines::path::{GeometryCapacityError, PathPipeline};
 use crate::pipelines::quad::QuadPipeline;
 use crate::pipelines::stencil_mask::StencilMaskPipeline;
 use crate::stencil::StencilTarget;
 use crate::tessellate::{TessCache, TessCacheStats};
+
+fn native_geometry_capacity_error(
+    frame_id: u64,
+    error: GeometryCapacityError,
+) -> NativeRenderError {
+    crate::profile::stage(
+        "capacity_failure",
+        format_args!(
+            "failure_stage={} buffer={} requested_instances={} requested_bytes={} \
+             current_capacity_instances={} instance_size={} max_bytes={}",
+            error.stage,
+            error.buffer,
+            error.requested_instances,
+            error.requested_bytes,
+            error.current_capacity_instances,
+            error.instance_size,
+            error.max_bytes,
+        ),
+    );
+    NativeRenderError::GeometryCapacity {
+        frame_id,
+        stage: error.stage,
+        buffer: error.buffer,
+        requested_instances: error.requested_instances,
+        requested_bytes: error.requested_bytes,
+        current_capacity_instances: error.current_capacity_instances,
+        instance_size: error.instance_size,
+        max_bytes: error.max_bytes,
+    }
+}
+
+fn profile_buffer_upload_begin<T>(buffer: &'static str, data: &[T]) {
+    crate::profile::stage(
+        "gpu_buffer_reserve_upload_begin",
+        format_args!(
+            "buffer={} instances={} upload_bytes={}",
+            buffer,
+            data.len(),
+            std::mem::size_of_val(data),
+        ),
+    );
+}
 
 /// Target dimensions in physical pixels for one `render_into_encoder`
 /// call.
@@ -279,6 +321,7 @@ pub struct NativeUrxRenderer {
     glyph_atlas: NativeGlyphAtlas,
     gradient_lut: GradientLutAtlas,
     image_cache: NativeImageCache,
+    frame_scratch: encode::EncodedFrame,
     blend_layer_max_depth: usize,
     /// `UrxConfig::text_gamma_enabled` (URX text-gamma design,
     /// 2026-07-26), read once here and threaded through to
@@ -308,7 +351,14 @@ impl NativeUrxRenderer {
         format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Self {
-        Self::with_config(device, queue, format, sample_count, &UrxConfig::default())
+        Self::with_config_and_cache_mode(
+            device,
+            queue,
+            format,
+            sample_count,
+            &UrxConfig::default(),
+            true,
+        )
     }
 
     /// The full constructor — every other constructor delegates here.
@@ -332,6 +382,17 @@ impl NativeUrxRenderer {
         format: wgpu::TextureFormat,
         sample_count: u32,
         cfg: &UrxConfig,
+    ) -> Self {
+        Self::with_config_and_cache_mode(device, queue, format, sample_count, cfg, false)
+    }
+
+    fn with_config_and_cache_mode(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        cfg: &UrxConfig,
+        adaptive_tess_cache: bool,
     ) -> Self {
         let sample_count = sample_count.max(1);
 
@@ -433,7 +494,11 @@ impl NativeUrxRenderer {
         // (design §2.5).
         let stencil = StencilTarget::new(sample_count);
         let layer_pool = BlendLayerPool::new();
-        let tess_cache = TessCache::with_cap(cfg.path_tess_cache_cap);
+        let tess_cache = if adaptive_tess_cache {
+            TessCache::with_adaptive_cap(cfg.path_tess_cache_cap)
+        } else {
+            TessCache::with_cap(cfg.path_tess_cache_cap)
+        };
 
         Self {
             device,
@@ -459,6 +524,7 @@ impl NativeUrxRenderer {
             glyph_atlas,
             gradient_lut,
             image_cache,
+            frame_scratch: encode::EncodedFrame::default(),
             blend_layer_max_depth: cfg.blend_layer_max_depth,
             text_gamma_enabled: cfg.text_gamma_enabled,
         }
@@ -532,6 +598,9 @@ impl NativeUrxRenderer {
         view: &wgpu::TextureView,
         viewport: Viewport,
     ) -> Result<(), NativeRenderError> {
+        let frame_profile = crate::profile::FrameGuard::enter();
+        let frame_id = frame_profile.id();
+        let profile = frame_profile.enabled();
         if viewport.width == 0 || viewport.height == 0 {
             return Err(NativeRenderError::ZeroViewport { width: viewport.width, height: viewport.height });
         }
@@ -548,12 +617,25 @@ impl NativeUrxRenderer {
         // `gradient_lut.rs`'s own doc comment — Wave 4 Commit 3).
         self.glyph_atlas.begin_frame();
         self.gradient_lut.begin_frame();
+        self.tess_cache.begin_frame();
         // `NativeImageCache`'s own `get_or_upload` isn't called until
         // `replay_ops` (below) — its never-evict-this-frame invariant
         // still needs the tick advanced exactly once per frame, before
         // any of those calls happen.
         self.image_cache.begin_frame();
-        let frame = encode::encode_scene(
+        let tess_before = profile.then(|| self.tess_cache.stats());
+        crate::profile::stage(
+            "encode_begin",
+            format_args!(
+                "commands={} viewport={}x{}",
+                scene.len(),
+                viewport.width,
+                viewport.height,
+            ),
+        );
+        let profile_t0 = profile.then(std::time::Instant::now);
+        let frame = encode::encode_scene_reusing(
+            std::mem::take(&mut self.frame_scratch),
             scene,
             viewport,
             &mut self.tess_cache,
@@ -562,22 +644,83 @@ impl NativeUrxRenderer {
             self.blend_layer_max_depth,
             self.text_gamma_enabled,
         );
+        let encode_scene_us = profile_t0.map(|t| t.elapsed().as_micros());
+        let tess_after = profile.then(|| self.tess_cache.stats());
+        let tess_profile = self.tess_cache.frame_profile();
+        crate::profile::stage(
+            "encode_end",
+            format_args!(
+                "encode_us={} tessellate_us={} triangles={} geometry_used_bytes={} geometry_capacity_bytes={}",
+                encode_scene_us.unwrap_or(0),
+                tess_profile.tessellate_us,
+                frame.triangles.len(),
+                frame.geometry_used_bytes(),
+                frame.geometry_capacity_bytes(),
+            ),
+        );
+        if let Some(error) = frame.geometry_capacity_error {
+            let error = native_geometry_capacity_error(frame_id, error);
+            self.frame_scratch = frame;
+            return Err(error);
+        }
 
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };
+        let upload_uniform_t0 = profile.then(std::time::Instant::now);
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let upload_uniform_us = upload_uniform_t0.map(|t| t.elapsed().as_micros());
+        let upload_quad_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("quad", &frame.quads);
         self.quad.upload(&self.device, &self.queue, &frame.quads);
+        let upload_quad_us = upload_quad_t0.map(|t| t.elapsed().as_micros());
+        let upload_line_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("line", &frame.lines);
         self.line.upload(&self.device, &self.queue, &frame.lines);
-        self.path.upload(&self.device, &self.queue, &frame.triangles);
+        let upload_line_us = upload_line_t0.map(|t| t.elapsed().as_micros());
+        let upload_path_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("path", &frame.triangles);
+        let path_upload = match self.path.upload(&self.device, &self.queue, &frame.triangles) {
+            Ok(profile) => profile,
+            Err(error) => {
+                let error = native_geometry_capacity_error(frame_id, error);
+                self.frame_scratch = frame;
+                return Err(error);
+            }
+        };
+        let upload_path_us = upload_path_t0.map(|t| t.elapsed().as_micros());
+        let upload_glyph_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("glyph", &frame.glyphs);
         self.glyph.upload(&self.device, &self.queue, &frame.glyphs);
-        self.stencil_mask.upload(&self.device, &self.queue, &frame.stencil_masks);
+        let upload_glyph_us = upload_glyph_t0.map(|t| t.elapsed().as_micros());
+        let upload_stencil_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("stencil_mask", &frame.stencil_masks);
+        let stencil_upload = match self.stencil_mask.upload(&self.device, &self.queue, &frame.stencil_masks) {
+            Ok(profile) => profile,
+            Err(error) => {
+                let error = native_geometry_capacity_error(frame_id, error);
+                self.frame_scratch = frame;
+                return Err(error);
+            }
+        };
+        let upload_stencil_us = upload_stencil_t0.map(|t| t.elapsed().as_micros());
+        let upload_composite_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("blend_composite", &frame.composites);
         self.blend_composite.upload(&self.device, &self.queue, &frame.composites);
+        let upload_composite_us = upload_composite_t0.map(|t| t.elapsed().as_micros());
+        let upload_gradient_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("gradient", &frame.gradients);
         self.gradient.upload(&self.device, &self.queue, &frame.gradients);
+        let upload_gradient_us = upload_gradient_t0.map(|t| t.elapsed().as_micros());
+        let upload_image_t0 = profile.then(std::time::Instant::now);
+        profile_buffer_upload_begin("image", &frame.images);
         self.image.upload(&self.device, &self.queue, &frame.images);
+        let upload_image_us = upload_image_t0.map(|t| t.elapsed().as_micros());
         // Drain every glyph bitmap queued by this frame's `encode_scene`
         // call into the atlas texture — after encode returns (every
         // glyph this frame has already been placed) and before any
         // pass opens (so it samples up-to-date contents).
+        let flush_glyph_t0 = profile.then(std::time::Instant::now);
         self.glyph_atlas.flush_uploads(&self.queue);
+        let flush_glyph_us = flush_glyph_t0.map(|t| t.elapsed().as_micros());
         // Same timing for the gradient LUT atlas's queued rows (Wave 4
         // Commit 3) — `GradientLutAtlas::flush_uploads` is the SAME
         // "queue bytes at encode time, drain once here" shape as the
@@ -585,7 +728,9 @@ impl NativeUrxRenderer {
         // `NativeImageCache` does NOT need an equivalent flush step:
         // its uploads are synchronous, resolved lazily at replay time
         // instead of during `encode_scene`).
+        let flush_gradient_t0 = profile.then(std::time::Instant::now);
         self.gradient_lut.flush_uploads(&self.queue);
+        let flush_gradient_us = flush_gradient_t0.map(|t| t.elapsed().as_micros());
 
         // Frame-wide arming decision (design §2.5) — made ONCE, before
         // any pass opens. `has_rounded_clip == false` (the overwhelming
@@ -595,8 +740,92 @@ impl NativeUrxRenderer {
             self.stencil.ensure(&self.device, viewport.width, viewport.height);
         }
 
+        crate::profile::stage(
+            "replay_begin",
+            format_args!("ops={} rounded_clip={}", frame.ops.len(), frame.has_rounded_clip),
+        );
+        let replay_t0 = profile.then(std::time::Instant::now);
         self.replay_ops(&frame, encoder, view, viewport);
+        let replay_us = replay_t0.map(|t| t.elapsed().as_micros());
+        crate::profile::stage(
+            "replay_end",
+            format_args!("replay_us={}", replay_us.unwrap_or(0)),
+        );
+        if profile {
+            crate::profile::stage(
+                "frame_summary",
+                format_args!(
+                    "commands={} ops={} \
+                     quads={} lines={} triangles={} glyphs={} stencil_masks={} composites={} gradients={} images={} \
+                     tess_entries={} tess_hits={} tess_misses={} tessellate_calls={} tessellated_triangles={} \
+                     tessellate_us={} tess_cache_growths={} tess_cache_reserved_entries={} tess_cache_reserve_us={} \
+                     cpu_geometry_used_bytes={} cpu_geometry_capacity_bytes={} cpu_geometry_reserve_calls={} \
+                     cpu_geometry_growths={} cpu_geometry_growth_bytes={} cpu_geometry_peak_requested_bytes={} \
+                     cpu_geometry_reserve_us={} \
+                     gpu_path_upload_bytes={} gpu_path_capacity_before_instances={} gpu_path_capacity_after_instances={} \
+                     gpu_path_growth_bytes={} gpu_path_reserve_us={} gpu_path_upload_us={} \
+                     gpu_stencil_upload_bytes={} gpu_stencil_capacity_before_instances={} \
+                     gpu_stencil_capacity_after_instances={} gpu_stencil_growth_bytes={} \
+                     gpu_stencil_reserve_us={} gpu_stencil_upload_us={} \
+                     encode_scene_us={} upload_uniform_us={} upload_quad_us={} upload_line_us={} upload_path_us={} \
+                     upload_glyph_us={} upload_stencil_us={} upload_composite_us={} upload_gradient_us={} upload_image_us={} \
+                     flush_glyph_us={} flush_gradient_us={} replay_ops_us={}",
+                    scene.len(),
+                    frame.ops.len(),
+                    frame.quads.len(),
+                    frame.lines.len(),
+                    frame.triangles.len(),
+                    frame.glyphs.len(),
+                    frame.stencil_masks.len(),
+                    frame.composites.len(),
+                    frame.gradients.len(),
+                    frame.images.len(),
+                    tess_after.map_or(0, |stats| stats.entries),
+                    tess_after.zip(tess_before).map_or(0, |(after, before)| after.hits - before.hits),
+                    tess_after.zip(tess_before).map_or(0, |(after, before)| after.misses - before.misses),
+                    tess_profile.tessellate_calls,
+                    tess_profile.tessellated_triangles,
+                    tess_profile.tessellate_us,
+                    tess_profile.cache_growths,
+                    tess_profile.cache_reserved_entries,
+                    tess_profile.cache_reserve_us,
+                    frame.geometry_used_bytes(),
+                    frame.geometry_capacity_bytes(),
+                    frame.geometry_profile.reserve_calls,
+                    frame.geometry_profile.growths,
+                    frame.geometry_profile.growth_bytes,
+                    frame.geometry_profile.peak_requested_bytes,
+                    frame.geometry_profile.reserve_us,
+                    path_upload.upload_bytes,
+                    path_upload.capacity_before_instances,
+                    path_upload.capacity_after_instances,
+                    path_upload.growth_bytes,
+                    path_upload.reserve_us,
+                    path_upload.upload_us,
+                    stencil_upload.upload_bytes,
+                    stencil_upload.capacity_before_instances,
+                    stencil_upload.capacity_after_instances,
+                    stencil_upload.growth_bytes,
+                    stencil_upload.reserve_us,
+                    stencil_upload.upload_us,
+                    encode_scene_us.unwrap_or(0),
+                    upload_uniform_us.unwrap_or(0),
+                    upload_quad_us.unwrap_or(0),
+                    upload_line_us.unwrap_or(0),
+                    upload_path_us.unwrap_or(0),
+                    upload_glyph_us.unwrap_or(0),
+                    upload_stencil_us.unwrap_or(0),
+                    upload_composite_us.unwrap_or(0),
+                    upload_gradient_us.unwrap_or(0),
+                    upload_image_us.unwrap_or(0),
+                    flush_glyph_us.unwrap_or(0),
+                    flush_gradient_us.unwrap_or(0),
+                    replay_us.unwrap_or(0),
+                ),
+            );
+        }
 
+        self.frame_scratch = frame;
         Ok(())
     }
 

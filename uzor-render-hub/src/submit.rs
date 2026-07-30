@@ -31,6 +31,110 @@ use crate::backend::RenderBackend;
 use crate::factory::{SurfaceMode, WindowRenderState};
 use crate::metrics::RenderMetrics;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct VelloSceneStats {
+    paths: u32,
+    path_segments: u32,
+    clips: u32,
+    open_clips: u32,
+    path_tags: usize,
+    path_data_words: usize,
+    draw_tags: usize,
+    draw_data_words: usize,
+    transforms: usize,
+    styles: usize,
+    glyphs: usize,
+    glyph_runs: usize,
+    encoded_bytes: usize,
+    reserved_bytes: usize,
+}
+
+impl VelloSceneStats {
+    fn capture(scene: &vello::Scene) -> Self {
+        let encoding = scene.encoding();
+        let encoded_bytes = vec_len_bytes(&encoding.path_tags)
+            .saturating_add(vec_len_bytes(&encoding.path_data))
+            .saturating_add(vec_len_bytes(&encoding.draw_tags))
+            .saturating_add(vec_len_bytes(&encoding.draw_data))
+            .saturating_add(vec_len_bytes(&encoding.transforms))
+            .saturating_add(vec_len_bytes(&encoding.styles))
+            .saturating_add(vec_len_bytes(&encoding.resources.patches))
+            .saturating_add(vec_len_bytes(&encoding.resources.color_stops))
+            .saturating_add(vec_len_bytes(&encoding.resources.glyphs))
+            .saturating_add(vec_len_bytes(&encoding.resources.glyph_runs))
+            .saturating_add(vec_len_bytes(&encoding.resources.normalized_coords));
+        let reserved_bytes = vec_capacity_bytes(&encoding.path_tags)
+            .saturating_add(vec_capacity_bytes(&encoding.path_data))
+            .saturating_add(vec_capacity_bytes(&encoding.draw_tags))
+            .saturating_add(vec_capacity_bytes(&encoding.draw_data))
+            .saturating_add(vec_capacity_bytes(&encoding.transforms))
+            .saturating_add(vec_capacity_bytes(&encoding.styles))
+            .saturating_add(vec_capacity_bytes(&encoding.resources.patches))
+            .saturating_add(vec_capacity_bytes(&encoding.resources.color_stops))
+            .saturating_add(vec_capacity_bytes(&encoding.resources.glyphs))
+            .saturating_add(vec_capacity_bytes(&encoding.resources.glyph_runs))
+            .saturating_add(vec_capacity_bytes(&encoding.resources.normalized_coords));
+        Self {
+            paths: encoding.n_paths,
+            path_segments: encoding.n_path_segments,
+            clips: encoding.n_clips,
+            open_clips: encoding.n_open_clips,
+            path_tags: encoding.path_tags.len(),
+            path_data_words: encoding.path_data.len(),
+            draw_tags: encoding.draw_tags.len(),
+            draw_data_words: encoding.draw_data.len(),
+            transforms: encoding.transforms.len(),
+            styles: encoding.styles.len(),
+            glyphs: encoding.resources.glyphs.len(),
+            glyph_runs: encoding.resources.glyph_runs.len(),
+            encoded_bytes,
+            reserved_bytes,
+        }
+    }
+}
+
+fn vec_len_bytes<T>(values: &Vec<T>) -> usize {
+    values.len().saturating_mul(std::mem::size_of::<T>())
+}
+
+fn vec_capacity_bytes<T>(values: &Vec<T>) -> usize {
+    values.capacity().saturating_mul(std::mem::size_of::<T>())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct VelloGpuErrorScopes {
+    out_of_memory: wgpu::ErrorScopeGuard,
+    internal: wgpu::ErrorScopeGuard,
+    validation: wgpu::ErrorScopeGuard,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl VelloGpuErrorScopes {
+    fn push(device: &wgpu::Device) -> Self {
+        Self {
+            out_of_memory: device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+            internal: device.push_error_scope(wgpu::ErrorFilter::Internal),
+            validation: device.push_error_scope(wgpu::ErrorFilter::Validation),
+        }
+    }
+
+    fn pop(self, device: &wgpu::Device) -> VelloGpuScopedErrors {
+        VelloGpuScopedErrors {
+            validation: vello::util::block_on_wgpu(device, self.validation.pop()),
+            internal: vello::util::block_on_wgpu(device, self.internal.pop()),
+            out_of_memory: vello::util::block_on_wgpu(device, self.out_of_memory.pop()),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Default)]
+struct VelloGpuScopedErrors {
+    validation: Option<wgpu::Error>,
+    internal: Option<wgpu::Error>,
+    out_of_memory: Option<wgpu::Error>,
+}
+
 /// Inputs to [`submit_frame`].
 pub struct SubmitParams {
     /// Background colour for backends that clear the swapchain.
@@ -45,7 +149,8 @@ pub struct SubmitParams {
 pub struct SubmitOutcome {
     /// Per-frame timing counters.
     pub metrics: RenderMetrics,
-    /// `true` when the wgpu surface is unrecoverable (`OutOfMemory`).
+    /// `true` when the wgpu surface/device is unrecoverable
+    /// (`OutOfMemory` or surface validation failure).
     pub surface_lost: bool,
 }
 
@@ -108,7 +213,7 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
     }
 
     let surface_lost = match state.active {
-        RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut frame_metrics),
+        RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut frame_metrics, total_t0),
         RenderBackend::VelloHybrid   => submit_vello_hybrid(state, &params, &mut frame_metrics),
         RenderBackend::InstancedWgpu => submit_instanced(state, &params, &mut frame_metrics),
         RenderBackend::VelloCpu      => submit_cpu_vello(state, &mut frame_metrics),
@@ -162,6 +267,7 @@ fn submit_vello_gpu(
     state: &mut WindowRenderState,
     params: &SubmitParams,
     metrics: &mut RenderMetrics,
+    submit_started: std::time::Instant,
 ) -> bool {
     let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
         eprintln!("[render-hub] VelloGpu requires SurfaceMode::Gpu");
@@ -177,33 +283,137 @@ fn submit_vello_gpu(
     let device = &gpu_pool.devices[dev_id].device;
     let queue = &gpu_pool.devices[dev_id].queue;
 
+    let profile_enabled = uzor::diagnostics::profile_enabled();
+    let profile_frame_id = profile_enabled
+        .then(uzor::diagnostics::current_frame_id)
+        .flatten();
+    let scene_snapshot_t0 = std::time::Instant::now();
+    let scene_stats = profile_enabled.then(|| VelloSceneStats::capture(&state.scene));
+    let scene_snapshot_us = scene_snapshot_t0.elapsed().as_micros() as u64;
+    if let Some(scene_stats) = scene_stats {
+        let adapter_info = gpu_pool.devices[dev_id].adapter().get_info();
+        let limits = device.limits();
+        let target_bytes = u64::from(width)
+            .saturating_mul(u64::from(height))
+            .saturating_mul(4);
+        uzor::diagnostics::stage(
+            "vello_gpu",
+            "submit_begin",
+            format_args!(
+             "pid={} correlated_frame_id={:?} backend=vello_gpu target={}x{} \
+             target_rgba8_bytes={} surface_format={:?} msaa={} \
+             device_index={} adapter_name={:?} adapter_backend={:?} \
+             adapter_device_type={:?} adapter_driver={:?} adapter_driver_info={:?} \
+             vendor={} device={} max_buffer_size={} max_storage_buffer_binding_size={} \
+             device_features={:?} paths={} path_segments={} clips={} open_clips={} \
+             path_tags={} path_data_words={} draw_tags={} draw_data_words={} \
+             transforms={} styles={} glyphs={} glyph_runs={} scene_encoded_bytes={} \
+             scene_reserved_bytes={} scene_snapshot_us={scene_snapshot_us}",
+            std::process::id(),
+            profile_frame_id,
+            width,
+            height,
+            target_bytes,
+            surface.config.format,
+            params.msaa_samples,
+            dev_id,
+            adapter_info.name,
+            adapter_info.backend,
+            adapter_info.device_type,
+            adapter_info.driver,
+            adapter_info.driver_info,
+            adapter_info.vendor,
+            adapter_info.device,
+            limits.max_buffer_size,
+            limits.max_storage_buffer_binding_size,
+            device.features(),
+            scene_stats.paths,
+            scene_stats.path_segments,
+            scene_stats.clips,
+            scene_stats.open_clips,
+            scene_stats.path_tags,
+            scene_stats.path_data_words,
+            scene_stats.draw_tags,
+            scene_stats.draw_data_words,
+            scene_stats.transforms,
+            scene_stats.styles,
+            scene_stats.glyphs,
+            scene_stats.glyph_runs,
+            scene_stats.encoded_bytes,
+            scene_stats.reserved_bytes,
+            ),
+        );
+    }
+
     let Some(ref mut renderer) = state.vello_gpu_renderer else {
         eprintln!("[render-hub] VelloGpu renderer slot is None — call new_gpu()");
         return false;
     };
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let gpu_error_scopes = profile_enabled.then(|| VelloGpuErrorScopes::push(device));
+
     // Phase 1: render scene to off-screen target texture.
     let r2t_t0 = std::time::Instant::now();
-    renderer
-        .render_to_texture(
-            device,
-            queue,
-            &state.scene,
-            &surface.target_view,
-            &RenderParams {
-                base_color: params.base_color,
-                width,
-                height,
-                antialiasing_method: aa_for(params.msaa_samples),
-            },
-        )
-        .unwrap_or_else(|e| eprintln!("[render-hub] vello render_to_texture: {e}"));
+    let render_result = renderer.render_to_texture(
+        device,
+        queue,
+        &state.scene,
+        &surface.target_view,
+        &RenderParams {
+            base_color: params.base_color,
+            width,
+            height,
+            antialiasing_method: aa_for(params.msaa_samples),
+        },
+    );
     metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+    if let Err(error) = &render_result {
+        eprintln!("[render-hub] vello render_to_texture: {error}");
+    }
 
     // Phase 2: acquire swapchain + blit + present.
     let present_t0 = std::time::Instant::now();
     let lost = blit_and_present(surface, device, queue);
     metrics.present_us = present_t0.elapsed().as_micros() as u64;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let gpu_errors = gpu_error_scopes.map(|scopes| scopes.pop(device));
+
+    if profile_enabled {
+        #[cfg(not(target_arch = "wasm32"))]
+        let gpu_error_summary = gpu_errors
+            .map(|errors| format!(
+                "validation={:?} internal={:?} out_of_memory={:?}",
+                errors.validation,
+                errors.internal,
+                errors.out_of_memory,
+            ))
+            .unwrap_or_else(|| {
+                "validation=not_scoped internal=not_scoped out_of_memory=not_scoped".to_owned()
+            });
+        #[cfg(target_arch = "wasm32")]
+        let gpu_error_summary =
+            "validation=unsupported_wasm internal=unsupported_wasm out_of_memory=unsupported_wasm"
+                .to_owned();
+        uzor::diagnostics::stage(
+            "vello_gpu",
+            "submit_end",
+            format_args!(
+                "pid={} correlated_frame_id={:?} scene_snapshot_us={} \
+                 render_to_texture_us={} present_us={} submit_elapsed_us={} \
+                 surface_lost={lost} render_result={:?} gpu_scope={}",
+                std::process::id(),
+                profile_frame_id,
+                scene_snapshot_us,
+                metrics.render_to_texture_us,
+                metrics.present_us,
+                submit_started.elapsed().as_micros(),
+                render_result.as_ref().err(),
+                gpu_error_summary,
+            ),
+        );
+    }
     lost
 }
 
@@ -241,7 +451,7 @@ fn submit_vello_hybrid(
         }
         wgpu::CurrentSurfaceTexture::Validation => {
             eprintln!("[render-hub] vello-hybrid surface validation error");
-            return false;
+            return true;
         }
     };
     let surface_view = surface_texture
@@ -307,7 +517,7 @@ fn submit_instanced(
         }
         wgpu::CurrentSurfaceTexture::Validation => {
             eprintln!("[render-hub] instanced surface validation error");
-            return false;
+            return true;
         }
     };
     let surface_view = surface_texture
@@ -510,8 +720,8 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
 
 /// Acquire swapchain texture, blit `target_view` → swapchain, present.
 ///
-/// Returns `true` on `OutOfMemory` (surface lost), `false` on success or
-/// recoverable errors (reconfigured inline).
+/// Returns `true` on an unrecoverable surface/device failure, `false`
+/// on success or recoverable errors (reconfigured inline).
 /// Crate-public alias of `blit_and_present` — used by `submit_urx::submit_urx_cpu`
 /// (CPU rasteriser → swapchain) to share the same blit + present path as
 /// the other CPU backends.
@@ -539,7 +749,7 @@ fn blit_and_present(
         }
         wgpu::CurrentSurfaceTexture::Validation => {
             eprintln!("[render-hub] vello-gpu surface validation error");
-            return false;
+            return true;
         }
     };
 
@@ -576,6 +786,24 @@ fn aa_for(msaa: u8) -> AaConfig {
 mod tests {
     use super::*;
     use uzor::layout::window::SoftwarePresenter;
+
+    #[test]
+    fn vello_scene_stats_reports_stream_counts_and_memory_proxies() {
+        let mut scene = vello::Scene::new();
+        let encoding = scene.encoding_mut();
+        encoding.n_paths = 2;
+        encoding.n_path_segments = 5;
+        encoding.path_data.extend([1, 2, 3]);
+        encoding.draw_data.extend([4, 5]);
+
+        let stats = VelloSceneStats::capture(&scene);
+        assert_eq!(stats.paths, 2);
+        assert_eq!(stats.path_segments, 5);
+        assert_eq!(stats.path_data_words, 3);
+        assert_eq!(stats.draw_data_words, 2);
+        assert_eq!(stats.encoded_bytes, 5 * std::mem::size_of::<u32>());
+        assert!(stats.reserved_bytes >= stats.encoded_bytes);
+    }
 
     // ── MockPresenter ────────────────────────────────────────────────────────
 

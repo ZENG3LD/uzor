@@ -124,16 +124,11 @@
 //! scale magnitude before tessellating (`tess_stroke_scaled`), so the
 //! reprojected mesh's on-screen width comes out device-constant,
 //! matching CPU exactly (the Quad-SDF/Line-SDF mechanisms simply stopped
-//! multiplying by scale at all, being analytic rather than
-//! cache-based). The curve-flattening-tolerance gap is UNCHANGED and
-//! still open: CPU adapts its flatten tolerance to the transform's
-//! scale (`path.rs::screen_flatten_tolerance`) so a zoomed-in curve
-//! stays smooth; this crate tessellates once at a fixed LOCAL tolerance
-//! (`tessellate::TESS_TOLERANCE_PX`), so a heavily-scaled-up cached mesh
-//! could look faceted on screen — a real, currently-untested (no
-//! fixture zooms a cached path enough to notice) architecture limitation
-//! of the local-space caching design, explicitly NOT fixed this wave
-//! (design §5.4).
+//! multiplying by scale at all, being analytic rather than cache-based).
+//! Curve flattening likewise converts the 0.25px screen-space error
+//! budget into local units through the affine's largest singular value,
+//! so zoom-in remains smooth while fit-to-screen transforms do not
+//! tessellate invisible world-space detail.
 //!
 //! ## Gradient-routing finding (design item 5 investigation)
 //!
@@ -187,7 +182,7 @@
 //! rounded-index sampling, no separate straight/premultiplied
 //! interpolation regime to reconcile).
 
-use kurbo::Shape as _;
+use kurbo::{PathEl, Shape as _};
 use uzor_urx_core::math::{
     Affine, BezPath, BlendMode, Brush, Color, Compose, Extend, Gradient, GradientKind, Mix, Point, Rect,
     RoundedRect, RoundedRectRadii, Vec2,
@@ -205,7 +200,9 @@ use crate::pipelines::glyph::GlyphInstance;
 use crate::pipelines::gradient::GradientInstance;
 use crate::pipelines::image::ImageInstance;
 use crate::pipelines::line::LineInstance;
-use crate::pipelines::path::TriInstance;
+use crate::pipelines::path::{
+    GeometryCapacityError, TriInstance, MAX_GEOMETRY_BUFFER_BYTES,
+};
 use crate::pipelines::quad::{pack_rgba8, QuadInstance};
 use crate::renderer::Viewport;
 use crate::tessellate::{TessCache, TessMesh};
@@ -363,9 +360,182 @@ pub(crate) struct EncodedFrame {
     /// directly by tests or the renderer — its only observable effect
     /// is `Batch::stencil_ref` on whatever gets pushed next.
     current_stencil_ref: Option<u32>,
+    pub(crate) geometry_capacity_error: Option<GeometryCapacityError>,
+    pub(crate) geometry_profile: GeometryProfile,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct GeometryReserveProfile {
+    requested_bytes: usize,
+    growth_bytes: usize,
+    reserve_us: u128,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct GeometryProfile {
+    pub(crate) reserve_calls: u64,
+    pub(crate) growths: u64,
+    pub(crate) growth_bytes: usize,
+    pub(crate) peak_requested_bytes: usize,
+    pub(crate) reserve_us: u128,
+}
+
+impl GeometryProfile {
+    fn record(&mut self, reserve: GeometryReserveProfile) {
+        self.reserve_calls += 1;
+        self.growths += u64::from(reserve.growth_bytes != 0);
+        self.growth_bytes = self.growth_bytes.saturating_add(reserve.growth_bytes);
+        self.peak_requested_bytes = self.peak_requested_bytes.max(reserve.requested_bytes);
+        self.reserve_us += reserve.reserve_us;
+    }
+}
+
+fn try_reserve_geometry_with_limit<T>(
+    instances: &mut Vec<T>,
+    additional: usize,
+    max_bytes: usize,
+    buffer: &'static str,
+) -> Result<GeometryReserveProfile, GeometryCapacityError> {
+    let instance_size = std::mem::size_of::<T>();
+    let requested_instances = instances.len().checked_add(additional).ok_or(GeometryCapacityError {
+        stage: "cpu_geometry_reserve",
+        buffer,
+        requested_instances: usize::MAX,
+        requested_bytes: usize::MAX,
+        current_capacity_instances: instances.capacity(),
+        instance_size,
+        max_bytes,
+    })?;
+    let requested_bytes = requested_instances.checked_mul(instance_size).unwrap_or(usize::MAX);
+    let max_instances = max_bytes / instance_size;
+    if requested_bytes > max_bytes {
+        return Err(GeometryCapacityError {
+            stage: "cpu_geometry_reserve",
+            buffer,
+            requested_instances,
+            requested_bytes,
+            current_capacity_instances: instances.capacity(),
+            instance_size,
+            max_bytes,
+        });
+    }
+    let capacity_before = instances.capacity();
+    let reserve_t0 = crate::profile::enabled().then(std::time::Instant::now);
+    if requested_instances > instances.capacity() {
+        let target_capacity = instances
+            .capacity()
+            .max(1024)
+            .saturating_mul(2)
+            .max(requested_instances)
+            .min(max_instances);
+        crate::profile::stage(
+            "cpu_geometry_grow_begin",
+            format_args!(
+                "buffer={} current_instances={} additional_instances={} requested_instances={} \
+                 requested_bytes={} capacity_before_instances={} capacity_target_instances={}",
+                buffer,
+                instances.len(),
+                additional,
+                requested_instances,
+                requested_bytes,
+                instances.capacity(),
+                target_capacity,
+            ),
+        );
+        if instances.try_reserve_exact(target_capacity - instances.len()).is_err() {
+            return Err(GeometryCapacityError {
+                stage: "cpu_geometry_reserve",
+                buffer,
+                requested_instances,
+                requested_bytes,
+                current_capacity_instances: instances.capacity(),
+                instance_size,
+                max_bytes,
+            });
+        }
+    }
+    Ok(GeometryReserveProfile {
+        requested_bytes,
+        growth_bytes: instances
+            .capacity()
+            .saturating_sub(capacity_before)
+            .saturating_mul(instance_size),
+        reserve_us: reserve_t0.map_or(0, |started| started.elapsed().as_micros()),
+    })
+}
+
+fn try_reserve_geometry<T>(
+    instances: &mut Vec<T>,
+    additional: usize,
+    buffer: &'static str,
+) -> Result<GeometryReserveProfile, GeometryCapacityError> {
+    try_reserve_geometry_with_limit(
+        instances,
+        additional,
+        MAX_GEOMETRY_BUFFER_BYTES,
+        buffer,
+    )
 }
 
 impl EncodedFrame {
+    fn reset(&mut self) {
+        self.quads.clear();
+        self.lines.clear();
+        self.triangles.clear();
+        self.glyphs.clear();
+        self.stencil_masks.clear();
+        self.gradients.clear();
+        self.images.clear();
+        self.composites.clear();
+        self.ops.clear();
+        self.has_rounded_clip = false;
+        self.current_stencil_ref = None;
+        self.geometry_capacity_error = None;
+        self.geometry_profile = GeometryProfile::default();
+    }
+
+    pub(crate) fn geometry_used_bytes(&self) -> usize {
+        self.lines
+            .len()
+            .saturating_mul(std::mem::size_of::<LineInstance>())
+            .saturating_add(
+                self.triangles
+                    .len()
+                    .saturating_mul(std::mem::size_of::<TriInstance>()),
+            )
+            .saturating_add(
+                self.stencil_masks
+                    .len()
+                    .saturating_mul(std::mem::size_of::<TriInstance>()),
+            )
+            .saturating_add(
+                self.gradients
+                    .len()
+                    .saturating_mul(std::mem::size_of::<GradientInstance>()),
+            )
+    }
+
+    pub(crate) fn geometry_capacity_bytes(&self) -> usize {
+        self.lines
+            .capacity()
+            .saturating_mul(std::mem::size_of::<LineInstance>())
+            .saturating_add(
+                self.triangles
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TriInstance>()),
+            )
+            .saturating_add(
+                self.stencil_masks
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TriInstance>()),
+            )
+            .saturating_add(
+                self.gradients
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<GradientInstance>()),
+            )
+    }
+
     fn push_quad(&mut self, instance: QuadInstance) {
         let start = self.quads.len() as u32;
         self.quads.push(instance);
@@ -380,25 +550,11 @@ impl EncodedFrame {
         self.bump_batch(BatchKind::Line, start, stencil_ref);
     }
 
-    fn push_triangle(&mut self, instance: TriInstance) {
-        let start = self.triangles.len() as u32;
-        self.triangles.push(instance);
-        let stencil_ref = self.current_stencil_ref;
-        self.bump_batch(BatchKind::Triangle, start, stencil_ref);
-    }
-
     fn push_glyph(&mut self, instance: GlyphInstance) {
         let start = self.glyphs.len() as u32;
         self.glyphs.push(instance);
         let stencil_ref = self.current_stencil_ref;
         self.bump_batch(BatchKind::Glyph, start, stencil_ref);
-    }
-
-    fn push_gradient(&mut self, instance: GradientInstance) {
-        let start = self.gradients.len() as u32;
-        self.gradients.push(instance);
-        let stencil_ref = self.current_stencil_ref;
-        self.bump_batch(BatchKind::Gradient, start, stencil_ref);
     }
 
     fn push_image(&mut self, instance: ImageInstance, id: ImageId) {
@@ -408,29 +564,30 @@ impl EncodedFrame {
         self.bump_batch(BatchKind::Image(id), start, stencil_ref);
     }
 
-    /// Mask-write geometry (design §2.4) — `gate_ref` is the EXPLICIT
-    /// stencil-test gate this specific mask write needs (parent depth
-    /// for an increment, this scope's own depth for a decrement), NOT
-    /// read from `current_stencil_ref` (which tracks CONTENT depth, a
-    /// different value at push/pop time — see `emit_stencil_mask_batch`).
-    fn push_stencil_mask(&mut self, instance: TriInstance, op: MaskOp, gate_ref: u32) {
-        let start = self.stencil_masks.len() as u32;
-        self.stencil_masks.push(instance);
-        self.bump_batch(BatchKind::StencilMask(op), start, Some(gate_ref));
-    }
-
     /// Extend the current batch if BOTH `kind` and `stencil_ref` match,
     /// else open a new `FrameOp::Draw` (design §5, extended by Wave 3
     /// Commit 2's `stencil_ref` equality requirement, further extended
     /// by Commit 3's marker-refusal — see `FrameOp`'s doc comment).
     fn bump_batch(&mut self, kind: BatchKind, start: u32, stencil_ref: Option<u32>) {
+        self.bump_batch_by(kind, start, 1, stencil_ref);
+    }
+
+    /// Bulk form of [`Self::bump_batch`] for one already-contiguous mesh.
+    /// The resulting `Batch` is byte-for-byte the same as calling
+    /// `bump_batch` once per triangle; avoiding that redundant
+    /// `ops.last_mut()` walk is material for meshes with hundreds of
+    /// thousands of triangles.
+    fn bump_batch_by(&mut self, kind: BatchKind, start: u32, count: u32, stencil_ref: Option<u32>) {
+        if count == 0 {
+            return;
+        }
         if let Some(FrameOp::Draw(last)) = self.ops.last_mut() {
             if last.kind == kind && last.stencil_ref == stencil_ref {
-                last.count += 1;
+                last.count += count;
                 return;
             }
         }
-        self.ops.push(FrameOp::Draw(Batch { kind, start, count: 1, stencil_ref }));
+        self.ops.push(FrameOp::Draw(Batch { kind, start, count, stencil_ref }));
     }
 
     /// Push a `PushLayer`/`PopLayer` marker directly — bypasses
@@ -875,6 +1032,38 @@ fn affine_scale_factors(t: &Affine) -> (f64, f64) {
     (c[0].hypot(c[1]), c[2].hypot(c[3]))
 }
 
+/// Largest singular value of the affine's 2x2 linear part. Multiplying
+/// a local-space approximation error by this value is a conservative
+/// upper bound on its screen-space error, including under shear.
+fn max_affine_scale(t: &Affine) -> f64 {
+    let c = t.as_coeffs();
+    let (a, b, cc, d) = (c[0], c[1], c[2], c[3]);
+    let sum_sq = a * a + b * b + cc * cc + d * d;
+    let det = a * d - b * cc;
+    let discriminant = (sum_sq * sum_sq - 4.0 * det * det).max(0.0);
+    ((sum_sq + discriminant.sqrt()) * 0.5).sqrt()
+}
+
+/// Local lyon tolerance that guarantees at most
+/// `TESS_TOLERANCE_PX` screen-space error after the full affine.
+fn local_tess_tolerance(transform: &Affine) -> f32 {
+    let scale = max_affine_scale(transform).max(f64::MIN_POSITIVE);
+    (crate::tessellate::TESS_TOLERANCE_PX / scale)
+        .min(f32::MAX as f64) as f32
+}
+
+fn tess_fill_scaled(
+    tess_cache: &mut TessCache,
+    path: &BezPath,
+    rule: FillRule,
+    transform: &Affine,
+) -> Arc<TessMesh> {
+    let tolerance = local_tess_tolerance(transform);
+    let mesh = tess_cache.get_or_insert_fill_with_tolerance(path, rule, tolerance);
+    tess_cache.profile_mesh("fill", path, transform.as_coeffs(), tolerance, mesh.triangles.len());
+    mesh
+}
+
 /// `atan2(b, a)` — the affine's rotation component. Mirrors
 /// `uzor-urx-cpu::gradient::affine_rotation_angle` (Wave 4 Commit 1).
 fn affine_rotation_angle(t: &Affine) -> f64 {
@@ -1042,7 +1231,10 @@ fn local_stroke_width(stroke_width: f32, transform: &Affine) -> f32 {
 /// plain tag copy), not a hidden per-call heap allocation.
 fn tess_stroke_scaled(tess_cache: &mut TessCache, path: &BezPath, stroke: &Stroke, transform: &Affine) -> Arc<TessMesh> {
     let adjusted = Stroke { width: local_stroke_width(stroke.width, transform), ..stroke.clone() };
-    tess_cache.get_or_insert_stroke(path, &adjusted)
+    let tolerance = local_tess_tolerance(transform);
+    let mesh = tess_cache.get_or_insert_stroke_with_tolerance(path, &adjusted, tolerance);
+    tess_cache.profile_mesh("stroke", path, transform.as_coeffs(), tolerance, mesh.triangles.len());
+    mesh
 }
 
 /// If `stroke` carries a dash pattern, expand `path`'s own LOCAL-space
@@ -1110,22 +1302,34 @@ fn emit_stencil_mask_batch(
     gate_ref: u32,
 ) {
     const DUMMY_COLOR: u32 = 0xFFFF_FFFF;
-    for tri in &mesh.triangles {
-        frame.push_stencil_mask(
-            TriInstance {
-                v0: project_local(tri[0], transform),
-                v1: project_local(tri[1], transform),
-                v2: project_local(tri[2], transform),
-                color0: DUMMY_COLOR,
-                color1: DUMMY_COLOR,
-                color2: DUMMY_COLOR,
-                _pad0: 0.0,
-                clip_rect,
-            },
-            op,
-            gate_ref,
-        );
+    if frame.geometry_capacity_error.is_some() {
+        return;
     }
+    let start = frame.stencil_masks.len() as u32;
+    match try_reserve_geometry(
+        &mut frame.stencil_masks,
+        mesh.triangles.len(),
+        "stencil_mask",
+    ) {
+        Ok(reserve) => frame.geometry_profile.record(reserve),
+        Err(error) => {
+            frame.geometry_capacity_error = Some(error);
+            return;
+        }
+    }
+    for tri in &mesh.triangles {
+        frame.stencil_masks.push(TriInstance {
+            v0: project_local(tri[0], transform),
+            v1: project_local(tri[1], transform),
+            v2: project_local(tri[2], transform),
+            color0: DUMMY_COLOR,
+            color1: DUMMY_COLOR,
+            color2: DUMMY_COLOR,
+            _pad0: 0.0,
+            clip_rect,
+        });
+    }
+    frame.bump_batch_by(BatchKind::StencilMask(op), start, mesh.triangles.len() as u32, Some(gate_ref));
 }
 
 /// `blend_layer_max_depth` — `UrxConfig::blend_layer_max_depth`, read
@@ -1146,7 +1350,30 @@ fn emit_stencil_mask_batch(
 /// construction and threaded through the same "plain resolved value"
 /// way as `blend_layer_max_depth` above. Consumed only by
 /// `encode_glyph_run` (every other primitive ignores it).
+#[cfg(test)]
 pub(crate) fn encode_scene(
+    scene: &Scene,
+    viewport: Viewport,
+    tess_cache: &mut TessCache,
+    atlas: Option<&mut NativeGlyphAtlas>,
+    lut: Option<&mut GradientLutAtlas>,
+    blend_layer_max_depth: usize,
+    text_gamma_enabled: bool,
+) -> EncodedFrame {
+    encode_scene_reusing(
+        EncodedFrame::default(),
+        scene,
+        viewport,
+        tess_cache,
+        atlas,
+        lut,
+        blend_layer_max_depth,
+        text_gamma_enabled,
+    )
+}
+
+pub(crate) fn encode_scene_reusing(
+    mut frame: EncodedFrame,
     scene: &Scene,
     viewport: Viewport,
     tess_cache: &mut TessCache,
@@ -1155,7 +1382,7 @@ pub(crate) fn encode_scene(
     blend_layer_max_depth: usize,
     text_gamma_enabled: bool,
 ) -> EncodedFrame {
-    let mut frame = EncodedFrame::default();
+    frame.reset();
     let mut clip = ClipStack::new(viewport);
     let mut layer_stack = LayerStack::new(blend_layer_max_depth);
 
@@ -1182,8 +1409,9 @@ pub(crate) fn encode_scene(
                 // `clip_rect` mechanism as before (design §4).
                 let (x0, y0, w, h, _, _) = transform_rect(rect.rect(), transform);
                 let parent_clip_rect = clip.current(); // gate for the mask write below
-                let path = (*rect).into_path(crate::tessellate::TESS_TOLERANCE_PX);
-                let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+                let tolerance = local_tess_tolerance(transform);
+                let path = (*rect).into_path(tolerance as f64);
+                let mesh = tess_fill_scaled(tess_cache, &path, FillRule::NonZero, transform);
                 let parent_depth = clip.rounded_depth();
                 let new_depth =
                     clip.push_rounded_rect_device([x0 as f32, y0 as f32, w as f32, h as f32], mesh.clone(), *transform);
@@ -1357,8 +1585,8 @@ fn encode_fill_rect(
     match brush {
         Brush::Solid(c) => encode_fill_rect_solid(frame, tess_cache, rect, radii, *c, transform, clip_rect),
         Brush::Gradient(g) => {
-            let path = rect_bez_path(rect, radii);
-            let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+            let path = rect_bez_path(rect, radii, local_tess_tolerance(transform) as f64);
+            let mesh = tess_fill_scaled(tess_cache, &path, FillRule::NonZero, transform);
             emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         }
         Brush::Image(_) => {
@@ -1420,8 +1648,8 @@ fn encode_fill_rect_solid(
         degrade("native_rect_shear_to_triangle_pipeline");
     }
 
-    let path = rect_bez_path(rect, radii);
-    let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+    let path = rect_bez_path(rect, radii, local_tess_tolerance(transform) as f64);
+    let mesh = tess_fill_scaled(tess_cache, &path, FillRule::NonZero, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
@@ -1434,7 +1662,7 @@ fn encode_fill_rect_solid(
 /// `.into_path(0.25)`), NOT its `FillRect`+`Gradient`+radii behaviour
 /// (which, per this module's doc comment, doesn't actually consult the
 /// rounded mask it pushes).
-fn rect_bez_path(rect: Rect, radii: &Option<[f32; 4]>) -> BezPath {
+fn rect_bez_path(rect: Rect, radii: &Option<[f32; 4]>, tolerance: f64) -> BezPath {
     if let Some(r) = radii {
         if r.iter().any(|v| *v > 0.0) {
             let rr = RoundedRect::from_rect(
@@ -1446,7 +1674,7 @@ fn rect_bez_path(rect: Rect, radii: &Option<[f32; 4]>) -> BezPath {
                     r[3].max(0.0) as f64,
                 ),
             );
-            return rr.into_path(crate::tessellate::TESS_TOLERANCE_PX);
+            return rr.into_path(tolerance);
         }
     }
     let mut path = BezPath::new();
@@ -1594,8 +1822,19 @@ fn emit_gradient_lut_triangles(
     };
 
     let params = transform_gradient_params(&gradient.kind, gradient.extend, transform);
+    if frame.geometry_capacity_error.is_some() {
+        return;
+    }
+    let start = frame.gradients.len() as u32;
+    match try_reserve_geometry(&mut frame.gradients, mesh.triangles.len(), "gradient") {
+        Ok(reserve) => frame.geometry_profile.record(reserve),
+        Err(error) => {
+            frame.geometry_capacity_error = Some(error);
+            return;
+        }
+    }
     for tri in &mesh.triangles {
-        frame.push_gradient(GradientInstance {
+        frame.gradients.push(GradientInstance {
             v0: project_local(tri[0], transform),
             v1: project_local(tri[1], transform),
             v2: project_local(tri[2], transform),
@@ -1607,6 +1846,8 @@ fn emit_gradient_lut_triangles(
             clip_rect,
         });
     }
+    let stencil_ref = frame.current_stencil_ref;
+    frame.bump_batch_by(BatchKind::Gradient, start, mesh.triangles.len() as u32, stencil_ref);
 }
 
 /// General gradient-mesh emitter — replaces `encode_fill_rect_linear_gradient`
@@ -1679,7 +1920,7 @@ fn encode_stroke_rect(
     }
 
     if let Brush::Gradient(g) = brush {
-        let path = rect_bez_path(rect, radii);
+        let path = rect_bez_path(rect, radii, local_tess_tolerance(transform) as f64);
         let (path, stroke) = resolve_dash(&path, stroke);
         let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
@@ -1730,7 +1971,7 @@ fn encode_stroke_rect(
         degrade("native_strokerect_dash_to_triangle_pipeline");
     }
 
-    let path = rect_bez_path(rect, radii);
+    let path = rect_bez_path(rect, radii, local_tess_tolerance(transform) as f64);
     let (path, stroke) = resolve_dash(&path, stroke);
     let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
@@ -1828,8 +2069,19 @@ fn emit_solid_mesh(
     packed: u32,
     clip_rect: [f32; 4],
 ) {
+    if frame.geometry_capacity_error.is_some() {
+        return;
+    }
+    let start = frame.triangles.len() as u32;
+    match try_reserve_geometry(&mut frame.triangles, mesh.triangles.len(), "path") {
+        Ok(reserve) => frame.geometry_profile.record(reserve),
+        Err(error) => {
+            frame.geometry_capacity_error = Some(error);
+            return;
+        }
+    }
     for tri in &mesh.triangles {
-        frame.push_triangle(TriInstance {
+        frame.triangles.push(TriInstance {
             v0: project_local(tri[0], transform),
             v1: project_local(tri[1], transform),
             v2: project_local(tri[2], transform),
@@ -1840,6 +2092,8 @@ fn emit_solid_mesh(
             clip_rect,
         });
     }
+    let stencil_ref = frame.current_stencil_ref;
+    frame.bump_batch_by(BatchKind::Triangle, start, mesh.triangles.len() as u32, stencil_ref);
 }
 
 /// Routing (design §2.5): `Gradient` (any kind) routes through
@@ -1857,7 +2111,7 @@ fn encode_fill_path(
     clip_rect: [f32; 4],
 ) {
     if let Brush::Gradient(g) = brush {
-        let mesh = tess_cache.get_or_insert_fill(path, rule);
+        let mesh = tess_fill_scaled(tess_cache, path, rule, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         return;
     }
@@ -1865,7 +2119,7 @@ fn encode_fill_path(
     if matches!(kind, BrushKind::Image) {
         degrade("native_fillpath_image_to_solid");
     }
-    let mesh = tess_cache.get_or_insert_fill(path, rule);
+    let mesh = tess_fill_scaled(tess_cache, path, rule, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
@@ -1889,6 +2143,9 @@ fn encode_stroke_path(
     if stroke.width <= 0.0 {
         return;
     }
+    if try_encode_independent_solid_line_path(frame, path, stroke, brush, transform, clip_rect) {
+        return;
+    }
     let (path, stroke) = resolve_dash(path, stroke);
     if let Brush::Gradient(g) = brush {
         let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
@@ -1901,6 +2158,87 @@ fn encode_stroke_path(
     }
     let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
+}
+
+/// Fast path for the exact compound-path shape produced by
+/// `BatchPainter::draw_line_batch`: independent `MoveTo`/`LineTo`
+/// pairs sharing one solid brush and stroke. Keeping that producer
+/// representation as one `StrokePath` avoids hundreds of thousands of
+/// scene commands, while bulk-emitting native `LineInstance`s here
+/// avoids tessellating those independent segments into triangles.
+///
+/// Any connected subpath, curve, close, dash, gradient/image brush,
+/// unsupported square cap, or non-uniform/sheared/reflected transform
+/// falls through to the normal path tessellator so joins, stroke shape,
+/// brush semantics, and degradation remain unchanged.
+fn try_encode_independent_solid_line_path(
+    frame: &mut EncodedFrame,
+    path: &BezPath,
+    stroke: &Stroke,
+    brush: &Brush,
+    transform: &Affine,
+    clip_rect: [f32; 4],
+) -> bool {
+    if stroke.dash.is_some() {
+        return false;
+    }
+    let Brush::Solid(color) = brush else {
+        return false;
+    };
+    let cap_flags = match stroke.cap {
+        LineCap::Round => 0.0,
+        LineCap::Butt => 3.0,
+        LineCap::Square => return false,
+    };
+    let Some((scale_x, scale_y, _, _, _)) = decompose_similarity(transform) else {
+        return false;
+    };
+    if (scale_x - scale_y).abs() > 1e-6 * scale_x.max(scale_y).max(1.0) {
+        return false;
+    }
+    let elements = path.elements();
+    if elements.len() % 2 != 0 {
+        return false;
+    }
+    if !elements.chunks_exact(2).all(|pair| {
+        matches!(pair, [PathEl::MoveTo(_), PathEl::LineTo(_)])
+    }) {
+        return false;
+    }
+
+    let segment_count = elements.len() / 2;
+    if segment_count == 0 {
+        return true;
+    }
+    let start = frame.lines.len() as u32;
+    match try_reserve_geometry(&mut frame.lines, segment_count, "line") {
+        Ok(reserve) => frame.geometry_profile.record(reserve),
+        Err(error) => {
+            frame.geometry_capacity_error = Some(error);
+            return true;
+        }
+    }
+    let packed = packed_color(*color);
+    for pair in elements.chunks_exact(2) {
+        let [PathEl::MoveTo(from), PathEl::LineTo(to)] = pair else {
+            unreachable!("independent line path was validated above");
+        };
+        let from = transform_point_full(transform, *from);
+        let to = transform_point_full(transform, *to);
+        frame.lines.push(LineInstance {
+            start: [from.x as f32, from.y as f32],
+            end: [to.x as f32, to.y as f32],
+            color: packed,
+            width: stroke.width,
+            cap_flags,
+            _pad0: 0.0,
+            _pad1: [0.0; 2],
+            clip_rect,
+        });
+    }
+    let stencil_ref = frame.current_stencil_ref;
+    frame.bump_batch_by(BatchKind::Line, start, segment_count as u32, stencil_ref);
+    true
 }
 
 /// `GlyphRun` → one `GlyphInstance` per successfully-placed glyph
@@ -2325,6 +2663,107 @@ mod tests {
     }
 
     #[test]
+    fn independent_solid_stroke_subpaths_bulk_encode_as_one_native_line_batch() {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(1.0, 2.0));
+        path.line_to(Point::new(3.0, 4.0));
+        path.move_to(Point::new(5.0, 6.0));
+        path.line_to(Point::new(7.0, 8.0));
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokePath {
+            path,
+            stroke: SceneStroke { width: 2.0, cap: LineCap::Butt, ..SceneStroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::scale(2.0),
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(frame.triangles.is_empty(), "independent line pairs must bypass path tessellation");
+        assert_eq!(frame.lines.len(), 2);
+        assert_eq!(frame.lines[0].start, [2.0, 4.0]);
+        assert_eq!(frame.lines[1].end, [14.0, 16.0]);
+        assert_eq!(
+            frame.geometry_used_bytes(),
+            2 * std::mem::size_of::<LineInstance>(),
+            "profiling must include native line geometry",
+        );
+        let batches = frame.draw_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].kind, BatchKind::Line);
+        assert_eq!(batches[0].count, 2);
+    }
+
+    #[test]
+    fn connected_solid_stroke_path_keeps_join_aware_tessellation() {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(1.0, 2.0));
+        path.line_to(Point::new(3.0, 4.0));
+        path.line_to(Point::new(5.0, 6.0));
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokePath {
+            path,
+            stroke: SceneStroke { width: 2.0, ..SceneStroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(frame.lines.is_empty(), "connected paths need join-aware tessellation");
+        assert!(!frame.triangles.is_empty());
+    }
+
+    #[test]
+    fn independent_stroke_subpaths_with_nonuniform_transform_keep_tessellation() {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(1.0, 2.0));
+        path.line_to(Point::new(3.0, 4.0));
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokePath {
+            path,
+            stroke: SceneStroke { width: 2.0, ..SceneStroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::new([2.0, 0.0, 0.0, 1.0, 0.0, 0.0]),
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(frame.lines.is_empty(), "non-uniform transforms change stroke shape and must not use LineInstance");
+        assert!(!frame.triangles.is_empty());
+    }
+
+    #[test]
+    fn reusable_encoded_frame_retains_geometry_capacity_between_frames() {
+        let mut path = BezPath::new();
+        for i in 0..4096 {
+            path.move_to(Point::new(i as f64, 0.0));
+            path.line_to(Point::new(i as f64, 10.0));
+        }
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokePath {
+            path,
+            stroke: SceneStroke { width: 1.0, ..SceneStroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+        });
+
+        let first = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(first.geometry_profile.growths > 0);
+        let retained_capacity = first.geometry_capacity_bytes();
+        let second = encode_scene_reusing(
+            first,
+            &scene,
+            viewport(),
+            &mut cache(),
+            None,
+            None,
+            max_depth(),
+            false,
+        );
+        assert_eq!(second.lines.len(), 4096);
+        assert_eq!(second.geometry_profile.growths, 0);
+        assert_eq!(second.geometry_capacity_bytes(), retained_capacity);
+    }
+
+    #[test]
     fn zero_width_line_emits_nothing() {
         let mut scene = Scene::new();
         scene.line_solid(
@@ -2581,6 +3020,97 @@ mod tests {
             assert_eq!(tri.color0, tri.color1);
             assert_eq!(tri.color1, tri.color2);
         }
+    }
+
+    #[test]
+    fn transform_scaled_tolerance_stays_within_a_quarter_screen_pixel() {
+        for transform in [
+            Affine::scale(0.000_1),
+            Affine::scale(10_000.0),
+            Affine::new([0.01, 0.003, 0.02, 0.004, 0.0, 0.0]),
+        ] {
+            let tolerance = local_tess_tolerance(&transform) as f64;
+            let screen_error_bound = tolerance * max_affine_scale(&transform);
+            assert!(
+                screen_error_bound <= crate::tessellate::TESS_TOLERANCE_PX * 1.000_001,
+                "local tolerance must conservatively bound screen error: {screen_error_bound}"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_scaled_tolerance_avoids_world_space_curve_over_tessellation() {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.curve_to(
+            Point::new(0.0, 1_000_000.0),
+            Point::new(1_000_000.0, 1_000_000.0),
+            Point::new(1_000_000.0, 0.0),
+        );
+        path.line_to(Point::new(0.0, 0.0));
+        path.close_path();
+
+        let mut cache = TessCache::new();
+        cache.begin_frame();
+        let fixed_local = cache.get_or_insert_fill(&path, FillRule::NonZero);
+        let fit_transform = Affine::scale(0.000_1);
+        let screen_scaled = tess_fill_scaled(&mut cache, &path, FillRule::NonZero, &fit_transform);
+        if std::env::var_os("UZOR_PROFILE_FRAMES").is_some() {
+            eprintln!(
+                "[uzor-urx-profile-tess-test] transform={:?} local_tolerance={} fixed_triangles={} scaled_triangles={}",
+                fit_transform.as_coeffs(),
+                local_tess_tolerance(&fit_transform),
+                fixed_local.triangles.len(),
+                screen_scaled.triangles.len(),
+            );
+        }
+
+        assert!(
+            screen_scaled.triangles.len() * 8 < fixed_local.triangles.len(),
+            "fit-to-screen transform should avoid local-space oversampling: fixed={} scaled={}",
+            fixed_local.triangles.len(),
+            screen_scaled.triangles.len(),
+        );
+        assert!(
+            local_tess_tolerance(&fit_transform) as f64 * max_affine_scale(&fit_transform)
+                <= crate::tessellate::TESS_TOLERANCE_PX * 1.000_001
+        );
+    }
+
+    #[test]
+    fn geometry_capacity_guard_rejects_before_path_buffer_allocation() {
+        let mut instances = Vec::<TriInstance>::new();
+        let over_limit = MAX_GEOMETRY_BUFFER_BYTES / std::mem::size_of::<TriInstance>() + 1;
+        let error = try_reserve_geometry(&mut instances, over_limit, "path")
+            .expect_err("path geometry above the safety limit must be rejected");
+        assert!(instances.is_empty());
+        assert_eq!(error.stage, "cpu_geometry_reserve");
+        assert_eq!(error.buffer, "path");
+        assert_eq!(error.requested_instances, over_limit);
+        assert_eq!(
+            error.requested_bytes,
+            over_limit * std::mem::size_of::<TriInstance>(),
+        );
+        assert_eq!(error.max_bytes, MAX_GEOMETRY_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn aggregate_many_mesh_growth_stops_at_geometry_limit() {
+        let mut instances = Vec::<[u8; 56]>::new();
+        let max_bytes = 8 * std::mem::size_of::<[u8; 56]>();
+
+        for _ in 0..4 {
+            try_reserve_geometry_with_limit(&mut instances, 2, max_bytes, "test")
+                .expect("aggregate geometry through the limit must fit");
+            instances.extend([[0; 56]; 2]);
+        }
+
+        let error = try_reserve_geometry_with_limit(&mut instances, 2, max_bytes, "test")
+            .expect_err("aggregate geometry over the limit must be rejected");
+        assert_eq!(instances.len(), 8);
+        assert_eq!(error.requested_instances, 10);
+        assert_eq!(error.instance_size, 56);
+        assert_eq!(error.max_bytes, max_bytes);
     }
 
     #[test]

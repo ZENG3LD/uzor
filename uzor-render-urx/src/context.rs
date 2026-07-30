@@ -700,13 +700,13 @@ impl BatchPainter for UrxRenderContext {
         if lines.is_empty() { return; }
         self.set_stroke_color(color);
         self.set_stroke_width(width);
-        let mut path = BezPath::new();
-        for l in lines {
-            path.move_to(KPoint::new(l.x1, l.y1));
-            path.line_to(KPoint::new(l.x2, l.y2));
-        }
         let stroke = self.current_stroke();
         let brush = self.effective_stroke_brush();
+        let mut path = BezPath::new();
+        for line in lines {
+            path.move_to(KPoint::new(line.x1, line.y1));
+            path.line_to(KPoint::new(line.x2, line.y2));
+        }
         self.scene.push(DrawCommand::StrokePath {
             path,
             stroke,
@@ -1026,6 +1026,52 @@ impl RenderContextExt for UrxRenderContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn solid_line_batch_emits_one_compound_stroke_path() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        BatchPainter::draw_line_batch(
+            &mut ctx,
+            &[
+                LineSegment { x1: 1.0, y1: 2.0, x2: 3.0, y2: 4.0 },
+                LineSegment { x1: 5.0, y1: 6.0, x2: 7.0, y2: 8.0 },
+            ],
+            "#ffffff",
+            1.5,
+        );
+
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1);
+        assert!(matches!(
+            &scene.commands[0],
+            DrawCommand::StrokePath { path, stroke, .. }
+                if path.elements().len() == 4 && stroke.dash.is_none()
+        ));
+    }
+
+    #[test]
+    fn dashed_line_batch_retains_compound_stroke_path_semantics() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        Painter::set_line_dash(&mut ctx, &[8.0, 5.0]);
+        BatchPainter::draw_line_batch(
+            &mut ctx,
+            &[
+                LineSegment { x1: 1.0, y1: 2.0, x2: 3.0, y2: 4.0 },
+                LineSegment { x1: 5.0, y1: 6.0, x2: 7.0, y2: 8.0 },
+            ],
+            "#ffffff",
+            1.5,
+        );
+
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1);
+        assert!(matches!(
+            &scene.commands[0],
+            DrawCommand::StrokePath { stroke, .. } if stroke.dash.is_some()
+        ));
+    }
     use uzor::render::Painter;
 
     #[test]

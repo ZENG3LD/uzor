@@ -932,13 +932,44 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// `render::{draw_cluster_edges, draw_cluster_supernodes}`). Call
     /// once per frame while the canvas is on screen.
     pub fn draw(&mut self, render: &mut dyn RenderContext) {
+        let draw_started = std::time::Instant::now();
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "draw_begin",
+            format_args!(
+                "nodes={} edges={} particles={}",
+                self.graph.node_count(),
+                self.graph.edge_count(),
+                self.particles.len(),
+            ),
+        );
+        let visible_started = std::time::Instant::now();
         self.refresh_visible();
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "visible_end",
+            format_args!(
+                "visible={} duration_us={}",
+                self.visible.len(),
+                visible_started.elapsed().as_micros(),
+            ),
+        );
         // Wave 2.6: the SAME exclusion set `refresh_visible` just used
         // (cluster-hidden ∪ local-subgraph ∪ filter) — `draw_edges` skips
         // any edge touching a member of this set, which is exactly how
         // Wave 2.6's "edges to filtered/local-excluded nodes drop" is
         // satisfied, with zero new render-side logic.
+        let hidden_started = std::time::Instant::now();
         let hidden = self.compute_excluded_nodes();
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "hidden_end",
+            format_args!(
+                "hidden={} duration_us={}",
+                hidden.len(),
+                hidden_started.elapsed().as_micros(),
+            ),
+        );
         // Collapsed-cluster representatives always keep their label
         // (Wave 2.3 forced-label union) — hover/selection-neighbor
         // forcing needs no entry here, `draw_nodes` derives that
@@ -958,13 +989,34 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             label_lod: &self.label_lod,
             theme: &self.theme,
         };
-        gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
+        let edges_started = std::time::Instant::now();
+        let edges_drawn = gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "edges_end",
+            format_args!(
+                "drawn={} duration_us={}",
+                edges_drawn,
+                edges_started.elapsed().as_micros(),
+            ),
+        );
         gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
+        let nodes_started = std::time::Instant::now();
         let node_stats = if self.node_labels_enabled {
             gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx)
         } else {
             gr_render::draw_nodes_without_labels(render, &self.graph, &self.particles, &ctx)
         };
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "nodes_end",
+            format_args!(
+                "drawn={} labels={} duration_us={}",
+                node_stats.nodes_drawn,
+                node_stats.labels_drawn,
+                nodes_started.elapsed().as_micros(),
+            ),
+        );
         self.labels_drawn_last_frame = node_stats.labels_drawn;
         gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
 
@@ -990,6 +1042,11 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 }
             }
         }
+        uzor::diagnostics::stage(
+            "graph_2d",
+            "draw_end",
+            format_args!("duration_us={}", draw_started.elapsed().as_micros()),
+        );
     }
 
     pub fn fit_view(&mut self) {

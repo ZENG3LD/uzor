@@ -481,6 +481,24 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn enable_agent_api_with_proxy(
+        &mut self,
+        port: u16,
+        proxy: winit::event_loop::EventLoopProxy<()>,
+    ) -> std::io::Result<()> {
+        let bus = crate::agent::AgentBus::new();
+        bus.set_waker(move || proxy.send_event(()).is_ok());
+        let control = bus.control();
+        let handle = uzor_agent_api::spawn_server(
+            control as std::sync::Arc<dyn uzor::layout::agent::AgentControl>,
+            port,
+        )?;
+        self.agent_bus = Some(bus);
+        self.agent_handle = Some(handle);
+        Ok(())
+    }
+
     /// Drain queued agent commands and apply them.  Called from
     /// `about_to_wait` so all writes land on the winit thread and on
     /// the same tick they were submitted.
@@ -803,16 +821,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             self.pending_spawns.push(s);
         }
 
-        // Activate the agent control plane if the AppConfig requested it.
-        if let Some(port) = self.config.agent_api_port {
-            if let Err(e) = self.enable_agent_api(port) {
-                eprintln!("[uzor-desktop] agent-api bind on :{port} failed: {e}");
-            }
-        }
-
         let event_loop = EventLoop::new()
             .map_err(|e| ManagerError::Window(e.to_string()))?;
         event_loop.set_control_flow(ControlFlow::Poll);
+
+        // Activate the agent control plane only after an EventLoopProxy exists.
+        // The HTTP server needs that proxy to wake dirty-only windows before a
+        // synchronous command waits for the manager's reply.
+        if let Some(port) = self.config.agent_api_port {
+            if let Err(e) = self.enable_agent_api_with_proxy(port, event_loop.create_proxy()) {
+                eprintln!("[uzor-desktop] agent-api bind on :{port} failed: {e}");
+            }
+        }
 
         event_loop.run_app(&mut self)
             .map_err(|e| ManagerError::Window(e.to_string()))?;
@@ -1049,8 +1069,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     drag.last_y = ly;
                 }
 
-                // Force a redraw so the next frame paints the hover state.
-                pw.window.request_redraw();
             }
 
             // ── Mouse button pressed ─────────────────────────────────────────
@@ -1193,9 +1211,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         }
                         uzor::layout::PointerUpOutcome::Unhandled => {}
                     }
-                    if let Some(pw) = self.windows.get(&id) {
-                        pw.window.request_redraw();
-                    }
                 }
             }
 
@@ -1221,9 +1236,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         self.app.dispatch_event(&mut self.layout, ev);
                     }
                     uzor::layout::PointerUpOutcome::Unhandled => {}
-                }
-                if let Some(pw) = self.windows.get(&id) {
-                    pw.window.request_redraw();
                 }
                 // App hooks on DispatchEvent / DismissedOverlay are called by
                 // App::ui each frame via consume_event — no immediate callback here.
@@ -1302,12 +1314,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn tick_window_inner(&mut self, id: winit::window::WindowId) -> Result<(), ManagerError> {
+        let _frame_profile = uzor::diagnostics::FrameProfileGuard::enter();
         let now_secs = self.start.elapsed().as_secs_f64();
         let now_ms   = now_secs * 1000.0;
         let msaa     = self.msaa_samples();
 
         // Route LM to this window for the duration of the tick.
         let active_backend = self.hub.as_ref().map(|h| h.active()).unwrap_or(self.backend);
+        uzor::diagnostics::stage(
+            "desktop",
+            "tick_begin",
+            format_args!("window_id={id:?} backend={}", active_backend.as_str()),
+        );
         if let Some(pw) = self.windows.get_mut(&id) {
             // Sync per-window active backend with the global hub
             // setting and lazily build the matching renderer / CPU
@@ -1434,6 +1452,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             // would just be wasted work; a 3D-active window shows the
             // composed 3D viewport full-window instead.
             let active_backend = pw.render_state.backend();
+            let app_build_t0 = std::time::Instant::now();
+            uzor::diagnostics::stage(
+                "desktop",
+                "app_build_begin",
+                format_args!(
+                    "backend={} regions={} scene3d={}",
+                    active_backend.as_str(),
+                    regions.len(),
+                    scene3d_frame.is_some(),
+                ),
+            );
             let supports_scene_compose = matches!(
                 active_backend, uzor::platform::types::RenderBackend::VelloGpu,
             );
@@ -1518,10 +1547,29 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     });
                 }
             }
+            uzor::diagnostics::stage(
+                "desktop",
+                "app_build_end",
+                format_args!(
+                    "backend={} duration_us={}",
+                    active_backend.as_str(),
+                    app_build_t0.elapsed().as_micros(),
+                ),
+            );
             let _responses = self.layout.ctx_mut().end_frame();
             // Clear one-shot input flags AFTER app.ui consumed them.
             self.layout.end_frame_inputs();
 
+            let submit_t0 = std::time::Instant::now();
+            uzor::diagnostics::stage(
+                "desktop",
+                "submit_begin",
+                format_args!(
+                    "backend={} scene3d={}",
+                    active_backend.as_str(),
+                    scene3d_frame.is_some(),
+                ),
+            );
             let outcome = if let Some(mut frame) = scene3d_frame {
                 let (surf_w, surf_h) = surf_wh.expect("scene3d_frame is Some only when surf_wh was already Some");
                 pw.render_state.set_capture_3d(true);
@@ -1557,6 +1605,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     SubmitParams { base_color: bg_color, msaa_samples: msaa },
                 )
             };
+            uzor::diagnostics::stage(
+                "desktop",
+                "submit_end",
+                format_args!(
+                    "backend={} duration_us={} render_to_texture_us={} present_us={} surface_lost={}",
+                    active_backend.as_str(),
+                    submit_t0.elapsed().as_micros(),
+                    outcome.metrics.render_to_texture_us,
+                    outcome.metrics.present_us,
+                    outcome.surface_lost,
+                ),
+            );
 
             let now_inst = std::time::Instant::now();
             pw.last_frame = now_inst;
@@ -1578,7 +1638,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         };
 
         if outcome.surface_lost {
-            return Err(ManagerError::Backend("wgpu surface lost".into()));
+            return Err(ManagerError::Backend(
+                "wgpu surface/device became unrecoverable".into(),
+            ));
         }
         if let Some(ref mut h) = self.hub {
             h.update_metrics(outcome.metrics);
@@ -1652,10 +1714,19 @@ where
                     // stamping button events with (0.0, 0.0)).
                     let platform_ev = self.windows.get_mut(&id)
                         .and_then(|pw| pw.event_mapper.map_window_event(ev));
-                    if let Some(platform_ev) = platform_ev {
-                        if let Some(slot) = self.layout.window_mut(&key) {
-                            slot.provider.push_platform_event(platform_ev);
-                        }
+                    let redraw_window = self.windows
+                        .get(&id)
+                        .map(|pw| std::sync::Arc::clone(&pw.window));
+                    if let (Some(slot), Some(redraw_window)) =
+                        (self.layout.window_mut(&key), redraw_window)
+                    {
+                        dispatch_mapped_platform_event(
+                            platform_ev,
+                            |platform_ev| {
+                                slot.provider.push_platform_event(platform_ev);
+                            },
+                            || redraw_window.request_redraw(),
+                        );
                     }
                     // macOS consumes the Left mouse-up while it drags the window,
                     // so the app never receives PointerUp and `pointer_down` sticks
@@ -1813,23 +1884,48 @@ where
         let any_uncapped = self.windows.values().any(|p|
             matches!(p.tick_rate, uzor::render::TickRate::Uncapped)
         );
-        if any_uncapped {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else if let Some(t) = next_due {
-            if t > now {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(t));
-            } else {
-                event_loop.set_control_flow(ControlFlow::Poll);
-            }
-        } else if !regions.is_empty() {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        }
-        // No change otherwise — ControlFlow::Wait remains for the
-        // pure event-driven (Dirty) case.
+        event_loop.set_control_flow(scheduled_control_flow(
+            any_uncapped,
+            next_due,
+            now,
+        ));
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
+fn dispatch_mapped_platform_event<E>(
+    event: Option<E>,
+    push: impl FnOnce(E),
+    request_redraw: impl FnOnce(),
+) -> bool {
+    let Some(event) = event else {
+        return false;
+    };
+    push(event);
+    request_redraw();
+    true
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn scheduled_control_flow(
+    any_uncapped: bool,
+    next_due: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> ControlFlow {
+    if any_uncapped {
+        ControlFlow::Poll
+    } else if let Some(deadline) = next_due {
+        if deadline > now {
+            ControlFlow::WaitUntil(deadline)
+        } else {
+            ControlFlow::Poll
+        }
+    } else {
+        ControlFlow::Wait
+    }
+}
 
 fn register_region_schedule_states(
     regions: &[uzor::render::RenderRegion],
@@ -1927,10 +2023,17 @@ fn _suppress_unused(_: &dyn WindowProvider, _: &Rect) {}
 
 #[cfg(test)]
 mod tests {
-    use super::register_region_schedule_states;
+    use super::{
+        dispatch_mapped_platform_event, register_region_schedule_states,
+        scheduled_control_flow,
+    };
+    use std::cell::Cell;
     use std::collections::HashMap;
+    use std::time::Instant;
     use uzor::core::types::Rect;
+    use uzor::input::{KeyCode, ModifierKeys, PlatformEvent};
     use uzor::render::{RegionScheduleState, RenderRegion};
+    use winit::event_loop::ControlFlow;
 
     #[test]
     fn declared_regions_register_before_paint_branch_without_affecting_legacy_empty_path() {
@@ -1948,5 +2051,40 @@ mod tests {
         assert_eq!(states.len(), 2);
         assert!(states.contains_key("graph"));
         assert!(states.contains_key("inspector"));
+    }
+
+    #[test]
+    fn clean_dirty_only_region_waits_for_an_explicit_wake() {
+        let now = Instant::now();
+        let mut region = RenderRegion::dirty_driven("flow", Rect::default());
+        region.dirty = false;
+        let state = RegionScheduleState {
+            last_painted: Some(now),
+        };
+
+        assert!(!state.due(&region, now));
+        assert_eq!(state.next_due(&region, now), None);
+        assert!(matches!(
+            scheduled_control_flow(false, state.next_due(&region, now), now),
+            ControlFlow::Wait,
+        ));
+    }
+
+    #[test]
+    fn mapped_keyboard_event_is_pushed_and_requests_exactly_one_redraw() {
+        let pushes = Cell::new(0);
+        let redraws = Cell::new(0);
+        let event = PlatformEvent::KeyDown {
+            key: KeyCode::A,
+            modifiers: ModifierKeys::none(),
+        };
+
+        assert!(dispatch_mapped_platform_event(
+            Some(event),
+            |_| pushes.set(pushes.get() + 1),
+            || redraws.set(redraws.get() + 1),
+        ));
+        assert_eq!(pushes.get(), 1);
+        assert_eq!(redraws.get(), 1);
     }
 }

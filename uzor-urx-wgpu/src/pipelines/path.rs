@@ -86,6 +86,74 @@ pub(crate) fn tri_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 
 /// Same initial capacity constant as `QuadPipeline`/`LinePipeline`.
 const INITIAL_CAPACITY: usize = 1024;
+pub(crate) const MAX_GEOMETRY_BUFFER_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GeometryCapacityError {
+    pub(crate) stage: &'static str,
+    pub(crate) buffer: &'static str,
+    pub(crate) requested_instances: usize,
+    pub(crate) requested_bytes: usize,
+    pub(crate) current_capacity_instances: usize,
+    pub(crate) instance_size: usize,
+    pub(crate) max_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct GeometryUploadProfile {
+    pub(crate) upload_bytes: usize,
+    pub(crate) capacity_before_instances: usize,
+    pub(crate) capacity_after_instances: usize,
+    pub(crate) growth_bytes: usize,
+    pub(crate) reserve_us: u128,
+    pub(crate) upload_us: u128,
+}
+
+fn bounded_capacity_with_limit(
+    current: usize,
+    needed: usize,
+    initial_capacity: usize,
+    max_bytes: usize,
+    buffer: &'static str,
+) -> Result<usize, GeometryCapacityError> {
+    let instance_size = std::mem::size_of::<TriInstance>();
+    let max_instances = max_bytes / instance_size;
+    if needed > max_instances {
+        return Err(GeometryCapacityError {
+            stage: "gpu_buffer_reserve",
+            buffer,
+            requested_instances: needed,
+            requested_bytes: needed.checked_mul(instance_size).unwrap_or(usize::MAX),
+            current_capacity_instances: current,
+            instance_size,
+            max_bytes,
+        });
+    }
+    if needed <= current {
+        return Ok(current);
+    }
+    Ok(current
+        .max(initial_capacity)
+        .checked_mul(2)
+        .unwrap_or(max_instances)
+        .max(needed)
+        .min(max_instances))
+}
+
+pub(crate) fn bounded_geometry_capacity(
+    current: usize,
+    needed: usize,
+    initial_capacity: usize,
+    buffer: &'static str,
+) -> Result<usize, GeometryCapacityError> {
+    bounded_capacity_with_limit(
+        current,
+        needed,
+        initial_capacity,
+        MAX_GEOMETRY_BUFFER_BYTES,
+        buffer,
+    )
+}
 
 fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
@@ -163,18 +231,61 @@ impl PathPipeline {
 
     /// Upload `data`, growing the buffer (doubling capacity) if
     /// needed. No-op on an empty slice.
-    pub(crate) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[TriInstance]) {
+    pub(crate) fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[TriInstance],
+    ) -> Result<GeometryUploadProfile, GeometryCapacityError> {
         if data.is_empty() {
-            return;
+            return Ok(GeometryUploadProfile {
+                capacity_before_instances: self.capacity,
+                capacity_after_instances: self.capacity,
+                ..GeometryUploadProfile::default()
+            });
         }
         let needed = data.len();
-        if needed > self.capacity {
-            while self.capacity < needed {
-                self.capacity *= 2;
-            }
-            self.buffer = make_instance_buffer(device, self.capacity);
+        let profile = crate::profile::enabled();
+        crate::profile::stage(
+            "gpu_buffer_reserve_begin",
+            format_args!(
+                "buffer=path requested_instances={} requested_bytes={} current_capacity_instances={}",
+                needed,
+                needed.saturating_mul(std::mem::size_of::<TriInstance>()),
+                self.capacity,
+            ),
+        );
+        let capacity_before = self.capacity;
+        let reserve_t0 = profile.then(std::time::Instant::now);
+        let capacity = bounded_geometry_capacity(self.capacity, needed, INITIAL_CAPACITY, "path")?;
+        if capacity != self.capacity {
+            self.buffer = make_instance_buffer(device, capacity);
+            self.capacity = capacity;
         }
+        let reserve_us = reserve_t0.map_or(0, |started| started.elapsed().as_micros());
+        let upload_bytes = needed.saturating_mul(std::mem::size_of::<TriInstance>());
+        crate::profile::stage(
+            "gpu_buffer_upload_begin",
+            format_args!(
+                "buffer=path upload_bytes={} capacity_instances={}",
+                upload_bytes,
+                self.capacity,
+            ),
+        );
+        let upload_t0 = profile.then(std::time::Instant::now);
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
+        let upload_us = upload_t0.map_or(0, |started| started.elapsed().as_micros());
+        Ok(GeometryUploadProfile {
+            upload_bytes,
+            capacity_before_instances: capacity_before,
+            capacity_after_instances: self.capacity,
+            growth_bytes: self
+                .capacity
+                .saturating_sub(capacity_before)
+                .saturating_mul(std::mem::size_of::<TriInstance>()),
+            reserve_us,
+            upload_us,
+        })
     }
 
     /// Bind this pipeline + its vertex buffer onto `pass` (design §2.2's
@@ -206,5 +317,19 @@ mod tests {
     #[test]
     fn tri_instance_is_56_bytes() {
         assert_eq!(std::mem::size_of::<TriInstance>(), 56);
+    }
+
+    #[test]
+    fn bounded_growth_rejects_before_a_large_buffer_allocation() {
+        let eight_instances = 8 * std::mem::size_of::<TriInstance>();
+        assert_eq!(bounded_capacity_with_limit(4, 5, 4, eight_instances, "test").unwrap(), 8);
+        let error = bounded_capacity_with_limit(8, 9, 4, eight_instances, "test")
+            .expect_err("capacity above the byte limit must fail before create_buffer");
+        assert_eq!(error.stage, "gpu_buffer_reserve");
+        assert_eq!(error.buffer, "test");
+        assert_eq!(error.requested_instances, 9);
+        assert_eq!(error.requested_bytes, 9 * std::mem::size_of::<TriInstance>());
+        assert_eq!(error.current_capacity_instances, 8);
+        assert_eq!(error.max_bytes, eight_instances);
     }
 }

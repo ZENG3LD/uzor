@@ -35,13 +35,10 @@
 //! `encode.rs`'s `project_local` re-projects through the current
 //! frame's FULL 6-coefficient affine transform every time a cached mesh
 //! is replayed (Wave 4 Commit 4, design §5.4 — was a translate+scale-
-//! only decomposition through Wave 1-3). See `encode.rs`'s module doc
-//! for the honest write-up of what this caching choice still costs
-//! relative to `uzor-urx-cpu`'s per-call transform-then-stroke
-//! semantics: curve-flattening tolerance is still a FIXED local-space
-//! constant (`TESS_TOLERANCE_PX` below), unlike CPU's transform-scale-
-//! adaptive tolerance — a real, disclosed, NOT-fixed-this-wave
-//! limitation (design §5.4). Stroke width, by contrast, IS now unified
+//! only decomposition through Wave 1-3). Curve-flattening tolerance is
+//! derived per command from the affine's largest singular value, keeping
+//! the lyon error bound at `TESS_TOLERANCE_PX` in screen space without
+//! over-tessellating fit-to-screen world geometry. Stroke width is also unified
 //! (design §0.2): `TessKey::for_stroke` doesn't change shape at all —
 //! it still just hashes whatever `Stroke.width` it's handed — but
 //! `encode.rs`'s callers (`tess_stroke_scaled`) now feed it a width
@@ -53,6 +50,7 @@
 //! disclosed, bounded cost (see `encode.rs`'s `tess_stroke_scaled` doc
 //! comment), not a change to this module's own API.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use kurbo::PathEl;
@@ -66,8 +64,9 @@ use lyon_tessellation::{
 use uzor_urx_core::math::BezPath;
 use uzor_urx_core::scene::{FillRule, LineCap, LineJoin, Stroke};
 
-/// Local-space (pre-transform) tessellation tolerance — matches the
-/// `uzor-urx-cpu` + legacy-adapter convention
+/// Maximum screen-space tessellation error. Callers convert this into
+/// local-space units using the affine's largest singular value before
+/// asking lyon to tessellate.
 /// (`uzor-urx-cpu/src/path.rs:33` `FLATTEN_TOLERANCE_PX`,
 /// `uzor-urx-wgpu/src/adapter.rs:277`). Folded into every `TessKey` so
 /// a future tolerance bump invalidates old cache entries automatically
@@ -146,25 +145,35 @@ fn feed_path(h: &mut Fnv1a, path: &BezPath) {
 }
 
 /// Content hash of the LOCAL (pre-transform) path geometry + fill/
-/// stroke params + the tessellation tolerance (design §6). Transform
-/// and colour are NOT part of the key — they vary per-instance and are
-/// applied when re-projecting the cached mesh, not when tessellating.
+/// stroke params + the resolved local tessellation tolerance (design
+/// §6). Colour and transform coefficients are not stored directly; the
+/// transform-derived tolerance is keyed because it changes mesh density.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TessKey(u64);
 
 impl TessKey {
+    #[cfg(test)]
     pub(crate) fn for_fill(path: &BezPath, rule: FillRule) -> Self {
+        Self::for_fill_with_tolerance(path, rule, TESS_TOLERANCE_PX as f32)
+    }
+
+    pub(crate) fn for_fill_with_tolerance(path: &BezPath, rule: FillRule, tolerance: f32) -> Self {
         let mut h = Fnv1a::new();
         feed_path(&mut h, path);
         h.feed_byte(match rule {
             FillRule::NonZero => 0,
             FillRule::EvenOdd => 1,
         });
-        h.feed_f64(TESS_TOLERANCE_PX);
+        h.feed_f32(tolerance);
         Self(h.finish())
     }
 
+    #[cfg(test)]
     pub(crate) fn for_stroke(path: &BezPath, stroke: &Stroke) -> Self {
+        Self::for_stroke_with_tolerance(path, stroke, TESS_TOLERANCE_PX as f32)
+    }
+
+    pub(crate) fn for_stroke_with_tolerance(path: &BezPath, stroke: &Stroke, tolerance: f32) -> Self {
         let mut h = Fnv1a::new();
         feed_path(&mut h, path);
         h.feed_f32(stroke.width);
@@ -179,7 +188,7 @@ impl TessKey {
             LineCap::Round => 1,
             LineCap::Square => 2,
         });
-        h.feed_f64(TESS_TOLERANCE_PX);
+        h.feed_f32(tolerance);
         Self(h.finish())
     }
 }
@@ -199,6 +208,16 @@ pub struct TessCacheStats {
     pub misses: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TessFrameProfile {
+    pub(crate) tessellate_calls: u64,
+    pub(crate) tessellated_triangles: usize,
+    pub(crate) tessellate_us: u128,
+    pub(crate) cache_growths: u64,
+    pub(crate) cache_reserved_entries: usize,
+    pub(crate) cache_reserve_us: u128,
+}
+
 /// Default cap (entries) for the test-only `TessCache::new` — same
 /// value as `UrxConfig::default().path_tess_cache_cap` (Commit 5 wires
 /// the real config knob through `NativeUrxRenderer::with_config`;
@@ -208,15 +227,33 @@ pub struct TessCacheStats {
 #[cfg(test)]
 const TESS_CACHE_DEFAULT_CAP: usize = 256;
 
-/// Hand-rolled LRU — same shape as `uzor-urx-glyph::GlyphLru`:
-/// `Vec<(key, value, tick)>` + linear scan + `swap_remove` of the
-/// min-tick entry on overflow.
-pub(crate) struct TessCache {
-    entries: Vec<(TessKey, Arc<TessMesh>, u64)>,
+struct TessCacheEntry {
+    mesh: Arc<TessMesh>,
     tick: u64,
+    frame: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TessCacheMode {
+    Fixed,
+    Adaptive,
+}
+
+/// Hash-indexed LRU. The queue may contain stale access records; their
+/// tick is checked against the current map entry before eviction, making
+/// lookup and ordinary eviction O(1) amortized without intrusive links.
+pub(crate) struct TessCache {
+    entries: HashMap<TessKey, TessCacheEntry>,
+    lru: VecDeque<(TessKey, u64)>,
+    tick: u64,
+    frame: u64,
+    current_frame_entries: usize,
+    largest_profiled_mesh_triangles: usize,
     cap: usize,
+    mode: TessCacheMode,
     hits: u64,
     misses: u64,
+    frame_profile: TessFrameProfile,
 }
 
 impl TessCache {
@@ -230,54 +267,187 @@ impl TessCache {
     /// `UrxConfig::path_tess_cache_cap`. The cap is read once here and
     /// never revisited: this cache is NOT hot-swappable mid-session.
     pub(crate) fn with_cap(cap: usize) -> Self {
-        Self { entries: Vec::new(), tick: 0, cap, hits: 0, misses: 0 }
+        Self::with_mode(cap, TessCacheMode::Fixed)
+    }
+
+    /// Default-renderer mode: `cap` is the initial retained working-set
+    /// size. It grows only when every resident entry has already been
+    /// used in the current frame, so a scene larger than the default
+    /// does not thrash by evicting geometry that same frame still needs.
+    pub(crate) fn with_adaptive_cap(cap: usize) -> Self {
+        Self::with_mode(cap, TessCacheMode::Adaptive)
+    }
+
+    fn with_mode(cap: usize, mode: TessCacheMode) -> Self {
+        let cap = cap.max(1);
+        Self {
+            entries: HashMap::with_capacity(cap),
+            lru: VecDeque::with_capacity(cap),
+            tick: 0,
+            frame: 0,
+            current_frame_entries: 0,
+            largest_profiled_mesh_triangles: 0,
+            cap,
+            mode,
+            hits: 0,
+            misses: 0,
+            frame_profile: TessFrameProfile::default(),
+        }
+    }
+
+    /// Start a renderer frame. Adaptive mode protects every entry used
+    /// after this point from same-frame eviction. Stale access records
+    /// are compacted occasionally in one linear pass.
+    pub(crate) fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        self.current_frame_entries = 0;
+        self.largest_profiled_mesh_triangles = 0;
+        self.frame_profile = TessFrameProfile::default();
+        if self.lru.len() > self.entries.len().saturating_mul(2).max(1024) {
+            self.lru.retain(|(key, tick)| {
+                self.entries.get(key).is_some_and(|entry| entry.tick == *tick)
+            });
+        }
     }
 
     fn get(&mut self, key: TessKey) -> Option<Arc<TessMesh>> {
         self.tick = self.tick.wrapping_add(1);
-        for entry in self.entries.iter_mut() {
-            if entry.0 == key {
-                entry.2 = self.tick;
-                self.hits += 1;
-                return Some(entry.1.clone());
-            }
+        let entry = self.entries.get_mut(&key)?;
+        if entry.frame != self.frame {
+            entry.frame = self.frame;
+            self.current_frame_entries += 1;
         }
-        self.misses += 1;
-        None
+        entry.tick = self.tick;
+        let mesh = entry.mesh.clone();
+        self.lru.push_back((key, self.tick));
+        self.hits += 1;
+        Some(mesh)
     }
 
     fn insert(&mut self, key: TessKey, mesh: Arc<TessMesh>) {
         self.tick = self.tick.wrapping_add(1);
         if self.entries.len() >= self.cap {
-            if let Some((idx, _)) = self.entries.iter().enumerate().min_by_key(|(_, e)| e.2) {
-                self.entries.swap_remove(idx);
+            let adaptive_working_set_full =
+                self.mode == TessCacheMode::Adaptive && self.current_frame_entries >= self.cap;
+            if adaptive_working_set_full || !self.evict_oldest() {
+                let old_cap = self.cap;
+                self.cap = self.cap.saturating_mul(2).max(self.entries.len() + 1);
+                let reserve_t0 = crate::profile::enabled().then(std::time::Instant::now);
+                self.entries.reserve(self.cap - self.entries.len());
+                self.lru.reserve(self.cap - self.lru.len().min(self.cap));
+                self.frame_profile.cache_growths += 1;
+                self.frame_profile.cache_reserved_entries = self
+                    .frame_profile
+                    .cache_reserved_entries
+                    .saturating_add(self.cap.saturating_sub(old_cap));
+                self.frame_profile.cache_reserve_us +=
+                    reserve_t0.map_or(0, |started| started.elapsed().as_micros());
             }
         }
-        self.entries.push((key, mesh, self.tick));
+        self.entries.insert(key, TessCacheEntry { mesh, tick: self.tick, frame: self.frame });
+        self.lru.push_back((key, self.tick));
+        self.current_frame_entries += 1;
     }
 
+    fn evict_oldest(&mut self) -> bool {
+        while let Some((key, tick)) = self.lru.pop_front() {
+            let Some(entry) = self.entries.get(&key) else {
+                continue;
+            };
+            if entry.tick != tick {
+                continue;
+            }
+            if self.mode == TessCacheMode::Adaptive && entry.frame == self.frame {
+                self.lru.push_front((key, tick));
+                return false;
+            }
+            self.entries.remove(&key);
+            return true;
+        }
+        false
+    }
+
+    #[cfg(test)]
     pub(crate) fn get_or_insert_fill(&mut self, path: &BezPath, rule: FillRule) -> Arc<TessMesh> {
-        let key = TessKey::for_fill(path, rule);
+        self.get_or_insert_fill_with_tolerance(path, rule, TESS_TOLERANCE_PX as f32)
+    }
+
+    pub(crate) fn get_or_insert_fill_with_tolerance(
+        &mut self,
+        path: &BezPath,
+        rule: FillRule,
+        tolerance: f32,
+    ) -> Arc<TessMesh> {
+        let key = TessKey::for_fill_with_tolerance(path, rule, tolerance);
         if let Some(mesh) = self.get(key) {
             return mesh;
         }
-        let mesh = Arc::new(tessellate_fill(path, rule));
+        self.misses += 1;
+        let tessellate_t0 = crate::profile::enabled().then(std::time::Instant::now);
+        let mesh = Arc::new(tessellate_fill_with_tolerance(path, rule, tolerance));
+        self.frame_profile.tessellate_calls += 1;
+        self.frame_profile.tessellated_triangles = self
+            .frame_profile
+            .tessellated_triangles
+            .saturating_add(mesh.triangles.len());
+        self.frame_profile.tessellate_us +=
+            tessellate_t0.map_or(0, |started| started.elapsed().as_micros());
         self.insert(key, mesh.clone());
         mesh
     }
 
-    pub(crate) fn get_or_insert_stroke(&mut self, path: &BezPath, stroke: &Stroke) -> Arc<TessMesh> {
-        let key = TessKey::for_stroke(path, stroke);
+    pub(crate) fn get_or_insert_stroke_with_tolerance(
+        &mut self,
+        path: &BezPath,
+        stroke: &Stroke,
+        tolerance: f32,
+    ) -> Arc<TessMesh> {
+        let key = TessKey::for_stroke_with_tolerance(path, stroke, tolerance);
         if let Some(mesh) = self.get(key) {
             return mesh;
         }
-        let mesh = Arc::new(tessellate_stroke(path, stroke));
+        self.misses += 1;
+        let tessellate_t0 = crate::profile::enabled().then(std::time::Instant::now);
+        let mesh = Arc::new(tessellate_stroke_with_tolerance(path, stroke, tolerance));
+        self.frame_profile.tessellate_calls += 1;
+        self.frame_profile.tessellated_triangles = self
+            .frame_profile
+            .tessellated_triangles
+            .saturating_add(mesh.triangles.len());
+        self.frame_profile.tessellate_us +=
+            tessellate_t0.map_or(0, |started| started.elapsed().as_micros());
         self.insert(key, mesh.clone());
         mesh
+    }
+
+    pub(crate) fn profile_mesh(
+        &mut self,
+        kind: &'static str,
+        path: &BezPath,
+        transform: [f64; 6],
+        local_tolerance: f32,
+        triangles: usize,
+    ) {
+        if !crate::profile::enabled() || triangles <= self.largest_profiled_mesh_triangles {
+            return;
+        }
+        self.largest_profiled_mesh_triangles = triangles;
+        crate::profile::stage(
+            "tess_largest_mesh",
+            format_args!(
+                "kind={kind} path_elements={} \
+                 transform={transform:?} local_tolerance={local_tolerance:.9} triangles={triangles}",
+                path.elements().len(),
+            ),
+        );
     }
 
     pub(crate) fn stats(&self) -> TessCacheStats {
         TessCacheStats { entries: self.entries.len(), hits: self.hits, misses: self.misses }
+    }
+
+    pub(crate) fn frame_profile(&self) -> TessFrameProfile {
+        self.frame_profile
     }
 }
 
@@ -358,7 +528,7 @@ fn map_line_join(join: LineJoin) -> LyonLineJoin {
     }
 }
 
-fn triangles_from_geometry(geometry: &VertexBuffers<[f32; 2], u16>) -> TessMesh {
+fn triangles_from_geometry(geometry: &VertexBuffers<[f32; 2], u32>) -> TessMesh {
     let mut triangles = Vec::with_capacity(geometry.indices.len() / 3);
     for tri in geometry.indices.chunks_exact(3) {
         triangles.push([
@@ -370,11 +540,16 @@ fn triangles_from_geometry(geometry: &VertexBuffers<[f32; 2], u16>) -> TessMesh 
     TessMesh { triangles }
 }
 
+#[cfg(test)]
 fn tessellate_fill(path: &BezPath, rule: FillRule) -> TessMesh {
+    tessellate_fill_with_tolerance(path, rule, TESS_TOLERANCE_PX as f32)
+}
+
+fn tessellate_fill_with_tolerance(path: &BezPath, rule: FillRule, tolerance: f32) -> TessMesh {
     let lyon_path = build_lyon_path(path);
-    let mut geometry: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+    let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
     let mut tessellator = FillTessellator::new();
-    let options = FillOptions::tolerance(TESS_TOLERANCE_PX as f32).with_fill_rule(map_fill_rule(rule));
+    let options = FillOptions::tolerance(tolerance).with_fill_rule(map_fill_rule(rule));
     // Malformed/self-intersecting-beyond-lyon's-handling paths degrade
     // to an empty mesh (nothing drawn) rather than panicking — the
     // `Result` is intentionally not propagated further, matching this
@@ -395,11 +570,11 @@ fn tessellate_fill(path: &BezPath, rule: FillRule) -> TessMesh {
 /// scale, so under a non-1.0 scale the apparent on-screen stroke width
 /// scales with it. See this module's doc comment + `encode.rs`'s
 /// module doc for how this compares to `uzor-urx-cpu::stroke_path_aa`.
-fn tessellate_stroke(path: &BezPath, stroke: &Stroke) -> TessMesh {
+fn tessellate_stroke_with_tolerance(path: &BezPath, stroke: &Stroke, tolerance: f32) -> TessMesh {
     let lyon_path = build_lyon_path(path);
-    let mut geometry: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+    let mut geometry: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
     let mut tessellator = StrokeTessellator::new();
-    let options = StrokeOptions::tolerance(TESS_TOLERANCE_PX as f32)
+    let options = StrokeOptions::tolerance(tolerance)
         .with_line_width(stroke.width)
         .with_line_cap(map_line_cap(stroke.cap))
         .with_line_join(map_line_join(stroke.join))
@@ -453,6 +628,14 @@ mod tests {
         other.line_to(Point::new(6.0, 11.0));
         let a = TessKey::for_fill(&triangle_path(), FillRule::NonZero);
         let b = TessKey::for_fill(&other, FillRule::NonZero);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn tess_key_differs_by_local_tolerance() {
+        let path = triangle_path();
+        let a = TessKey::for_fill_with_tolerance(&path, FillRule::NonZero, 0.25);
+        let b = TessKey::for_fill_with_tolerance(&path, FillRule::NonZero, 2_500.0);
         assert_ne!(a, b);
     }
 
@@ -539,5 +722,38 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.entries, 2, "cap from UrxConfig::path_tess_cache_cap=2 must never be exceeded");
         assert_eq!(stats.misses, 3);
+    }
+
+    #[test]
+    fn adaptive_cache_retains_a_working_set_larger_than_the_initial_cap() {
+        const PATHS: usize = 300;
+        let path = |i: usize| {
+            let x = i as f64 * 2.0;
+            let mut path = BezPath::new();
+            path.move_to(Point::new(x, 0.0));
+            path.line_to(Point::new(x + 1.0, 0.0));
+            path.line_to(Point::new(x, 1.0));
+            path.close_path();
+            path
+        };
+
+        let mut cache = TessCache::with_adaptive_cap(256);
+        cache.begin_frame();
+        for i in 0..PATHS {
+            let _ = cache.get_or_insert_fill(&path(i), FillRule::NonZero);
+        }
+        let first = cache.stats();
+        assert_eq!(first.entries, PATHS);
+        assert_eq!(first.hits, 0);
+        assert_eq!(first.misses, PATHS as u64);
+
+        cache.begin_frame();
+        for i in 0..PATHS {
+            let _ = cache.get_or_insert_fill(&path(i), FillRule::NonZero);
+        }
+        let second = cache.stats();
+        assert_eq!(second.entries, PATHS);
+        assert_eq!(second.hits - first.hits, PATHS as u64);
+        assert_eq!(second.misses - first.misses, 0);
     }
 }

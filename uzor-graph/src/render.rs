@@ -176,6 +176,7 @@ pub fn draw_edges<N, E>(
     particles: &[Particle],
     ctx: &DrawContext<'_>,
 ) -> usize {
+    let prepare_started = std::time::Instant::now();
     render.save();
     let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
     let mut segments: Vec<LineSegment> = Vec::new();
@@ -237,6 +238,21 @@ pub fn draw_edges<N, E>(
     }
 
     let drawn = segments.len() + dim_segments.len() + styled_count;
+    uzor::diagnostics::stage(
+        "graph_2d_edges",
+        "prepare_end",
+        format_args!(
+            "drawn={} plain={} dim={} styled={} body_batches={} arrow_batches={} duration_us={}",
+            drawn,
+            segments.len(),
+            dim_segments.len(),
+            styled_count,
+            styled_body_batches.len(),
+            styled_arrow_batches.len(),
+            prepare_started.elapsed().as_micros(),
+        ),
+    );
+    let emit_started = std::time::Instant::now();
     // Round caps + >=1.5px width: sub-1.5px butt-capped hairlines at an
     // angle read as a beaded staircase on a standard-DPI display even
     // with correct AA (live-verified 2026-07-18); industry engines
@@ -264,6 +280,11 @@ pub fn draw_edges<N, E>(
     render.set_global_alpha(1.0);
     render.set_line_cap("butt");
     render.restore();
+    uzor::diagnostics::stage(
+        "graph_2d_edges",
+        "emit_end",
+        format_args!("drawn={} duration_us={}", drawn, emit_started.elapsed().as_micros()),
+    );
     drawn
 }
 
@@ -507,6 +528,7 @@ fn draw_nodes_impl<N, E>(
     ctx: &DrawContext<'_>,
     labels_enabled: bool,
 ) -> NodeDrawStats {
+    let collect_started = std::time::Instant::now();
     render.save();
     let mut by_color: HashMap<String, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
@@ -531,7 +553,21 @@ fn draw_nodes_impl<N, E>(
             by_color.entry(category_color(&node.category, &ctx.theme.category_palette)).or_default().push(circle);
         }
     }
+    uzor::diagnostics::stage(
+        "graph_2d_nodes",
+        "collect_end",
+        format_args!(
+            "visible={} drawn={} colors={} dim={} styled={} duration_us={}",
+            ctx.visible.len(),
+            nodes_drawn,
+            by_color.len(),
+            dim.len(),
+            styled.len(),
+            collect_started.elapsed().as_micros(),
+        ),
+    );
 
+    let base_emit_started = std::time::Instant::now();
     if !dim.is_empty() {
         render.set_global_alpha(ctx.theme.dim_alpha);
         render.draw_circle_batch(&dim, &ctx.theme.dim_node_fill);
@@ -580,6 +616,16 @@ fn draw_nodes_impl<N, E>(
         render.draw_circle_batch(&[*circle], fill);
         render.set_global_alpha(1.0);
     }
+    uzor::diagnostics::stage(
+        "graph_2d_nodes",
+        "base_emit_end",
+        format_args!(
+            "colors={} styled={} duration_us={}",
+            by_color.len(),
+            styled.len(),
+            base_emit_started.elapsed().as_micros(),
+        ),
+    );
 
     let label_set = labels_enabled.then(|| labels_to_draw(graph, particles, ctx));
     // Whole-graph max degree (not just the currently-visible subset) —
@@ -593,6 +639,7 @@ fn draw_nodes_impl<N, E>(
     };
     let mut labels_drawn = 0usize;
 
+    let semantics_started = std::time::Instant::now();
     for &id in ctx.visible {
         if ctx.hidden.contains(&id) {
             continue;
@@ -668,6 +715,16 @@ fn draw_nodes_impl<N, E>(
             labels_drawn += 1;
         }
     }
+    uzor::diagnostics::stage(
+        "graph_2d_nodes",
+        "semantics_end",
+        format_args!(
+            "visible={} labels={} duration_us={}",
+            ctx.visible.len(),
+            labels_drawn,
+            semantics_started.elapsed().as_micros(),
+        ),
+    );
 
     render.restore();
     NodeDrawStats { nodes_drawn, labels_drawn }

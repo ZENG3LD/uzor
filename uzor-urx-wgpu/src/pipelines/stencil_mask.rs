@@ -33,7 +33,10 @@
 //! that point in the scan (the just-opened layer's own pass, since
 //! they're emitted immediately after that layer's `PushLayer` marker).
 
-use crate::pipelines::path::{tri_instance_layout, TriInstance};
+use crate::pipelines::path::{
+    bounded_geometry_capacity, tri_instance_layout, GeometryCapacityError,
+    GeometryUploadProfile, TriInstance,
+};
 
 /// `DepthStencilState` shared by both mask pipelines — differs ONLY in
 /// `pass_op` (`IncrementClamp` for push, `DecrementClamp` for pop).
@@ -152,18 +155,62 @@ impl StencilMaskPipeline {
     /// Upload `data`, growing the buffer (doubling capacity) if it no
     /// longer fits — same strategy as every other native pipeline's
     /// `upload`. No-op on an empty slice.
-    pub(crate) fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[TriInstance]) {
+    pub(crate) fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[TriInstance],
+    ) -> Result<GeometryUploadProfile, GeometryCapacityError> {
         if data.is_empty() {
-            return;
+            return Ok(GeometryUploadProfile {
+                capacity_before_instances: self.capacity,
+                capacity_after_instances: self.capacity,
+                ..GeometryUploadProfile::default()
+            });
         }
         let needed = data.len();
-        if needed > self.capacity {
-            while self.capacity < needed {
-                self.capacity *= 2;
-            }
-            self.buffer = make_instance_buffer(device, self.capacity);
+        let profile = crate::profile::enabled();
+        crate::profile::stage(
+            "gpu_buffer_reserve_begin",
+            format_args!(
+                "buffer=stencil_mask requested_instances={} requested_bytes={} current_capacity_instances={}",
+                needed,
+                needed.saturating_mul(std::mem::size_of::<TriInstance>()),
+                self.capacity,
+            ),
+        );
+        let capacity_before = self.capacity;
+        let reserve_t0 = profile.then(std::time::Instant::now);
+        let capacity =
+            bounded_geometry_capacity(self.capacity, needed, INITIAL_CAPACITY, "stencil_mask")?;
+        if capacity != self.capacity {
+            self.buffer = make_instance_buffer(device, capacity);
+            self.capacity = capacity;
         }
+        let reserve_us = reserve_t0.map_or(0, |started| started.elapsed().as_micros());
+        let upload_bytes = needed.saturating_mul(std::mem::size_of::<TriInstance>());
+        crate::profile::stage(
+            "gpu_buffer_upload_begin",
+            format_args!(
+                "buffer=stencil_mask upload_bytes={} capacity_instances={}",
+                upload_bytes,
+                self.capacity,
+            ),
+        );
+        let upload_t0 = profile.then(std::time::Instant::now);
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
+        let upload_us = upload_t0.map_or(0, |started| started.elapsed().as_micros());
+        Ok(GeometryUploadProfile {
+            upload_bytes,
+            capacity_before_instances: capacity_before,
+            capacity_after_instances: self.capacity,
+            growth_bytes: self
+                .capacity
+                .saturating_sub(capacity_before)
+                .saturating_mul(std::mem::size_of::<TriInstance>()),
+            reserve_us,
+            upload_us,
+        })
     }
 
     /// Bind the INCREMENT variant (a `PushClipRoundedRect`, design

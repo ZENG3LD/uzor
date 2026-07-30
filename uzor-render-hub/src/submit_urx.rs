@@ -184,6 +184,7 @@ pub fn submit_urx_wgpu(
         Some(s) => s,
         None => return false,
     };
+    let profiled_command_count = scene.len();
 
     let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
         eprintln!("[render-hub] urx_wgpu requires SurfaceMode::Gpu");
@@ -266,6 +267,14 @@ pub fn submit_urx_wgpu(
     queue.submit([encoder.finish()]);
     surface_texture.present();
     metrics.present_us = present_t0.elapsed().as_micros() as u64;
+    if std::env::var_os("UZOR_PROFILE_FRAMES").is_some() {
+        eprintln!(
+            "[uzor-urx-profile] commands={profiled_command_count} \
+             encode_us={} present_us={}",
+            metrics.render_to_texture_us,
+            metrics.present_us,
+        );
+    }
     false
 }
 

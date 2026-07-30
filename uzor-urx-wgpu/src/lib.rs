@@ -149,6 +149,7 @@ mod image_cache;
 mod msaa;
 pub mod native_error;
 mod pipelines;
+mod profile;
 pub mod renderer;
 mod shaders;
 mod stencil;

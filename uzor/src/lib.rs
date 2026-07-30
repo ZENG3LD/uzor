@@ -1,6 +1,7 @@
 //! uzor - Platform-agnostic headless UI engine
 
 pub mod core;
+pub mod diagnostics;
 pub mod input;
 pub mod layout;
 pub mod platform;

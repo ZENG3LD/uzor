@@ -39,6 +39,30 @@ pub(crate) struct ScreenshotRequest {
 pub(crate) type PendingCmd = (Command, Sender<CommandReply>);
 
 type BlackboxRegistry = HashMap<String, Arc<Mutex<dyn BlackboxAgentSurface>>>;
+type WakeCallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// Cross-thread wake bridge for synchronous Agent API commands.
+///
+/// The HTTP server runs outside winit's event-loop thread. Merely enqueueing a
+/// command is not enough when every window uses `TickRate::Dirty`: winit may be
+/// sleeping indefinitely while the HTTP handler blocks waiting for the reply.
+/// The manager installs an `EventLoopProxy` callback before exposing the
+/// server; its user event wakes winit so `about_to_wait` can drain the queue.
+#[derive(Clone, Default)]
+struct AgentWake {
+    callback: Arc<RwLock<Option<WakeCallback>>>,
+}
+
+impl AgentWake {
+    fn set(&self, callback: WakeCallback) {
+        *self.callback.write().expect("agent wake lock") = Some(callback);
+    }
+
+    fn notify(&self) -> bool {
+        let callback = self.callback.read().expect("agent wake lock").clone();
+        callback.is_some_and(|callback| callback())
+    }
+}
 
 /// Plumbing the manager owns; cloned (Arc-wrapped) into the HTTP server.
 pub(crate) struct AgentBus {
@@ -53,6 +77,7 @@ pub(crate) struct AgentBus {
     pub cmd_rx:   Receiver<PendingCmd>,
     pub shot_tx:  Sender<ScreenshotRequest>,
     pub shot_rx:  Receiver<ScreenshotRequest>,
+    wake: AgentWake,
 }
 
 impl AgentBus {
@@ -68,6 +93,7 @@ impl AgentBus {
             cmd_rx: rx,
             shot_tx: stx,
             shot_rx: srx,
+            wake: AgentWake::default(),
         }
     }
 
@@ -79,7 +105,15 @@ impl AgentBus {
             blackboxes: Arc::clone(&self.blackboxes),
             cmd_tx:     self.cmd_tx.clone(),
             shot_tx:    self.shot_tx.clone(),
+            wake:       self.wake.clone(),
         })
+    }
+
+    pub fn set_waker(
+        &self,
+        callback: impl Fn() -> bool + Send + Sync + 'static,
+    ) {
+        self.wake.set(Arc::new(callback));
     }
 }
 
@@ -91,6 +125,7 @@ pub struct DesktopAgentControl {
     blackboxes: Arc<RwLock<BlackboxRegistry>>,
     cmd_tx:     Sender<PendingCmd>,
     shot_tx:    Sender<ScreenshotRequest>,
+    wake:       AgentWake,
 }
 
 impl AgentControl for DesktopAgentControl {
@@ -107,6 +142,9 @@ impl AgentControl for DesktopAgentControl {
         if self.cmd_tx.send((cmd, tx)).is_err() {
             return CommandReply::err("manager command channel closed");
         }
+        if !self.wake.notify() {
+            return CommandReply::err("manager event loop wake failed");
+        }
         rx.recv().unwrap_or_else(|_| CommandReply::err("manager dropped reply"))
     }
 
@@ -117,7 +155,8 @@ impl AgentControl for DesktopAgentControl {
             reply: tx,
         };
         if self.shot_tx.send(req).is_err() { return None; }
-        // Block on the manager's reply (drained in `about_to_wait`).
+        if !self.wake.notify() { return None; }
+        // Block on the manager's reply (drained after the wake reaches winit).
         rx.recv().ok().flatten()
     }
 
@@ -210,4 +249,57 @@ pub(crate) fn build_widget_list<P: DockPanel>(
     layout: &LayoutManager<P>,
 ) -> Vec<WidgetSnapshot> {
     LmAgent::<P>::build_widget_list(layout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn synchronous_dispatch_wakes_before_waiting_for_manager_reply() {
+        let bus = AgentBus::new();
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&wake_count);
+        bus.wake.set(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        let control = bus.control();
+
+        let caller = std::thread::spawn(move || {
+            control.dispatch(Command::LogPush {
+                category: "wake-test".to_owned(),
+                payload: serde_json::Value::Null,
+                window: None,
+            })
+        });
+
+        let (_cmd, reply) = bus.cmd_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("agent command reached manager queue");
+        assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+        reply.send(CommandReply::ok()).expect("caller still waiting");
+        assert!(caller.join().expect("dispatch thread").ok);
+    }
+
+    #[test]
+    fn failed_wake_returns_without_waiting_for_manager_reply() {
+        let bus = AgentBus::new();
+        bus.wake.set(Arc::new(|| false));
+        let control = bus.control();
+
+        let reply = control.dispatch(Command::LogPush {
+            category: "wake-failure-test".to_owned(),
+            payload: serde_json::Value::Null,
+            window: None,
+        });
+
+        assert!(!reply.ok);
+        assert_eq!(
+            reply.message.as_deref(),
+            Some("manager event loop wake failed"),
+        );
+        assert!(bus.cmd_rx.try_recv().is_ok());
+    }
 }
