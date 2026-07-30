@@ -797,9 +797,16 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f64>
         }
     }
 
-    // Collect digits and decimal point
+    // Collect digits and decimal point. Per the SVG path grammar a number
+    // ends at the SECOND '.', so the compact form "-.3.06" is TWO numbers
+    // (-.3 and .06) — the old greedy collect produced "-.3.06", failed to
+    // parse, and silently truncated the whole path (mangled icons).
+    let mut seen_dot = false;
     while let Some(&c) = chars.peek() {
-        if c.is_ascii_digit() || c == '.' {
+        if c.is_ascii_digit() {
+            num_str.push(chars.next().unwrap());
+        } else if c == '.' && !seen_dot {
+            seen_dot = true;
             num_str.push(chars.next().unwrap());
         } else {
             break;
