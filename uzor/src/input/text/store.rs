@@ -162,6 +162,14 @@ pub struct TextFieldState {
     pub last_char_positions: Vec<f64>,
     /// Frame counter at last `update_field` call.
     pub last_frame: u64,
+    /// Whether the user has TOUCHED this field — clicked into it or typed.
+    ///
+    /// Distinct from focus on purpose. A dialog arms its field on open so the
+    /// first keystroke lands without a click, but arming is not an invitation:
+    /// a caret blinking in a box nobody asked for reads as noise. Focus says
+    /// "keystrokes come here"; this says "the user is in it", and only the
+    /// second one should be visible.
+    pub engaged: bool,
     /// Field configuration (immutable after registration).
     pub config: TextFieldConfig,
 }
@@ -177,6 +185,7 @@ impl TextFieldState {
             last_rect: None,
             last_char_positions: Vec::new(),
             last_frame: 0,
+            engaged: false,
             config,
         }
     }
@@ -321,6 +330,19 @@ impl TextFieldStore {
     }
 
     /// Whether the given field is currently focused.
+    /// Whether the user has touched this field — see [`TextFieldState::engaged`].
+    /// Draw the caret and the focus ring from THIS, not from focus.
+    pub fn is_engaged(&self, id: &WidgetId) -> bool {
+        self.fields.get(id).map(|s| s.engaged).unwrap_or(false)
+    }
+
+    /// Mark a field as touched, for a host that routes its own clicks.
+    pub fn engage(&mut self, id: &WidgetId) {
+        if let Some(state) = self.fields.get_mut(id) {
+            state.engaged = true;
+        }
+    }
+
     pub fn is_focused(&self, id: &WidgetId) -> bool {
         self.focused.as_ref() == Some(id)
     }
@@ -365,6 +387,11 @@ impl TextFieldStore {
             if let Some(state) = self.fields.get_mut(&prev) {
                 state.selection_start = None;
             }
+        }
+        if let Some(state) = self.fields.get_mut(&id) {
+            // Arming is silent. Whoever focused this field did not necessarily
+            // ask for it to look focused; typing or clicking is what does.
+            state.engaged = false;
         }
         self.focused = Some(id);
         self.reset_blink();
@@ -431,6 +458,9 @@ impl TextFieldStore {
             Some(s) => s,
             None => return TextAction::None,
         };
+        // Typing is engagement: the field becomes visibly focused the
+        // moment it receives a keystroke, not when it was armed.
+        state.engaged = true;
 
         // Mouse-only or read-only fields reject char input.
         if state.config.capability == InputCapability::Mouse || state.config.read_only {
@@ -513,6 +543,9 @@ impl TextFieldStore {
             Some(s) => s,
             None => return TextAction::None,
         };
+        // Typing is engagement: the field becomes visibly focused the
+        // moment it receives a keystroke, not when it was armed.
+        state.engaged = true;
 
         let restricted = state.config.capability == InputCapability::Mouse || state.config.read_only;
         if restricted {
@@ -565,6 +598,9 @@ impl TextFieldStore {
             Some(s) => s,
             None => return,
         };
+        // A click INTO the field is engagement — `focus` above cleared the
+        // flag, which is right for an arming focus and wrong for this one.
+        state.engaged = true;
 
         let cursor = cursor_from_x(&state.last_char_positions, x);
         state.cursor = cursor;
