@@ -381,6 +381,13 @@ impl TextFieldStore {
     pub fn focus(&mut self, id: impl Into<WidgetId>) -> bool {
         let id = id.into();
         if self.focused.as_ref() == Some(&id) {
+            // Already focused, so focus does not change — but this is still an
+            // ARMING call, and arming is silent. A dialog that closes without
+            // blurring and opens again would otherwise inherit the engagement
+            // of its previous life.
+            if let Some(state) = self.fields.get_mut(&id) {
+                state.engaged = false;
+            }
             return false;
         }
         if let Some(prev) = self.focused.take() {
@@ -589,7 +596,17 @@ impl TextFieldStore {
 
         let id = match hit_id {
             Some(id) => id,
-            None => return,
+            None => {
+                // A press that landed on nothing editable ENDS engagement. The
+                // field stays armed for the keyboard, but it stops looking
+                // live: clicking a dialog's header, or anywhere else outside
+                // the box, must take the caret and the ring away. Without this
+                // the ring survived every click that was not a close.
+                for state in self.fields.values_mut() {
+                    state.engaged = false;
+                }
+                return;
+            }
         };
 
         self.focus(id.clone());
