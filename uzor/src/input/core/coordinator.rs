@@ -76,6 +76,12 @@ struct Layer {
     id: LayerId,
     z_order: u32,
     modal: bool, // blocks events to lower layers
+    /// If `true`, this layer stays hit-testable even when a modal layer
+    /// sits above it (see [`InputCoordinator::push_layer_ex`]). Marks
+    /// persistent application chrome — toolbar, sidebar, panel headers —
+    /// that must keep responding while a dropdown/popup/modal is open
+    /// elsewhere on screen. Defaults to `false` everywhere else.
+    chrome: bool,
 }
 
 /// A scoped input region that manages widgets within a bounded screen area.
@@ -163,6 +169,7 @@ impl InputCoordinator {
                 id: LayerId::main(),
                 z_order: 0,
                 modal: false,
+                chrome: false,
             }],
             widget_state: WidgetInputState::new(),
             input: InputState::new(),
@@ -208,6 +215,7 @@ impl InputCoordinator {
             id: LayerId::main(),
             z_order: 0,
             modal: false,
+            chrome: false,
         });
         self.input = input.clone();
         self.frame += 1;
@@ -260,6 +268,7 @@ impl InputCoordinator {
             id: LayerId::main(),
             z_order: 0,
             modal: false,
+            chrome: false,
         });
         self.frame += 1;
         self.text_fields.begin_frame();
@@ -456,9 +465,22 @@ impl InputCoordinator {
         self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())
     }
 
-    /// Push a new layer (for modals/popups)
+    /// Push a new layer (for modals/popups). Chrome defaults to `false` —
+    /// use [`Self::push_layer_ex`] to mark a layer as application chrome
+    /// that must keep responding underneath an active modal.
     pub fn push_layer(&mut self, id: LayerId, z_order: u32, modal: bool) {
-        self.layers.push(Layer { id, z_order, modal });
+        self.push_layer_ex(id, z_order, modal, false);
+    }
+
+    /// Push a new layer with an explicit `chrome` flag.
+    ///
+    /// A `chrome` layer stays hit-testable even when a modal layer sits
+    /// above it — use this for persistent application UI (toolbar, sidebar,
+    /// panel headers) that must keep responding while a dropdown, popup, or
+    /// modal is open elsewhere on screen. Non-chrome layers underneath an
+    /// active modal stay blocked exactly as [`Self::push_layer`] today.
+    pub fn push_layer_ex(&mut self, id: LayerId, z_order: u32, modal: bool, chrome: bool) {
+        self.layers.push(Layer { id, z_order, modal, chrome });
     }
 
     /// Pop a layer — no-op, layers persist until begin_frame clears them.
@@ -664,7 +686,17 @@ impl InputCoordinator {
         let mut sorted_layers = self.layers.clone();
         sorted_layers.sort_by(|a, b| b.z_order.cmp(&a.z_order));
 
+        // Once a modal layer has been crossed with no match, only layers
+        // flagged `chrome` remain reachable for the rest of the scan —
+        // everything else sits behind the modal barrier and is skipped
+        // outright (not even hit-tested).
+        let mut behind_modal = false;
+
         for layer in &sorted_layers {
+            if behind_modal && !layer.chrome {
+                continue;
+            }
+
             // Walk widgets in this layer in REVERSE registration order
             // (last-registered = on top) and return the first one that
             // contains the point AND satisfies the sense filter.
@@ -681,12 +713,14 @@ impl InputCoordinator {
                 return matched;
             }
 
-            // If this layer is modal, it blocks all lower layers
-            // regardless of whether anything was hit on it. Modals create
-            // a global barrier — events on/around the modal must not
-            // bleed through to lower layers.
+            // If this layer is modal, it blocks all lower non-chrome
+            // layers regardless of whether anything was hit on it. Modals
+            // create a barrier — events on/around the modal must not bleed
+            // through to lower layers, except layers explicitly marked
+            // `chrome` (e.g. toolbar/sidebar), which stay reachable
+            // underneath any modal.
             if layer.modal {
-                return None;
+                behind_modal = true;
             }
         }
         None
@@ -975,10 +1009,26 @@ impl InputCoordinator {
 
     /// Internal: hit-test at `(x, y)` with scoped-region + modal logic, filtered by sense.
     ///
-    /// Scoped regions are checked in reverse registration order (last = top) before
-    /// falling through to the global coordinator.  A global modal layer skips all
-    /// scoped regions.  The `filter` closure is applied to the widget's `Sense` —
-    /// only widgets where `filter(&sense)` returns `true` are returned.
+    /// When no modal layer is active, scoped regions are checked in reverse
+    /// registration order (last = top) and take priority over the global
+    /// coordinator — unchanged from before.
+    ///
+    /// When a modal layer IS active, the global, modal-barrier-aware
+    /// [`Self::hit_test_at_filtered`] is tried first. It already knows how
+    /// to let a hit on the modal layer itself, on a layer above it, or on a
+    /// `chrome`-flagged layer beneath it through, and blocks everything
+    /// else — so any `Some` it returns is authoritative and wins over a
+    /// scoped region. Only when it returns `None` are scoped regions still
+    /// tried, as a fallback, so chrome panels implemented as regions (e.g. a
+    /// chart toolbar pushed via [`Self::push_scoped_region`]) keep
+    /// responding while a dropdown/popup/modal is open elsewhere, instead of
+    /// freezing wholesale. `ScopedRegion` itself carries no z-order (just
+    /// `rect` / `coordinator` / `id`), so this fallback cannot prove a
+    /// region sits above or below the modal — see the caveat on
+    /// [`Self::process_click`].
+    ///
+    /// The `filter` closure is applied to the widget's `Sense` — only
+    /// widgets where `filter(&sense)` returns `true` are returned.
     fn hit_test_with_sense(
         &self,
         x: f64,
@@ -996,12 +1046,37 @@ impl InputCoordinator {
                     }
                 }
             }
+            // Use sense-aware hit-test so widgets stacked above a non-matching
+            // widget on the same layer don't accidentally swallow the event.
+            return self.hit_test_at_filtered(x, y, filter).map(|w| w.id.clone());
         }
 
-        // Use sense-aware hit-test so widgets stacked above a non-matching
-        // widget on the same layer don't accidentally swallow the event.
-        self.hit_test_at_filtered(x, y, filter)
-            .map(|w| w.id.clone())
+        // A modal is active somewhere: the global, modal-aware hit-test is
+        // authoritative whenever it resolves to anything at all.
+        if let Some(widget) = self.hit_test_at_filtered(x, y, filter) {
+            return Some(widget.id.clone());
+        }
+
+        // Nothing reachable in the global layer stack. Still try scoped
+        // regions rather than wholesale-skipping them just because a modal
+        // exists somewhere — that was the original bug (every scoped-region
+        // chrome panel froze for as long as any dropdown/popup/modal was
+        // open anywhere on screen).
+        //
+        // KNOWN GAP: because `ScopedRegion` carries no z-order, a region
+        // whose rect happens to be visually covered by the modal — but has
+        // no competing widget of its own at this exact point — is still
+        // reachable here. The modal barrier cannot "win" against a region it
+        // has no positional relationship with.
+        for region in self.scoped_regions.iter().rev() {
+            if region.contains(x, y) {
+                let (lx, ly) = region.to_local(x, y);
+                if let Some(local_id) = region.coordinator.hit_test_with_sense(lx, ly, filter) {
+                    return Some(region.prefix_id(&local_id));
+                }
+            }
+        }
+        None
     }
 
     /// Process a click at `(x, y)` against registered widgets.
@@ -1015,8 +1090,14 @@ impl InputCoordinator {
     /// inside a scoped region but no widget inside it is hit, the search falls
     /// through to the global coordinator so chart-canvas clicks are not swallowed.
     ///
-    /// If a global modal layer is active, scoped regions are **skipped** (the
-    /// modal blocks everything below it).
+    /// If a global modal layer is active, the modal-aware global hit-test runs
+    /// FIRST and wins whenever it resolves to anything (the modal's own
+    /// widgets, a layer above it, or a `chrome`-flagged layer beneath it).
+    /// Scoped regions are only tried as a fallback when that yields nothing,
+    /// so a scoped-region chrome panel is not frozen by an unrelated modal —
+    /// see [`Self::hit_test_with_sense`] for the known gap this leaves (a
+    /// region has no z-order, so it cannot be proven to sit below a modal
+    /// that visually covers it).
     pub fn process_click(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.click)
     }
@@ -1070,38 +1151,70 @@ impl InputCoordinator {
     /// Hit-tests for a `sense.drag` widget at the given position.  If found,
     /// calls `widget_state.start_drag` to initiate drag tracking and returns
     /// the widget ID.  Returns `None` when no draggable widget is at that point.
+    ///
+    /// Applies the same scoped-region and modal ordering as
+    /// [`Self::hit_test_with_sense`] (which backs `process_click` et al.) so
+    /// a drag cannot start on a widget the click path considers blocked, or
+    /// vice versa: when no modal is active, scoped regions are tried first,
+    /// same as before; when a modal IS active, the global modal-aware hit
+    /// test runs FIRST and wins whenever it resolves to anything, and scoped
+    /// regions are only tried as a fallback when it returns `None` — see
+    /// `hit_test_with_sense` for the known gap this leaves. This method
+    /// duplicates that ordering (rather than calling `hit_test_with_sense`
+    /// directly) because it also has to mutate drag state (`start_drag`),
+    /// which needs `&mut self`.
     pub fn process_drag_start(&mut self, x: f64, y: f64) -> Option<WidgetId> {
         // Build the scoped-region + modal + sense logic inline (needs &mut self).
         let has_modal = self.layers.iter().any(|l| l.modal);
 
-        let widget_id = if !has_modal {
-            let mut scoped_result: Option<WidgetId> = None;
+        if !has_modal {
             for region in self.scoped_regions.iter_mut().rev() {
                 if region.contains(x, y) {
                     let (lx, ly) = region.to_local(x, y);
                     if let Some(local_id) = region.coordinator.process_drag_start(lx, ly) {
-                        scoped_result = Some(region.prefix_id(&local_id));
-                        break;
+                        return Some(region.prefix_id(&local_id));
                     }
                 }
             }
-            scoped_result
-        } else {
-            None
-        };
-
-        if widget_id.is_some() {
-            return widget_id;
+            // Fall back to global hit test — find topmost widget WITH drag sense
+            // (sense-aware so a non-draggable widget on top doesn't shadow a
+            // draggable widget below it on the same layer).
+            let id = self
+                .hit_test_at_filtered(x, y, &|s| s.drag)
+                .map(|w| w.id.clone())?;
+            self.widget_state.start_drag(id.clone(), x, y);
+            return Some(id);
         }
 
-        // Fall back to global hit test — find topmost widget WITH drag sense
-        // (sense-aware so a non-draggable widget on top doesn't shadow a
-        // draggable widget below it on the same layer).
-        let id = self
+        // A modal is active somewhere: the global, modal-aware hit-test is
+        // authoritative whenever it resolves to anything at all.
+        if let Some(id) = self
             .hit_test_at_filtered(x, y, &|s| s.drag)
-            .map(|w| w.id.clone())?;
-        self.widget_state.start_drag(id.clone(), x, y);
-        Some(id)
+            .map(|w| w.id.clone())
+        {
+            self.widget_state.start_drag(id.clone(), x, y);
+            return Some(id);
+        }
+
+        // Nothing reachable in the global layer stack. Still try scoped
+        // regions rather than wholesale-skipping them just because a modal
+        // exists somewhere — that was the original bug (every scoped-region
+        // chrome panel froze for as long as any dropdown/popup/modal was
+        // open anywhere on screen).
+        //
+        // KNOWN GAP: same caveat as `hit_test_with_sense` — `ScopedRegion`
+        // carries no z-order, so a region visually covered by the modal but
+        // with no competing widget of its own at this exact point is still
+        // reachable here.
+        for region in self.scoped_regions.iter_mut().rev() {
+            if region.contains(x, y) {
+                let (lx, ly) = region.to_local(x, y);
+                if let Some(local_id) = region.coordinator.process_drag_start(lx, ly) {
+                    return Some(region.prefix_id(&local_id));
+                }
+            }
+        }
+        None
     }
 
     /// Update an in-progress drag to `(x, y)`.
