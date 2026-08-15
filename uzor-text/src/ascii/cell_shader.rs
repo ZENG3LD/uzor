@@ -131,6 +131,20 @@ impl AsciiGrid {
         self.buffer[y * self.cols + x]
     }
 
+    /// Visit every cell. This is the terminal hook: a TUI shell maps
+    /// `(x, y, Cell)` onto its own buffer. `render` (RenderContext /
+    /// fill_text) stays the pixel/proof path and is not used there.
+    pub fn for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(usize, usize, Cell),
+    {
+        for y in 0..self.rows {
+            for x in 0..self.cols {
+                f(x, y, self.cell(x, y));
+            }
+        }
+    }
+
     /// Draw the buffer into a `cols*cell_w × rows*cell_h` box at `(ox, oy)`.
     ///
     /// Hot path — avoids per-cell heap allocs (stack utf8 buffer for the glyph,

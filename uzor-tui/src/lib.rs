@@ -18,6 +18,8 @@ pub mod border;
 pub mod widget;
 pub mod table;
 pub mod frame;
+#[cfg(feature = "ascii")]
+pub mod ascii;
 
 pub use style::{Color, Modifier, Style};
 pub use cell::Cell;
@@ -34,3 +36,5 @@ pub use border::{BorderType, BorderChars, Borders, render_border, render_border_
 pub use widget::{Widget, StatefulWidget, Block, Paragraph, List, ListState, Tabs, StatusBar};
 pub use table::{Clear, Row, Table, TableCell};
 pub use frame::{Frame, Terminal, TestBackend};
+#[cfg(feature = "ascii")]
+pub use ascii::blit_ascii_grid;

@@ -8,9 +8,15 @@ homepage.workspace = true
 description = "Standalone TUI framework for uzor — cell-buffer rendering, widgets, layout, crossterm backend"
 readme = "../README.md"
 
+[features]
+default = []
+# AsciiGrid → TerminalBuffer. Optional: uzor-text pulls the uzor kernel + shaper.
+ascii = ["dep:uzor-text"]
+
 [dependencies]
 crossterm = "0.28"
 bitflags = "2"
 vt100 = "0.16"
 unicode-width = "0.2"
 compact_str = "0.8"
+uzor-text = { path = "../uzor-text", optional = true }
