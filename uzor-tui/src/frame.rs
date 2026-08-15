@@ -37,9 +37,13 @@ pub struct Terminal<B: Backend> {
 impl<B: Backend> Terminal<B> {
     pub fn new(backend: B) -> io::Result<Self> {
         let (w, h) = backend.size()?;
-        Ok(Self {
+        let mut term = Self {
             screen: Screen::new(backend, w.max(1), h.max(1)),
-        })
+        };
+        // Ratatui hid the caret on enter. This shell is display-first;
+        // a blinking block in a table is not an input caret.
+        term.screen.backend_mut().hide_cursor()?;
+        Ok(term)
     }
 
     pub fn draw<F>(&mut self, f: F) -> io::Result<()>
@@ -48,6 +52,7 @@ impl<B: Backend> Terminal<B> {
     {
         let (w, h) = self.screen.backend().size()?;
         self.screen.resize(w.max(1), h.max(1));
+        let _ = self.screen.backend_mut().hide_cursor();
         self.screen.buffer_mut().clear();
         let area = Rect::new(0, 0, w.max(1), h.max(1));
         {
@@ -69,6 +74,12 @@ impl<B: Backend> Terminal<B> {
     /// Last flushed cell grid.
     pub fn current_buffer(&self) -> &TerminalBuffer {
         self.screen.current()
+    }
+}
+
+impl<B: Backend> Drop for Terminal<B> {
+    fn drop(&mut self) {
+        let _ = self.screen.backend_mut().show_cursor();
     }
 }
 

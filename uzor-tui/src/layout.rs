@@ -180,7 +180,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[test]
     fn test_split_length_alias() {
         let area = Rect::new(0, 0, 80, 10);
         let rects = split(area, Direction::Horizontal, &[
