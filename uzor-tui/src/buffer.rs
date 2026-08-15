@@ -132,6 +132,29 @@ impl TerminalBuffer {
         }
     }
 
+    pub fn area(&self) -> crate::rect::Rect {
+        crate::rect::Rect::new(0, 0, self.width, self.height)
+    }
+
+    /// Copy `src` into `dest`, starting at source offset `(ox, oy)`.
+    pub fn blit(&mut self, dest: crate::rect::Rect, src: &TerminalBuffer, ox: u16, oy: u16) {
+        for y in 0..dest.height {
+            for x in 0..dest.width {
+                let sx = ox.saturating_add(x);
+                let sy = oy.saturating_add(y);
+                let dx = dest.x.saturating_add(x);
+                let dy = dest.y.saturating_add(y);
+                if sx >= src.width || sy >= src.height {
+                    continue;
+                }
+                if dx >= self.width || dy >= self.height {
+                    continue;
+                }
+                self.set(dx, dy, src.get(sx, sy).clone());
+            }
+        }
+    }
+
     /// Mark every row dirty, forcing the next `diff()` to scan all rows.
     ///
     /// Useful for a forced full redraw (e.g. after the terminal is

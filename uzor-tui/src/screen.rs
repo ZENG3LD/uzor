@@ -44,6 +44,11 @@ impl<B: Backend> Screen<B> {
         &self.next
     }
 
+    /// Buffer last flushed to the terminal.
+    pub fn current(&self) -> &TerminalBuffer {
+        &self.current
+    }
+
     /// Get the backend.
     pub fn backend(&self) -> &B {
         &self.backend

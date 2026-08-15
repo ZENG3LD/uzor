@@ -16,6 +16,14 @@ pub enum Color {
     Magenta,
     Cyan,
     White,
+    Gray,
+    DarkGray,
+    LightRed,
+    LightGreen,
+    LightYellow,
+    LightBlue,
+    LightMagenta,
+    LightCyan,
     /// Indexed color (0-255).
     Indexed(u8),
     /// RGB color.

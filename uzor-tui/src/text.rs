@@ -55,9 +55,27 @@ impl Line {
     }
 }
 
-impl<S: Into<String>> From<S> for Line {
-    fn from(s: S) -> Self {
+impl From<&str> for Line {
+    fn from(s: &str) -> Self {
         Self::raw(s)
+    }
+}
+
+impl From<String> for Line {
+    fn from(s: String) -> Self {
+        Self::raw(s)
+    }
+}
+
+impl From<Span> for Line {
+    fn from(span: Span) -> Self {
+        Self { spans: vec![span] }
+    }
+}
+
+impl From<Vec<Span>> for Line {
+    fn from(spans: Vec<Span>) -> Self {
+        Self { spans }
     }
 }
 

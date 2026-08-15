@@ -429,6 +429,26 @@ impl From<String> for Text {
     }
 }
 
+impl From<Line> for Text {
+    fn from(line: Line) -> Self {
+        Text { lines: vec![line] }
+    }
+}
+
+impl From<Span> for Text {
+    fn from(span: Span) -> Self {
+        Text {
+            lines: vec![Line::from(span)],
+        }
+    }
+}
+
+impl From<Vec<Line>> for Text {
+    fn from(lines: Vec<Line>) -> Self {
+        Text { lines }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // List + ListState
 // ---------------------------------------------------------------------------

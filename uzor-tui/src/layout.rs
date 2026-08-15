@@ -14,6 +14,8 @@ pub enum Direction {
 pub enum Constraint {
     /// Fixed number of cells.
     Fixed(u16),
+    /// Alias of `Fixed` — ratatui `Constraint::Length`.
+    Length(u16),
     /// Percentage of available space (0-100).
     Percentage(u16),
     /// Minimum number of cells (fills remaining space, at least this much).
@@ -22,6 +24,41 @@ pub enum Constraint {
     Max(u16),
     /// Proportional share: num/den of available space.
     Ratio(u16, u16),
+}
+
+/// Builder matching ratatui `Layout::default().direction().constraints().split()`.
+#[derive(Debug, Clone)]
+pub struct Layout {
+    direction: Direction,
+    constraints: Vec<Constraint>,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            direction: Direction::Vertical,
+            constraints: Vec::new(),
+        }
+    }
+}
+
+impl Layout {
+    pub fn direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
+    }
+
+    pub fn constraints<I>(mut self, constraints: I) -> Self
+    where
+        I: IntoIterator<Item = Constraint>,
+    {
+        self.constraints = constraints.into_iter().collect();
+        self
+    }
+
+    pub fn split(&self, area: Rect) -> Vec<Rect> {
+        split(area, self.direction, &self.constraints)
+    }
 }
 
 /// Split a rect into sub-rects according to constraints.
@@ -45,7 +82,7 @@ pub fn split(area: Rect, direction: Direction, constraints: &[Constraint]) -> Ve
 
     for (i, c) in constraints.iter().enumerate() {
         match c {
-            Constraint::Fixed(n) => {
+            Constraint::Fixed(n) | Constraint::Length(n) => {
                 let s = (*n as u32).min(total.saturating_sub(used));
                 sizes[i] = Some(s);
                 used += s;
@@ -141,6 +178,18 @@ pub fn split_equal(area: Rect, direction: Direction, n: u16) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[test]
+    fn test_split_length_alias() {
+        let area = Rect::new(0, 0, 80, 10);
+        let rects = split(area, Direction::Horizontal, &[
+            Constraint::Length(20),
+            Constraint::Min(0),
+        ]);
+        assert_eq!(rects[0].width, 20);
+        assert_eq!(rects[1].width, 60);
+    }
 
     #[test]
     fn test_split_fixed() {
