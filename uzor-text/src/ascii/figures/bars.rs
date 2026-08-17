@@ -1,6 +1,6 @@
-//! Categorical bars. Framed plot, one hue per column. Hover = scan band.
+//! Categorical bars. Framed plot, one hue per column. Fill is an aurora field.
 
-use super::{empty, fx_scan, plot_frame, tofu, Play};
+use super::{empty, fx_aurora, plot_frame, tofu, Play};
 use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Bars<'a> {
@@ -46,13 +46,14 @@ impl CellShader for Bars<'_> {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let hue = 18.0 + i as f64 * (280.0 / n.max(1) as f64);
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        if hover && (t > 0.0 || cursor.intensity > 0.05) && fx_scan(from_bottom, ctx.time) {
-            tofu(true, hue, 0.68)
+        let base = 18.0 + i as f64 * (280.0 / n.max(1) as f64);
+        let t = if hover {
+            ctx.time
         } else {
-            let lit = 0.34 + 0.22 * (from_bottom as f64 / h.max(1) as f64);
-            tofu(false, hue, lit)
-        }
+            self.play.motion(ctx.time, cursor.intensity)
+        };
+        let speed = if hover { 1.6 } else { 0.7 };
+        let (hue, lit) = fx_aurora(col as f64, row as f64, t * speed, base);
+        tofu(false, hue, if hover { (lit + 0.08).min(0.72) } else { lit })
     }
 }

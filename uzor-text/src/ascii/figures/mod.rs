@@ -114,10 +114,23 @@ fn mix_tick(i: usize, tick: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-fn fx_matrix(index: usize, t: f64) -> Cell {
+fn fx_matrix(index: usize, t: f64, hue: f64, lit: f64) -> Cell {
     let tick = (t * 14.0).floor() as u64;
     let ch = MATRIX[(mix_tick(index, tick) as usize) % MATRIX.len()];
-    ink(ch, false, 140.0, 0.52)
+    ink(ch, false, hue, lit)
+}
+
+fn fx_aurora(x: f64, y: f64, t: f64, base_hue: f64) -> (f64, f64) {
+    let fx = x * 0.18;
+    let fy = y * 0.16;
+    let p = (fx + t * 1.0).sin()
+        + (fy - t * 0.85).sin()
+        + (fx * 0.6 + fy * 0.9 + t * 0.7).sin()
+        + ((fx * fx + fy * fy).sqrt() * 0.6 - t * 1.1).sin();
+    let v = (p * 0.125 + 0.5).clamp(0.0, 1.0);
+    let hue = (base_hue + p * 28.0).rem_euclid(360.0);
+    let lit = 0.30 + 0.38 * v;
+    (hue, lit)
 }
 
 fn fx_scan(from_bottom: usize, t: f64) -> bool {
