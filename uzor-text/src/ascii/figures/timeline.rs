@@ -52,7 +52,10 @@ impl CellShader for Timeline<'_> {
                 && (cursor.y as usize) == mid
                 && (cursor.x as usize) >= lo
                 && (cursor.x as usize) <= hi;
-            return tofu(hover, 25.0 + i as f64 * 18.0, 0.48);
+            if hover {
+                return tofu(false, super::fx_iris(ctx.time, i as f64), 0.56);
+            }
+            return tofu(false, 25.0 + i as f64 * 18.0, 0.48);
         }
         empty()
     }

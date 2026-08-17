@@ -13,8 +13,8 @@ impl CellShader for Scatter<'_> {
         if self.pts.len() < 2 || ctx.cols < 6 || ctx.rows < 4 {
             return empty();
         }
-        if coord.y == 0 || coord.y + 1 == ctx.rows || coord.x == 0 || coord.x + 1 == ctx.cols {
-            return empty();
+        if let Some(frame) = super::plot_frame(coord, ctx) {
+            return frame;
         }
         let (xmin, xmax, ymin, ymax) = bounds(self.pts);
         let iw = ctx.cols.saturating_sub(2).max(1) as f64;
@@ -37,7 +37,12 @@ impl CellShader for Scatter<'_> {
         let hover = cursor.inside
             && (cursor.x - coord.x as f64).abs() < 1.4
             && (cursor.y - coord.y as f64).abs() < 1.4;
-        tofu(hover, 175.0, 0.50)
+        if hover {
+            let d = (cursor.x - coord.x as f64).hypot(cursor.y - coord.y as f64);
+            tofu(false, 175.0, super::fx_ripple(d, ctx.time))
+        } else {
+            tofu(false, 175.0, 0.50)
+        }
     }
 }
 

@@ -23,8 +23,8 @@ impl CellShader for Boxplot<'_> {
         if self.groups.is_empty() || ctx.cols < 6 || ctx.rows < 5 {
             return empty();
         }
-        if coord.y == 0 || coord.y + 1 == ctx.rows || coord.x == 0 || coord.x + 1 == ctx.cols {
-            return empty();
+        if let Some(frame) = super::plot_frame(coord, ctx) {
+            return frame;
         }
         let n = self.groups.len();
         let inner_w = ctx.cols.saturating_sub(2).max(1);

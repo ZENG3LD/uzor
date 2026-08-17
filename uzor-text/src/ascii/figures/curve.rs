@@ -13,8 +13,8 @@ impl CellShader for Curve<'_> {
         if self.ys.len() < 2 || ctx.cols < 4 || ctx.rows < 3 {
             return empty();
         }
-        if coord.y == 0 || coord.y + 1 == ctx.rows || coord.x == 0 || coord.x + 1 == ctx.cols {
-            return empty();
+        if let Some(frame) = super::plot_frame(coord, ctx) {
+            return frame;
         }
         let inner_w = ctx.cols.saturating_sub(2).max(1);
         let inner_h = ctx.rows.saturating_sub(2).max(1);

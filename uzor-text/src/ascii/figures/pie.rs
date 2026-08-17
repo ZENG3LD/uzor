@@ -42,7 +42,11 @@ impl CellShader for Pie<'_> {
         } else {
             false
         };
-        tofu(hover, 30.0 + idx as f64 * 48.0, 0.40)
+        if hover {
+            tofu(false, super::fx_iris(ctx.time, idx as f64), 0.56)
+        } else {
+            tofu(false, 30.0 + idx as f64 * 48.0, 0.40)
+        }
     }
 }
 

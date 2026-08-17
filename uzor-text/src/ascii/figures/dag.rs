@@ -73,7 +73,8 @@ impl CellShader for Dag<'_> {
                 continue;
             };
             let hot = hovered == Some(e.from) || hovered == Some(e.to);
-            return ink(ch, hot, 200.0, 0.45);
+            let pulse = hot && (coord.x as f64 * 0.35 + ctx.time * 8.0).sin() > 0.15;
+            return ink(ch, pulse, 200.0, if hot { 0.58 } else { 0.45 });
         }
         empty()
     }

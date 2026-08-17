@@ -37,7 +37,7 @@ pub use scatter::Scatter;
 pub use timeline::{Timeline, TlEvent};
 pub use waterfall::{Waterfall, WfItem, WfKind};
 
-use super::Cell;
+use super::{Cell, Coord, GridContext};
 
 /// How time and cursor drive the figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +98,62 @@ fn ink(ch: char, hover: bool, hue: f64, lit: f64) -> Cell {
         alpha: 1.0,
         scale: 1.0,
     }
+}
+
+const MATRIX: &[char] = &[
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'ｱ', 'ｲ', 'ｳ', 'ｴ', 'ｵ', 'ｶ', 'ｷ',
+    'ｸ', 'ｹ', 'ｺ', 'ｻ', 'ｼ', 'ｽ', 'ｾ', 'ｿ',
+];
+
+fn mix_tick(i: usize, tick: u64) -> u64 {
+    let mut x = tick
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add((i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    x ^= x >> 32;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+fn fx_matrix(index: usize, t: f64) -> Cell {
+    let tick = (t * 14.0).floor() as u64;
+    let ch = MATRIX[(mix_tick(index, tick) as usize) % MATRIX.len()];
+    ink(ch, false, 140.0, 0.52)
+}
+
+fn fx_scan(from_bottom: usize, t: f64) -> bool {
+    let band = ((t * 7.0).rem_euclid(6.0)) as usize;
+    from_bottom % 6 == band
+}
+
+fn fx_iris(t: f64, seed: f64) -> f64 {
+    (t * 90.0 + seed * 40.0).rem_euclid(360.0)
+}
+
+fn fx_ripple(dist: f64, t: f64) -> f64 {
+    0.36 + 0.28 * ((dist * 1.1 - t * 7.0).sin() * 0.5 + 0.5)
+}
+
+fn plot_frame(coord: Coord, ctx: &GridContext) -> Option<Cell> {
+    let last_x = ctx.cols.saturating_sub(1);
+    let last_y = ctx.rows.saturating_sub(1);
+    if coord.x > 0 && coord.x < last_x && coord.y > 0 && coord.y < last_y {
+        return None;
+    }
+    let ch = match (
+        coord.x == 0,
+        coord.x == last_x,
+        coord.y == 0,
+        coord.y == last_y,
+    ) {
+        (true, _, true, _) => '┌',
+        (_, true, true, _) => '┐',
+        (true, _, _, true) => '└',
+        (_, true, _, true) => '┘',
+        (_, _, true, _) | (_, _, _, true) => '─',
+        (true, _, _, _) | (_, true, _, _) => '│',
+        _ => return None,
+    };
+    Some(ink(ch, false, 220.0, 0.34))
 }
 
 fn line_glyph(dx: i32, dy: i32) -> char {

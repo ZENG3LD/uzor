@@ -1,6 +1,6 @@
-//! Regular grid. Every cell is tofu; value is color. Hover recolors.
+//! Regular grid. Tofu cells; the brush under the cursor rains matrix glyphs.
 
-use super::{empty, tofu, Play};
+use super::{empty, fx_matrix, tofu, Play};
 use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Heatmap<'a> {
@@ -25,9 +25,15 @@ impl CellShader for Heatmap<'_> {
         let i = cy * self.cols + cx;
         let v = self.cells.get(i).copied().unwrap_or(0.0).clamp(0.0, 1.0);
         let _ = self.play.motion(ctx.time, cursor.intensity);
-        let hover = cursor.inside
-            && (cursor.x as usize / cw) == cx
-            && (cursor.y as usize / rh) == cy;
-        tofu(hover, 220.0 - 180.0 * v, 0.28 + 0.38 * v)
+        let near = cursor.inside && {
+            let hx = (cursor.x as usize / cw).min(self.cols.saturating_sub(1));
+            let hy = (cursor.y as usize / rh).min(self.rows.saturating_sub(1));
+            cx.abs_diff(hx) + cy.abs_diff(hy) <= 1
+        };
+        if near {
+            fx_matrix(i.wrapping_add(coord.index), ctx.time)
+        } else {
+            tofu(false, 220.0 - 180.0 * v, 0.28 + 0.38 * v)
+        }
     }
 }

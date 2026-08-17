@@ -25,8 +25,8 @@ impl CellShader for Waterfall<'_> {
         if self.items.is_empty() || ctx.cols < 6 || ctx.rows < 4 {
             return empty();
         }
-        if coord.y == 0 || coord.y + 1 == ctx.rows || coord.x == 0 || coord.x + 1 == ctx.cols {
-            return empty();
+        if let Some(frame) = super::plot_frame(coord, ctx) {
+            return frame;
         }
         let n = self.items.len();
         let inner_w = ctx.cols.saturating_sub(2).max(1);
@@ -73,7 +73,11 @@ impl CellShader for Waterfall<'_> {
         } else {
             8.0
         };
-        tofu(hover, hue, 0.42)
+        if hover && super::fx_scan((inner_h - 1 - row) as usize, ctx.time) {
+            tofu(true, hue, 0.68)
+        } else {
+            tofu(false, hue, 0.42)
+        }
     }
 }
 
