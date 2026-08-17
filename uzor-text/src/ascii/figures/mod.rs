@@ -120,17 +120,21 @@ fn fx_matrix(index: usize, t: f64, hue: f64, lit: f64) -> Cell {
     ink(ch, false, hue, lit)
 }
 
-fn fx_aurora(x: f64, y: f64, t: f64, base_hue: f64) -> (f64, f64) {
-    let fx = x * 0.18;
-    let fy = y * 0.16;
-    let p = (fx + t * 1.0).sin()
-        + (fy - t * 0.85).sin()
-        + (fx * 0.6 + fy * 0.9 + t * 0.7).sin()
-        + ((fx * fx + fy * fy).sqrt() * 0.6 - t * 1.1).sin();
-    let v = (p * 0.125 + 0.5).clamp(0.0, 1.0);
-    let hue = (base_hue + p * 28.0).rem_euclid(360.0);
-    let lit = 0.30 + 0.38 * v;
-    (hue, lit)
+fn fx_plasma(x: f64, y: f64, t: f64) -> Cell {
+    use crate::ascii::{density_char, hsl};
+    let px = x * 0.14;
+    let py = y * 0.11;
+    let p = (px + t * 1.3).sin()
+        + (py - t * 0.9).sin()
+        + ((px + py) * 0.5 + t * 0.7).sin()
+        + ((px * px + py * py).sqrt() * 0.35 - t).sin();
+    let v = (p * 0.125 + 0.5).clamp(0.12, 1.0);
+    Cell {
+        ch: density_char(v),
+        color: hsl((p * 40.0 + t * 70.0).rem_euclid(360.0), 0.7, 0.28 + 0.4 * v),
+        alpha: 1.0,
+        scale: 1.0,
+    }
 }
 
 fn fx_scan(from_bottom: usize, t: f64) -> bool {

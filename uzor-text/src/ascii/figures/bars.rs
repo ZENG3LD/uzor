@@ -1,6 +1,6 @@
-//! Categorical bars. Framed plot, one hue per column. Fill is an aurora field.
+//! Categorical bars. Idle tofu. The hovered column becomes a plasma field.
 
-use super::{empty, fx_aurora, plot_frame, tofu, Play};
+use super::{empty, fx_plasma, plot_frame, tofu, Play};
 use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Bars<'a> {
@@ -46,14 +46,12 @@ impl CellShader for Bars<'_> {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let base = 18.0 + i as f64 * (280.0 / n.max(1) as f64);
-        let t = if hover {
-            ctx.time
+        let hue = 18.0 + i as f64 * (280.0 / n.max(1) as f64);
+        let _ = self.play;
+        if hover {
+            fx_plasma(coord.x as f64, coord.y as f64, ctx.time)
         } else {
-            self.play.motion(ctx.time, cursor.intensity)
-        };
-        let speed = if hover { 1.6 } else { 0.7 };
-        let (hue, lit) = fx_aurora(col as f64, row as f64, t * speed, base);
-        tofu(false, hue, if hover { (lit + 0.08).min(0.72) } else { lit })
+            tofu(false, hue, 0.42)
+        }
     }
 }
