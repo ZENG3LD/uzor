@@ -19,4 +19,4 @@ bitflags = "2"
 vt100 = "0.16"
 unicode-width = "0.2"
 compact_str = "0.8"
-uzor-text = { path = "../uzor-text", optional = true }
+uzor-text = { workspace = true, optional = true }

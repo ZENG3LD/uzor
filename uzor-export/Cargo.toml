@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Headless render-to-file for uzor — render draw code into a PNG at a chosen resolution, no window/GPU dependency."
-publish = false
 
 [dependencies]
 # `shaper` (cosmic-text) is required directly by `pdf::render_context::

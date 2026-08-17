@@ -9,7 +9,7 @@ description = "Reusable force-directed graph visualization engine for uzor — g
 
 [dependencies]
 uzor = { workspace = true }
-uzor-figures = { path = "../uzor-figures" }
+uzor-figures = { workspace = true }
 uzor-urx-3d = { workspace = true }
 glam = "0.29"
 serde_json = "1"
@@ -23,8 +23,8 @@ serde_json = "1"
 wgpu = "29"
 
 [dev-dependencies]
-uzor-export = { path = "../uzor-export" }
-uzor-proof-harness = { path = "../uzor-proof-harness" }
+uzor-export = { workspace = true }
+uzor-proof-harness = { workspace = true }
 png = "0.17"
 # W3D Wave 2 headless GPU test (`tests/render3d_gpu.rs`) — own
 # `wgpu::Instance`/`Device`, mirrors `uzor-urx-3d/tests/cube_render.rs`'s

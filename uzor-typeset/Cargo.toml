@@ -6,13 +6,12 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Typographic composition + slicing engine for uzor — flows a scene of blocks through regions (compose) and slices composed frames into pages | slides | frames (Arc 4). Phase P0+P1+P2: scene model + compose + page-slicing, figures/images/tables/lists + keep/break control, masters/placeholders/themes."
-publish = false
 
 [dependencies]
 uzor = { workspace = true }
-uzor-text = { path = "../uzor-text" }
-uzor-figures = { path = "../uzor-figures" }
-uzor-export = { path = "../uzor-export" }
+uzor-text = { workspace = true }
+uzor-figures = { workspace = true }
+uzor-export = { workspace = true }
 
 [dev-dependencies]
 png = "0.17"

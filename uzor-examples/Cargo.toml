@@ -24,9 +24,9 @@ uzor-urx-cpu          = { workspace = true }
 uzor-urx-glyph        = { workspace = true }
 uzor-urx-wgpu         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
-uzor-figures          = { path = "../uzor-figures" }
-uzor-text             = { path = "../uzor-text" }
-uzor-export           = { path = "../uzor-export" }
+uzor-figures          = { workspace = true }
+uzor-text             = { workspace = true }
+uzor-export           = { workspace = true }
 vello                 = "0.9"
 pollster              = "0.4"
 winit                 = "0.30"
