@@ -17,8 +17,13 @@
 //! phase, `AsciiGrid` only ever rendered SDF/bitmap-procedural content
 //! (`GlitchLetter`, `AuroraSkin`'s flow field, `RadarSkin`'s sweep), never
 //! real text.
+//!
+//! [`figures`] is the ASCII dataviz collection: bar / curve / heatmap / dag
+//! as [`CellShader`]s over borrowed slices. Play is still / live / arm
+//! (static until the cursor wakes it). No dependency on `uzor-figures`.
 
 mod cell_shader;
+pub mod figures;
 mod paragraph_shader;
 
 pub use cell_shader::{
