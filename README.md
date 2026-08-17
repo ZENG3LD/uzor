@@ -8,7 +8,7 @@
 
 UZOR is a low-level UI stack: it owns widget geometry, hit-testing, and a Canvas2D-style `RenderContext`. The app owns visuals and business logic.
 
-The workspace is one version (**1.5.0**). Every crate below publishes at that number.
+The workspace is one version (**1.5.1**). Every crate below publishes at that number.
 
 ## Crate map
 
