@@ -43,6 +43,9 @@ fn convert_cell(vc: &vt100::Cell) -> Cell {
     if vc.bold() {
         modifiers |= Modifier::BOLD;
     }
+    if vc.dim() {
+        modifiers |= Modifier::DIM;
+    }
     if vc.italic() {
         modifiers |= Modifier::ITALIC;
     }
@@ -139,5 +142,39 @@ mod tests {
 
         assert!(buf.get(0, 0).style.modifiers.contains(Modifier::BOLD));
         assert_eq!(buf.get(0, 0).symbol, "B");
+    }
+
+    #[test]
+    fn test_dim_text_to_buffer_and_intensity_reset() {
+        let mut parser = vt100::Parser::new(1, 2, 0);
+        parser.process(b"\x1b[2mD\x1b[22mN");
+        let mut buf = TerminalBuffer::new(2, 1);
+        vt100_to_buffer(parser.screen(), &mut buf);
+
+        assert_eq!(buf.get(0, 0).symbol, "D");
+        assert_eq!(buf.get(0, 0).style.modifiers, Modifier::DIM);
+        assert_eq!(buf.get(1, 0).symbol, "N");
+        assert_eq!(buf.get(1, 0).style.modifiers, Modifier::empty());
+    }
+
+    #[test]
+    fn test_supported_sgr_attributes_and_colors_remain_exact() {
+        let mut parser = vt100::Parser::new(1, 2, 0);
+        parser.process(b"\x1b[1;3;4;7;38;5;203;48;2;1;2;3mX\x1b[0mY");
+        let mut buf = TerminalBuffer::new(2, 1);
+        vt100_to_buffer(parser.screen(), &mut buf);
+
+        let styled = buf.get(0, 0);
+        assert_eq!(styled.symbol, "X");
+        assert_eq!(styled.style.fg, Color::Indexed(203));
+        assert_eq!(styled.style.bg, Color::Rgb(1, 2, 3));
+        assert_eq!(
+            styled.style.modifiers,
+            Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINE | Modifier::REVERSE
+        );
+
+        let reset = buf.get(1, 0);
+        assert_eq!(reset.symbol, "Y");
+        assert_eq!(reset.style, Style::default());
     }
 }
