@@ -40,13 +40,9 @@ impl CellShader for Histogram<'_> {
         if from_bottom >= h {
             return empty();
         }
-        let hover = cursor.inside && {
-            let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
-            hi == i
-        };
         let hue = 200.0 - i as f64 * (140.0 / n.max(1) as f64);
         let _ = self.play;
-        if hover {
+        if super::in_brush(coord, cursor, ctx.aspect, super::BRUSH) {
             fx_plasma(coord.x as f64, coord.y as f64, ctx.time)
         } else {
             tofu(false, hue, 0.42)

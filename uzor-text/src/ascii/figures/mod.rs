@@ -37,7 +37,7 @@ pub use scatter::Scatter;
 pub use timeline::{Timeline, TlEvent};
 pub use waterfall::{Waterfall, WfItem, WfKind};
 
-use super::{Cell, Coord, GridContext};
+use super::{Cell, Coord, Cursor, GridContext};
 
 /// How time and cursor drive the figure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +119,17 @@ fn fx_matrix(index: usize, t: f64, hue: f64, lit: f64) -> Cell {
     let ch = MATRIX[(mix_tick(index, tick) as usize) % MATRIX.len()];
     ink(ch, false, hue, lit)
 }
+
+fn in_brush(coord: Coord, cursor: &Cursor, aspect: f64, radius: f64) -> bool {
+    if !cursor.inside {
+        return false;
+    }
+    let dx = (coord.x as f64 + 0.5 - cursor.x) * aspect;
+    let dy = coord.y as f64 + 0.5 - cursor.y;
+    dx * dx + dy * dy <= radius * radius
+}
+
+const BRUSH: f64 = 2.6;
 
 fn fx_plasma(x: f64, y: f64, t: f64) -> Cell {
     use crate::ascii::{density_char, hsl};
