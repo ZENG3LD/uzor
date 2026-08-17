@@ -18,6 +18,7 @@ pub mod border;
 pub mod widget;
 pub mod table;
 pub mod frame;
+pub mod shell;
 #[cfg(feature = "ascii")]
 pub mod ascii;
 
@@ -36,5 +37,10 @@ pub use border::{BorderType, BorderChars, Borders, render_border, render_border_
 pub use widget::{Widget, StatefulWidget, Block, Paragraph, List, ListState, Tabs, StatusBar};
 pub use table::{Clear, Row, Table, TableCell};
 pub use frame::{Frame, Terminal, TestBackend};
+pub use shell::{
+    lookup, Card, CardButton, CardFooter, CardSkin, CardTab, CatalogEntry, ChromeKind, Command,
+    Event, FooterRule, Hit, HitLayer, Key, Keymap, Mouse, MouseKind, OverlayHost, ShellTheme,
+    CATALOG,
+};
 #[cfg(feature = "ascii")]
 pub use ascii::blit_ascii_grid;
