@@ -6,18 +6,36 @@
 //! hover-glitch chrome).
 
 mod bars;
+mod boxplot;
 mod curve;
 mod dag;
 mod demo;
 mod heatmap;
+mod histogram;
+mod kpi;
+mod pie;
+mod sankey;
+mod scatter;
+mod timeline;
+mod waterfall;
 
 pub use bars::Bars;
+pub use boxplot::{BoxStat, Boxplot};
 pub use curve::Curve;
 pub use dag::{Dag, DagEdge, DagNode};
 pub use demo::{
-    DEMO_BARS, DEMO_CURVE, DEMO_DAG_EDGES, DEMO_DAG_NODES, DEMO_HEAT, DEMO_HEAT_COLS, DEMO_HEAT_ROWS,
+    DEMO_BARS, DEMO_BOX, DEMO_CURVE, DEMO_DAG_EDGES, DEMO_DAG_NODES, DEMO_FALL, DEMO_HEAT,
+    DEMO_HEAT_COLS, DEMO_HEAT_ROWS, DEMO_HIST, DEMO_KPI, DEMO_PIE, DEMO_SANKEY_LINKS,
+    DEMO_SANKEY_NODES, DEMO_SCATTER, DEMO_TIME, DEMO_TIME_LANES,
 };
 pub use heatmap::Heatmap;
+pub use histogram::Histogram;
+pub use kpi::{Kpi, KpiTile};
+pub use pie::Pie;
+pub use sankey::{Sankey, SankeyLink, SankeyNode};
+pub use scatter::Scatter;
+pub use timeline::{Timeline, TlEvent};
+pub use waterfall::{Waterfall, WfItem, WfKind};
 
 use super::Cell;
 
@@ -68,7 +86,19 @@ pub const CATALOG: &[(&str, Play)] = &[
     ("curve", Play::Live),
     ("heat", Play::Arm),
     ("dag", Play::Live),
+    ("hist", Play::Arm),
+    ("pie", Play::Live),
+    ("sankey", Play::Live),
+    ("scatter", Play::Arm),
+    ("time", Play::Live),
+    ("fall", Play::Arm),
+    ("box", Play::Arm),
+    ("kpi", Play::Live),
 ];
+
+pub fn catalog_play(name: &str) -> Option<Play> {
+    CATALOG.iter().find(|(n, _)| *n == name).map(|(_, p)| *p)
+}
 
 #[cfg(test)]
 mod tests {
