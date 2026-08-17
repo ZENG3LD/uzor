@@ -1,7 +1,7 @@
-//! Tukey box per group. Arm lights a category.
+//! Tukey box. Tofu body, line whiskers. Hover recolors the group.
 
-use super::{empty, Play};
-use crate::ascii::{hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BoxStat {
@@ -47,8 +47,7 @@ impl CellShader for Boxplot<'_> {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        let _ = t;
+        let _ = self.play.motion(ctx.time, cursor.intensity);
         let r_lo = to_row(g.lo);
         let r_hi = to_row(g.hi);
         let r_q1 = to_row(g.q1);
@@ -56,49 +55,23 @@ impl CellShader for Boxplot<'_> {
         let r_med = to_row(g.med);
         let box_lo = r_q1.min(r_q3);
         let box_hi = r_q1.max(r_q3);
-        let hue = if hover { 48.0 } else { 200.0 };
         if y == r_med {
-            return Cell {
-                ch: '─',
-                color: hsl(if hover { 48.0 } else { 50.0 }, 0.65, 0.58),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            return ink('─', hover, 50.0, 0.58);
         }
         if y >= box_lo && y <= box_hi {
-            return Cell {
-                ch: if hover { '█' } else { '▓' },
-                color: hsl(hue, 0.5, 0.42),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            return tofu(hover, 200.0, 0.42);
         }
         let wlo = r_lo.min(r_hi);
         let whi = r_lo.max(r_hi);
         if y == wlo || y == whi {
-            return Cell {
-                ch: '─',
-                color: hsl(hue, 0.35, 0.45),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            return ink('─', hover, 200.0, 0.40);
         }
         if y > wlo && y < whi {
-            return Cell {
-                ch: '│',
-                color: hsl(hue, 0.35, 0.4),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            return ink('│', hover, 200.0, 0.40);
         }
         for &o in g.outliers {
             if y == to_row(o) {
-                return Cell {
-                    ch: '·',
-                    color: hsl(8.0, 0.65, 0.55),
-                    alpha: 1.0,
-                    scale: 1.0,
-                };
+                return tofu(hover, 8.0, 0.50);
             }
         }
         empty()

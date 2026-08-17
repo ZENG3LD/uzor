@@ -1,7 +1,8 @@
-//! Layered node/edge sketch. Live sends a pulse down each edge.
+//! Layered graph. Edges are straight Bresenham strokes (─ │ / \).
+//! Hover a node — that node and its incident edges recolor.
 
-use super::{empty, Play};
-use crate::ascii::{hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, on_line, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 #[derive(Clone, Copy, Debug)]
 pub struct DagNode {
@@ -31,31 +32,29 @@ impl CellShader for Dag<'_> {
         let layers = self.nodes.iter().map(|n| n.layer).max().unwrap_or(0) as usize + 1;
         let slots = self.nodes.iter().map(|n| n.slot).max().unwrap_or(0) as usize + 1;
         let x_at = |layer: u8| -> usize {
-            let span = ctx.cols.saturating_sub(6).max(1);
-            3 + (layer as usize * span) / layers.max(1)
+            let span = ctx.cols.saturating_sub(8).max(1);
+            2 + (layer as usize * span) / layers.max(1)
         };
         let y_at = |slot: u8| -> usize {
             let span = ctx.rows.saturating_sub(2).max(1);
             1 + (slot as usize * span) / slots.max(1)
         };
+        let hovered = hovered_node(self.nodes, cursor, x_at, y_at);
         if let Some(n) = self.nodes.iter().find(|n| {
             let x = x_at(n.layer);
             let y = y_at(n.slot);
             coord.y == y && coord.x >= x && coord.x < x + n.label.len().min(6)
         }) {
-            let hover = cursor.inside
-                && (cursor.y as usize) == y_at(n.slot)
-                && (cursor.x as usize) >= x_at(n.layer);
-            let i = (coord.x - x_at(n.layer)) as usize;
-            let ch = n.label.chars().nth(i).unwrap_or('·');
-            return Cell {
-                ch,
-                color: hsl(if hover { 48.0 } else { 130.0 }, 0.55, 0.58),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            let hot = hovered == Some(n.id);
+            let i = coord.x - x_at(n.layer);
+            return ink(
+                n.label.chars().nth(i).unwrap_or(' '),
+                hot,
+                130.0,
+                0.58,
+            );
         }
-        let t = self.play.motion(ctx.time, cursor.intensity);
+        let _ = self.play.motion(ctx.time, cursor.intensity);
         for e in self.edges {
             let Some(a) = self.nodes.iter().find(|n| n.id == e.from) else {
                 continue;
@@ -67,42 +66,37 @@ impl CellShader for Dag<'_> {
             let x1 = x_at(b.layer).saturating_sub(1);
             let y0 = y_at(a.slot);
             let y1 = y_at(b.slot);
-            if x1 <= x0 {
+            if x1 <= x0 && y0 == y1 {
                 continue;
             }
-            let on_h = coord.y == y0 && coord.x > x0 && coord.x < x1 && y0 == y1;
-            let on_bend = y0 != y1
-                && ((coord.x == x0 && between(coord.y, y0, y1))
-                    || (coord.y == y1 && coord.x > x0 && coord.x < x1));
-            if !on_h && !on_bend {
+            let Some(ch) = on_line(coord.x, coord.y, x0, y0, x1, y1) else {
                 continue;
-            }
-            let along = if on_h {
-                (coord.x - x0) as f64 / (x1 - x0) as f64
-            } else if coord.x == x0 {
-                0.3
-            } else {
-                0.7
             };
-            let pulse = t > 0.0 && ((along - (t * 0.4).rem_euclid(1.0)).abs() < 0.08);
-            return Cell {
-                ch: if pulse {
-                    '●'
-                } else if on_h || coord.y == y1 {
-                    '─'
-                } else {
-                    '│'
-                },
-                color: hsl(if pulse { 50.0 } else { 200.0 }, 0.45, 0.45),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            let hot = hovered == Some(e.from) || hovered == Some(e.to);
+            return ink(ch, hot, 200.0, 0.45);
         }
         empty()
     }
 }
 
-fn between(v: usize, a: usize, b: usize) -> bool {
-    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-    v > lo && v < hi
+fn hovered_node(
+    nodes: &[DagNode],
+    cursor: &Cursor,
+    x_at: impl Fn(u8) -> usize,
+    y_at: impl Fn(u8) -> usize,
+) -> Option<u8> {
+    if !cursor.inside {
+        return None;
+    }
+    let cx = cursor.x as usize;
+    let cy = cursor.y as usize;
+    nodes.iter().find_map(|n| {
+        let x = x_at(n.layer);
+        let y = y_at(n.slot);
+        if cy == y && cx >= x && cx < x + n.label.len().min(6) {
+            Some(n.id)
+        } else {
+            None
+        }
+    })
 }

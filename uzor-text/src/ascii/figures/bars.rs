@@ -1,7 +1,7 @@
-//! Categorical bars. Hover lights a column; Live/Arm can breathe.
+//! Categorical bars. One glyph: tofu. Hover recolors the column.
 
-use super::{empty, Play};
-use crate::ascii::{density_char, hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Bars<'a> {
     pub values: &'a [f64],
@@ -25,11 +25,7 @@ impl CellShader for Bars<'_> {
         if i >= n {
             return empty();
         }
-        let mut v = self.values[i].max(0.0);
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        if t > 0.0 {
-            v *= 0.82 + 0.18 * (t * 1.7 + i as f64 * 0.6).sin();
-        }
+        let v = self.values[i].max(0.0);
         let max = self
             .values
             .iter()
@@ -44,14 +40,7 @@ impl CellShader for Bars<'_> {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let den = ((from_bottom + 1) as f64 / h.max(1) as f64).clamp(0.15, 1.0);
-        let lit = hover || (self.play.armed(cursor.intensity) && hover);
-        let hue = if lit { 48.0 } else { 195.0 };
-        Cell {
-            ch: if hover { '█' } else { density_char(den) },
-            color: hsl(hue, 0.55, 0.38 + 0.28 * den),
-            alpha: 1.0,
-            scale: 1.0,
-        }
+        let _ = self.play.motion(ctx.time, cursor.intensity);
+        tofu(hover, 195.0, 0.42)
     }
 }

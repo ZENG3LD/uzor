@@ -1,7 +1,7 @@
-//! Equal-width bins over raw samples. Arm breathes like bars.
+//! Equal-width bins. Tofu columns; hover recolors a bin.
 
-use super::{empty, Play};
-use crate::ascii::{density_char, hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Histogram<'a> {
     pub samples: &'a [f64],
@@ -27,11 +27,7 @@ impl CellShader for Histogram<'_> {
         if i >= n {
             return empty();
         }
-        let mut v = counts[i];
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        if t > 0.0 {
-            v *= 0.85 + 0.15 * (t * 1.5 + i as f64 * 0.5).sin();
-        }
+        let v = counts[i];
         let max = counts.iter().copied().fold(1e-6_f64, f64::max);
         let h = ((v / max) * inner_h as f64).round() as usize;
         let from_bottom = inner_h - 1 - row;
@@ -42,13 +38,8 @@ impl CellShader for Histogram<'_> {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let den = ((from_bottom + 1) as f64 / h.max(1) as f64).clamp(0.15, 1.0);
-        Cell {
-            ch: if hover { '█' } else { density_char(den) },
-            color: hsl(if hover { 48.0 } else { 210.0 }, 0.55, 0.36 + 0.3 * den),
-            alpha: 1.0,
-            scale: 1.0,
-        }
+        let _ = self.play.motion(ctx.time, cursor.intensity);
+        tofu(hover, 210.0, 0.42)
     }
 }
 

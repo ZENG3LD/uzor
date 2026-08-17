@@ -1,7 +1,7 @@
-//! Point cloud. Arm twinkles the nearest point.
+//! Point cloud. Tofu dots; hover recolors the nearest.
 
-use super::{empty, Play};
-use crate::ascii::{hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Scatter<'a> {
     pub pts: &'a [(f64, f64)],
@@ -19,31 +19,25 @@ impl CellShader for Scatter<'_> {
         let (xmin, xmax, ymin, ymax) = bounds(self.pts);
         let iw = ctx.cols.saturating_sub(2).max(1) as f64;
         let ih = ctx.rows.saturating_sub(2).max(1) as f64;
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        let mut hit = None;
+        let _ = self.play.motion(ctx.time, cursor.intensity);
+        let mut hit = false;
         let mut best = f64::INFINITY;
-        for (i, &(x, y)) in self.pts.iter().enumerate() {
+        for &(x, y) in self.pts {
             let px = 1.0 + ((x - xmin) / (xmax - xmin).max(1e-6)) * (iw - 1.0);
             let py = 1.0 + (1.0 - (y - ymin) / (ymax - ymin).max(1e-6)) * (ih - 1.0);
             let d = (coord.x as f64 - px).abs() + (coord.y as f64 - py).abs();
             if d < 0.65 && d < best {
                 best = d;
-                hit = Some(i);
+                hit = true;
             }
         }
-        let Some(i) = hit else {
+        if !hit {
             return empty();
-        };
-        let near = cursor.inside
+        }
+        let hover = cursor.inside
             && (cursor.x - coord.x as f64).abs() < 1.4
             && (cursor.y - coord.y as f64).abs() < 1.4;
-        let twinkle = t > 0.0 && ((t * 3.0 + i as f64).sin() > 0.55);
-        Cell {
-            ch: if near || twinkle { '●' } else { '·' },
-            color: hsl(if near { 48.0 } else { 175.0 }, 0.55, 0.52),
-            alpha: 1.0,
-            scale: if near { 1.2 } else { 1.0 },
-        }
+        tofu(hover, 175.0, 0.50)
     }
 }
 

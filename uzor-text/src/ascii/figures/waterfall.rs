@@ -1,7 +1,7 @@
-//! Running-total bridge. Arm lights a column.
+//! Running-total bridge. Tofu bars; hover recolors a column.
 
-use super::{empty, Play};
-use crate::ascii::{density_char, hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WfKind {
@@ -49,12 +49,7 @@ impl CellShader for Waterfall<'_> {
             std::mem::swap(&mut a, &mut b);
         }
         let y = row as isize;
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        let breathe = if t > 0.0 {
-            0.08 * (t * 1.6 + i as f64).sin()
-        } else {
-            0.0
-        };
+        let _ = self.play.motion(ctx.time, cursor.intensity);
         let on_bar = y >= a && y <= b;
         let next_level = to_row(y1);
         let on_link = i + 1 < n && y == next_level && {
@@ -64,19 +59,13 @@ impl CellShader for Waterfall<'_> {
         if !on_bar && !on_link {
             return empty();
         }
-        if on_link && !on_bar {
-            return Cell {
-                ch: '─',
-                color: hsl(200.0, 0.25, 0.4),
-                alpha: 1.0,
-                scale: 1.0,
-            };
-        }
         let hover = cursor.inside && {
             let hi = ((cursor.x - 1.0).max(0.0) as usize * n) / inner_w;
             hi == i
         };
-        let den = (0.35 + breathe.abs()).clamp(0.2, 1.0);
+        if on_link && !on_bar {
+            return ink('─', hover, 200.0, 0.40);
+        }
         let hue = if matches!(self.items[i].kind, WfKind::Total) {
             220.0
         } else if pos {
@@ -84,12 +73,7 @@ impl CellShader for Waterfall<'_> {
         } else {
             8.0
         };
-        Cell {
-            ch: if hover { '█' } else { density_char(den) },
-            color: hsl(if hover { 48.0 } else { hue }, 0.58, 0.4),
-            alpha: 1.0,
-            scale: 1.0,
-        }
+        tofu(hover, hue, 0.42)
     }
 }
 

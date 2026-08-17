@@ -80,6 +80,69 @@ fn empty() -> Cell {
     }
 }
 
+fn tofu(hover: bool, hue: f64, lit: f64) -> Cell {
+    use crate::ascii::hsl;
+    Cell {
+        ch: '█',
+        color: hsl(if hover { 48.0 } else { hue }, 0.58, if hover { 0.64 } else { lit }),
+        alpha: 1.0,
+        scale: 1.0,
+    }
+}
+
+fn ink(ch: char, hover: bool, hue: f64, lit: f64) -> Cell {
+    use crate::ascii::hsl;
+    Cell {
+        ch,
+        color: hsl(if hover { 48.0 } else { hue }, 0.55, if hover { 0.64 } else { lit }),
+        alpha: 1.0,
+        scale: 1.0,
+    }
+}
+
+fn line_glyph(dx: i32, dy: i32) -> char {
+    let ax = dx.abs();
+    let ay = dy.abs();
+    if ay * 2 <= ax {
+        '─'
+    } else if ax * 2 <= ay {
+        '│'
+    } else if dx.signum() == dy.signum() {
+        '\\'
+    } else {
+        '/'
+    }
+}
+
+/// True when `(px,py)` is a Bresenham cell of the segment. Glyph follows slope.
+fn on_line(px: usize, py: usize, x0: usize, y0: usize, x1: usize, y1: usize) -> Option<char> {
+    let (mut x, mut y) = (x0 as i32, y0 as i32);
+    let (x1, y1) = (x1 as i32, y1 as i32);
+    let dx = (x1 - x).abs();
+    let sx = if x < x1 { 1 } else { -1 };
+    let dy = -(y1 - y).abs();
+    let sy = if y < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    let ch = line_glyph(x1 - x0 as i32, y1 - y0 as i32);
+    loop {
+        if x == px as i32 && y == py as i32 {
+            return Some(ch);
+        }
+        if x == x1 && y == y1 {
+            return None;
+        }
+        let e2 = 2 * err;
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
+    }
+}
+
 /// Named entries for a HUD strip. Fields stay in the app; these are figures.
 pub const CATALOG: &[(&str, Play)] = &[
     ("bars", Play::Arm),
@@ -105,12 +168,12 @@ mod tests {
     use super::*;
     use crate::ascii::{AsciiGrid, CellShader, Coord, Cursor, GridContext};
 
-    fn sample(shader: &impl CellShader, time: f64, cursor: Cursor) -> Vec<char> {
+    fn sample(shader: &impl CellShader, time: f64, cursor: Cursor) -> Vec<(char, [u8; 3])> {
         let mut g = AsciiGrid::new(24, 10);
         g.set_cursor(cursor);
         g.step(shader, time, 1.0);
         let mut out = Vec::new();
-        g.for_each(|_, _, c| out.push(c.ch));
+        g.for_each(|_, _, c| out.push((c.ch, c.color)));
         out
     }
 

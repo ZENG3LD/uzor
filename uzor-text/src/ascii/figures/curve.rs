@@ -1,7 +1,7 @@
-//! Polyline. Live sweeps a bead; Arm wakes the sweep on hover.
+//! Polyline. One stroke family (─ / \ │). Hover recolors the column.
 
-use super::{empty, Play};
-use crate::ascii::{hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, line_glyph, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 pub struct Curve<'a> {
     pub ys: &'a [f64],
@@ -21,15 +21,10 @@ impl CellShader for Curve<'_> {
         let col = coord.x - 1;
         let row = coord.y - 1;
         let n = self.ys.len();
-        let t = self.play.motion(ctx.time, cursor.intensity);
         let (lo, hi) = min_max(self.ys);
         let span = (hi - lo).max(1e-6);
         let y_at = |i: usize| -> isize {
-            let mut y = self.ys[i];
-            if t > 0.0 {
-                y += 0.08 * span * (t * 2.0 + i as f64 * 0.3).sin();
-            }
-            let u = ((y - lo) / span).clamp(0.0, 1.0);
+            let u = ((self.ys[i] - lo) / span).clamp(0.0, 1.0);
             ((1.0 - u) * (inner_h.saturating_sub(1) as f64)).round() as isize
         };
         let i0 = (col * (n - 1)) / inner_w;
@@ -41,19 +36,11 @@ impl CellShader for Curve<'_> {
         if !on {
             return empty();
         }
-        let sweep = if t > 0.0 {
-            let head = ((t * 0.35).rem_euclid(1.0) * inner_w as f64) as usize;
-            col.abs_diff(head) < 2
-        } else {
-            false
-        };
-        let near = cursor.inside && (cursor.x - coord.x as f64).abs() < 1.2;
-        Cell {
-            ch: if sweep || near { '●' } else { '─' },
-            color: hsl(if sweep { 50.0 } else { 168.0 }, 0.6, 0.5),
-            alpha: 1.0,
-            scale: 1.0,
-        }
+        let ch = line_glyph(1, (y1 - y0) as i32);
+        let hover = cursor.inside && (cursor.x - coord.x as f64).abs() < 1.2;
+        let t = self.play.motion(ctx.time, cursor.intensity);
+        let lit = if t > 0.0 { 0.48 + 0.08 * (t * 1.4).sin() } else { 0.50 };
+        ink(ch, hover, 168.0, lit)
     }
 }
 

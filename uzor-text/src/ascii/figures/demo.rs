@@ -20,19 +20,23 @@ pub const DEMO_HEAT: &[f64] = &[
 ];
 
 pub const DEMO_DAG_NODES: &[DagNode] = &[
-    DagNode { id: 0, label: "in", layer: 0, slot: 0 },
+    DagNode { id: 0, label: "in", layer: 0, slot: 1 },
     DagNode { id: 1, label: "scan", layer: 1, slot: 0 },
-    DagNode { id: 2, label: "gate", layer: 1, slot: 1 },
+    DagNode { id: 2, label: "gate", layer: 1, slot: 2 },
     DagNode { id: 3, label: "run", layer: 2, slot: 0 },
-    DagNode { id: 4, label: "out", layer: 3, slot: 0 },
+    DagNode { id: 4, label: "mix", layer: 2, slot: 2 },
+    DagNode { id: 5, label: "out", layer: 3, slot: 1 },
 ];
 
 pub const DEMO_DAG_EDGES: &[DagEdge] = &[
     DagEdge { from: 0, to: 1 },
     DagEdge { from: 0, to: 2 },
     DagEdge { from: 1, to: 3 },
+    DagEdge { from: 1, to: 4 },
     DagEdge { from: 2, to: 3 },
-    DagEdge { from: 3, to: 4 },
+    DagEdge { from: 2, to: 4 },
+    DagEdge { from: 3, to: 5 },
+    DagEdge { from: 4, to: 5 },
 ];
 
 pub const DEMO_HIST: &[f64] = &[

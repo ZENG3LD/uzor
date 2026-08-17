@@ -1,7 +1,7 @@
-//! Dashboard tiles: label, value, delta, sparkline.
+//! Dashboard tiles: label, value, delta, tofu sparkline.
 
-use super::{empty, Play};
-use crate::ascii::{density_char, hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, tofu, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 #[derive(Clone, Copy, Debug)]
 pub struct KpiTile {
@@ -34,35 +34,30 @@ impl CellShader for Kpi<'_> {
             return empty();
         }
         let hover = cursor.inside && (cursor.x as usize) / tw == i;
-        let t = self.play.motion(ctx.time, cursor.intensity);
+        let _ = self.play.motion(ctx.time, cursor.intensity);
         if coord.y == 1 {
-            return glyph(tile.label, lx.saturating_sub(1), if hover { 48.0 } else { 200.0 }, 0.45);
+            return glyph(tile.label, lx.saturating_sub(1), hover, 200.0, 0.45);
         }
         if coord.y == 2 {
-            return glyph(tile.value, lx.saturating_sub(1), if hover { 50.0 } else { 160.0 }, 0.62);
+            return glyph(tile.value, lx.saturating_sub(1), hover, 160.0, 0.62);
         }
         if coord.y == 3 {
             return glyph(
                 tile.delta,
                 lx.saturating_sub(1),
+                hover,
                 if tile.up { 140.0 } else { 8.0 },
                 0.5,
             );
         }
-        if coord.y + 2 >= ctx.rows {
-            return empty();
-        }
-        if tile.spark.len() < 2 {
+        if coord.y + 2 >= ctx.rows || tile.spark.len() < 2 {
             return empty();
         }
         let inner = tw.saturating_sub(2).max(1);
         let col = lx.saturating_sub(1);
         let si = (col * (tile.spark.len() - 1)) / inner;
         let (lo, hi) = min_max(tile.spark);
-        let mut y = tile.spark[si];
-        if t > 0.0 {
-            y += 0.06 * (hi - lo).max(1.0) * (t * 2.2 + si as f64).sin();
-        }
+        let y = tile.spark[si];
         let u = ((y - lo) / (hi - lo).max(1e-6)).clamp(0.0, 1.0);
         let spark_rows = ctx.rows.saturating_sub(5).max(1);
         let row = coord.y.saturating_sub(4);
@@ -73,23 +68,13 @@ impl CellShader for Kpi<'_> {
         if row != want {
             return empty();
         }
-        Cell {
-            ch: density_char(0.45 + 0.4 * u),
-            color: hsl(if hover { 48.0 } else { 175.0 }, 0.5, 0.45),
-            alpha: 1.0,
-            scale: 1.0,
-        }
+        tofu(hover, 175.0, 0.45)
     }
 }
 
-fn glyph(s: &str, i: usize, hue: f64, lit: f64) -> Cell {
+fn glyph(s: &str, i: usize, hover: bool, hue: f64, lit: f64) -> Cell {
     match s.chars().nth(i) {
-        Some(ch) => Cell {
-            ch,
-            color: hsl(hue, 0.5, lit),
-            alpha: 1.0,
-            scale: 1.0,
-        },
+        Some(ch) => ink(ch, hover, hue, lit),
         None => empty(),
     }
 }

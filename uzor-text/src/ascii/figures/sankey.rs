@@ -1,7 +1,7 @@
-//! Staged flow. Live pulses weight down each ribbon.
+//! Staged flow. Straight Bresenham links (─ │ / \). Hover a node lights its links.
 
-use super::{empty, Play};
-use crate::ascii::{hsl, Cell, CellShader, Coord, Cursor, GridContext};
+use super::{empty, ink, on_line, Play};
+use crate::ascii::{Cell, CellShader, Coord, Cursor, GridContext};
 
 #[derive(Clone, Copy, Debug)]
 pub struct SankeyNode {
@@ -39,26 +39,22 @@ impl CellShader for Sankey<'_> {
             let span = ctx.rows.saturating_sub(2).max(1);
             1 + (slot as usize * span) / slots.max(1)
         };
+        let hovered = hovered_node(self.nodes, cursor, &x_at, &y_at);
         if let Some(n) = self.nodes.iter().find(|n| {
             let x = x_at(n.stage);
             let y = y_at(n.slot);
             coord.y == y && coord.x >= x && coord.x < x + n.label.len().min(6)
         }) {
-            let hover = cursor.inside && (cursor.y as usize) == y_at(n.slot);
+            let hot = hovered == Some(n.id);
             let i = coord.x - x_at(n.stage);
-            return Cell {
-                ch: n.label.chars().nth(i).unwrap_or('·'),
-                color: hsl(if hover { 48.0 } else { 140.0 }, 0.55, 0.58),
-                alpha: 1.0,
-                scale: 1.0,
-            };
+            return ink(
+                n.label.chars().nth(i).unwrap_or(' '),
+                hot,
+                140.0,
+                0.58,
+            );
         }
-        let t = self.play.motion(ctx.time, cursor.intensity);
-        let wmax = self
-            .links
-            .iter()
-            .map(|l| l.weight)
-            .fold(1e-6_f64, f64::max);
+        let _ = self.play.motion(ctx.time, cursor.intensity);
         for e in self.links {
             let Some(a) = self.nodes.iter().find(|n| n.id == e.from) else {
                 continue;
@@ -70,26 +66,34 @@ impl CellShader for Sankey<'_> {
             let x1 = x_at(b.stage).saturating_sub(1);
             let y0 = y_at(a.slot);
             let y1 = y_at(b.slot);
-            if x1 <= x0 {
+            let Some(ch) = on_line(coord.x, coord.y, x0, y0, x1, y1) else {
                 continue;
-            }
-            let u = (coord.x.saturating_sub(x0)) as f64 / (x1 - x0) as f64;
-            if coord.x <= x0 || coord.x >= x1 {
-                continue;
-            }
-            let y = y0 as f64 + (y1 as f64 - y0 as f64) * u;
-            let thick = (e.weight / wmax * 1.6).clamp(0.4, 1.8);
-            if (coord.y as f64 - y).abs() > thick {
-                continue;
-            }
-            let pulse = t > 0.0 && ((u - (t * 0.35).rem_euclid(1.0)).abs() < 0.08);
-            return Cell {
-                ch: if pulse { '●' } else { '═' },
-                color: hsl(if pulse { 50.0 } else { 195.0 }, 0.5, 0.42 + 0.15 * (e.weight / wmax)),
-                alpha: 1.0,
-                scale: 1.0,
             };
+            let hot = hovered == Some(e.from) || hovered == Some(e.to);
+            return ink(ch, hot, 195.0, 0.42);
         }
         empty()
     }
+}
+
+fn hovered_node(
+    nodes: &[SankeyNode],
+    cursor: &Cursor,
+    x_at: &impl Fn(u8) -> usize,
+    y_at: &impl Fn(u8) -> usize,
+) -> Option<u8> {
+    if !cursor.inside {
+        return None;
+    }
+    let cx = cursor.x as usize;
+    let cy = cursor.y as usize;
+    nodes.iter().find_map(|n| {
+        let x = x_at(n.stage);
+        let y = y_at(n.slot);
+        if cy == y && cx >= x && cx < x + n.label.len().min(6) {
+            Some(n.id)
+        } else {
+            None
+        }
+    })
 }
