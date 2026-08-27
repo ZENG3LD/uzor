@@ -231,6 +231,19 @@ impl WebWindowProvider {
         }
 
         // ── Keyboard events ───────────────────────────────────────────────────
+        //
+        // Attached to the WINDOW, not the canvas: a canvas listener only sees
+        // keys while the canvas holds DOM focus, and any focus drift (a click
+        // on the browser chrome, a backgrounded-then-foregrounded tab, a
+        // click landing on the page body) silently kills every hotkey while
+        // the mouse keeps working. The app page has no other focusable DOM —
+        // all UI is canvas-drawn — so a window-level listener is safe and
+        // survives focus drift.
+
+        let window_target: web_sys::EventTarget = web_sys::window()
+            .ok_or_else(|| "no window object".to_string())?
+            .dyn_into()
+            .map_err(|_| "window is not an EventTarget".to_string())?;
 
         for event_type in &["keydown", "keyup"] {
             let pending_clone = pending.clone();
@@ -311,7 +324,7 @@ impl WebWindowProvider {
                     }
                 }
             }) as Box<dyn FnMut(Event)>);
-            canvas_target
+            window_target
                 .add_event_listener_with_callback(event_type, closure.as_ref().unchecked_ref())
                 .map_err(|_| format!("failed to add {} listener", event_type))?;
             listeners.push(Listener { _closure: closure });
