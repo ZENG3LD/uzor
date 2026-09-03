@@ -904,8 +904,17 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
         }
     }
 
+    // `clone`, not `take`: the path survives the draw. This mirrors the
+    // canvas contract the trait is modelled on — `begin_path` clears the
+    // path, a paint operation does not — and it is what
+    // `uzor-render-vello-cpu` has always done. This backend consumed it,
+    // so the standard `fill(); stroke();` pair silently lost its outline
+    // here and only here: filled correctly, no border. Found on
+    // mylittlechart's primitive control points, 2026-09-03, where a handle
+    // rendered as a shapeless blob because the shape was carried entirely
+    // by the stroke.
     fn stroke(&mut self) {
-        if let Some(path) = self.path_builder.take() {
+        if let Some(path) = self.path_builder.clone() {
             let width = self.stroke_width;
             self.emit_shadow_for_shape(&path, ShapeIntent::Stroke { width });
             let color = self.effective_stroke_color();
@@ -918,8 +927,9 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
         }
     }
 
+    /// See [`Self::stroke`] for why this clones rather than takes.
     fn fill(&mut self) {
-        if let Some(path) = self.path_builder.take() {
+        if let Some(path) = self.path_builder.clone() {
             self.emit_shadow_for_shape(&path, ShapeIntent::Fill);
             let color = self.effective_fill_color();
             let transform = self.transform;
