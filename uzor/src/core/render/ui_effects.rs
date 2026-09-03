@@ -28,6 +28,15 @@ pub trait UiEffectHelpers: ShapeHelpers {
         let _ = (x, y, width, height);
     }
 
+    /// Snapshot-blur the pixels already under this rect, then the caller
+    /// paints a translucent fill on top. Overlay chrome only — not the
+    /// chart pane / scales / toolbars (those keep using `draw_blur_background`).
+    ///
+    /// Default: no-op.
+    fn blur_overlay_backdrop(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        let _ = (x, y, width, height);
+    }
+
     /// Returns `true` when a blur image is loaded and ready for drawing.
     ///
     /// Default: `false`. Override in backends that support blur.
