@@ -944,6 +944,27 @@ impl TinySkiaCpuRenderContext {
         self.path_builder.take()?.finish()
     }
 
+    /// The current path WITHOUT consuming it — for paint operations.
+    ///
+    /// `begin_path` is what clears a path; painting it does not, which is the
+    /// contract every other backend in this workspace follows (`vello-cpu`,
+    /// `vello-hybrid` and `canvas2d`, the last by way of the browser's own
+    /// canvas). This one took the path on every paint, so the ordinary
+    /// `fill(); stroke();` pair — a filled shape with an outline — silently
+    /// lost its outline here.
+    ///
+    /// Found through the same defect in `vello-gpu` on 2026-09-03: a drawing
+    /// primitive's control point had its border in the browser and not in the
+    /// desktop app, because the shape is carried by the stroke and the stroke
+    /// had no path left to draw.
+    ///
+    /// `clip` keeps using [`Self::take_path`]: it is not a paint, and changing
+    /// what it does to the path would change clipping across the whole app for
+    /// no reported reason.
+    fn peek_path(&self) -> Option<Path> {
+        self.path_builder.clone()?.finish()
+    }
+
     fn builder(&mut self) -> &mut PathBuilder {
         self.path_builder.get_or_insert_with(PathBuilder::new)
     }
@@ -1195,7 +1216,7 @@ impl Painter for TinySkiaCpuRenderContext {
     }
 
     fn stroke(&mut self) {
-        let Some(path) = self.take_path() else { return };
+        let Some(path) = self.peek_path() else { return };
         if self.shadow.is_some() {
             self.draw_shadow_for_path(&path);
         }
@@ -1207,7 +1228,7 @@ impl Painter for TinySkiaCpuRenderContext {
     }
 
     fn fill(&mut self) {
-        let Some(path) = self.take_path() else { return };
+        let Some(path) = self.peek_path() else { return };
         if self.shadow.is_some() {
             self.draw_shadow_for_path(&path);
         }
@@ -1655,7 +1676,7 @@ impl GradientPainter for TinySkiaCpuRenderContext {
         x2: f64,
         y2: f64,
     ) {
-        let Some(path) = self.take_path() else { return };
+        let Some(path) = self.peek_path() else { return };
 
         if stops.is_empty() {
             return;
@@ -1716,7 +1737,7 @@ impl GradientPainter for TinySkiaCpuRenderContext {
         h: f64,
     ) {
         let _ = (x, y, w, h);
-        let Some(path) = self.take_path() else { return };
+        let Some(path) = self.peek_path() else { return };
 
         if stops.is_empty() {
             return;

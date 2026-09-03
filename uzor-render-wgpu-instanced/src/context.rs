@@ -371,7 +371,9 @@ impl InstancedRenderContext {
     /// correct joins and caps — identical in principle to how Vello handles strokes.
     /// Open subpaths remain open; only `PathCmd::Close` closes a subpath.
     fn tessellate_stroke(&mut self) {
-        let path = std::mem::take(&mut self.path);
+        // Clone, not take: a paint does not clear the path — `begin_path` does.
+        // See the note in uzor-render-tiny-skia's `peek_path`.
+        let path = self.path.clone();
         let color = self.apply_alpha(self.stroke_color);
         let clip = self.current_clip();
 
@@ -519,7 +521,9 @@ impl InstancedRenderContext {
     /// implemented for arbitrary paths in this backend — they fall back to stroke).
     fn tessellate_fill(&mut self) {
         // Check for the common rect pattern: MoveTo + 3×LineTo + Close (or Rect)
-        let path = std::mem::take(&mut self.path);
+        // Clone, not take: a paint does not clear the path — `begin_path` does.
+        // See the note in uzor-render-tiny-skia's `peek_path`.
+        let path = self.path.clone();
         let color = self.apply_alpha(self.fill_color);
         let clip = self.current_clip();
 
@@ -1443,7 +1447,9 @@ impl InstancedRenderContext {
         x2: f32,
         y2: f32,
     ) {
-        let path = std::mem::take(&mut self.path);
+        // Clone, not take: a paint does not clear the path — `begin_path` does.
+        // See the note in uzor-render-tiny-skia's `peek_path`.
+        let path = self.path.clone();
         let clip = self.current_clip();
         let global_alpha = self.global_alpha as f32;
 
