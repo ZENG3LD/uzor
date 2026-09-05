@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use uzor_vectorize::{
-    diff_heatmap, parity_rgb, quantized_image, rasterize_svg, vectorize_path, VectorizeOptions,
+    diff_heatmap, parity_rgb, parity_sheet, quantized_image, rasterize_svg, vectorize_path,
+    VectorizeOptions,
 };
 
 fn main() -> ExitCode {
@@ -73,6 +74,13 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
                 i += 1;
                 opt.absorb_dist = args.get(i).ok_or("--absorb-dist")?.parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
             }
+            "--kmeans-iters" => {
+                i += 1;
+                opt.kmeans_iters = args.get(i).ok_or("--kmeans-iters")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            }
+            "--majority" => {
+                opt.majority = true;
+            }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => {
                 if src.is_some() {
@@ -133,8 +141,18 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
     }
     svg_img.save(&prev).map_err(|e| e.to_string())?;
     q_img.save(&quant_path).map_err(|e| e.to_string())?;
-    diff_heatmap(&src_img, &svg_img)
-        .save(&dif)
+    let heat = diff_heatmap(&src_img, &svg_img);
+    heat.save(&dif).map_err(|e| e.to_string())?;
+    let sheet_path = {
+        let mut p = prev.clone();
+        p.set_file_name(format!(
+            "{}-sheet.png",
+            prev.file_stem().unwrap().to_string_lossy()
+        ));
+        p
+    };
+    parity_sheet(&src_img, &svg_img, &q_img, &heat)
+        .save(&sheet_path)
         .map_err(|e| e.to_string())?;
     let vs_src = parity_rgb(&src_img, &svg_img);
     let vs_q = parity_rgb(&q_img, &svg_img);
@@ -147,10 +165,11 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
         vs_q.mae, vs_q.close_pct, vs_q.visible_pct
     );
     println!(
-        "preview={}  diff={}  quant={}",
+        "preview={}  diff={}  quant={}  sheet={}",
         prev.display(),
         dif.display(),
-        quant_path.display()
+        quant_path.display(),
+        sheet_path.display()
     );
     Ok(())
 }

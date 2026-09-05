@@ -25,9 +25,9 @@ cargo build -p uzor-vectorize --bin uzor-vectorize --release
 target/release/uzor-vectorize.exe parity <in.png|jpg> -o out.svg --preview out.png --diff out-diff.png
 ```
 
-`parity` writes: SVG, resvg preview PNG, quantized reconstruction, red-error
-heatmap vs the source. Read those three PNGs. Do not declare quality from
-MAE alone.
+`parity` writes: SVG, resvg preview PNG, quantized reconstruction, heatmap,
+and a 2×2 `*-sheet.png`. Read the sheet. Do not declare quality from MAE
+alone.
 
 Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 `rasterize_svg` (resvg, same path as `uzor-icon`).
@@ -36,15 +36,20 @@ Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 
 | field | default | meaning |
 |---|---|---|
-| `colors` | 48 | median-cut bins, then k-means refine |
-| `merge` | 14 | RGB distance to collapse similar palette entries |
+| `colors` | 48 | median-cut bins (no k-means unless `--kmeans-iters`) |
+| `merge` | 14 | RGB distance to collapse similar palette entries; chromatic hues that differ by ≳30° in opponent space are never merged (mint must not chain into cyan) |
 | `min_area` | 32 | drop / absorb blobs smaller than this (px) |
 | `epsilon` | 0.4 | path simplify; 0 = pixel stairs |
 | `absorb_dist` | 48 | max RGB distance when eating speckles into a neighbor |
-| `kmeans_iters` | 10 | palette refine; large regions steal bins from rare hues |
+| `kmeans_iters` | 0 | off. k-means reassignment steals gold/floral/mint into large fills |
+| `majority` | false | 3×3 label majority. Off: it ate thin black outlines |
 
 Two-tier absorb: area < 16 always eaten (JPEG dirt); 16..min_area only if
 the neighbor is within `absorb_dist` (gold must not fall into pink).
+
+`parity` also writes `*-sheet.png` (source | svg / quant | heatmap). Heatmap
+is luma + red only where max-channel error > 8, so a 5-level fill shift
+does not paint the whole sheet.
 
 ## Parity — two ceilings, do not mix them
 
@@ -71,14 +76,24 @@ Do not ship a “better MAE” that washed out a color the source still has.
 
 ## Known open delta (continue here)
 
-- k-means + mean centroids shifted flat fills (whole cream background
-  off-hue). Mitigated: freeze small bins, snap palette to per-bin median
-  of the source. Watch for a return of that regression on the heatmap
-  (full-field red = fill hue, not just edges).
+Last Python prototype (Pillow `MEDIANCUT`, no k-means): print MAE 6.93 /
+close 85.1%; flat 4.94 / 85.1%; memphis 6.25 / 80.2%. Rust as of this
+pipeline (3×3 denoise, range median-cut, hue-safe merge, median snap):
+
+| tile | vs source MAE | close | visible | vs quant close |
+|---|---|---|---|---|
+| print | 6.23 | 86.4% | 7.7% | 97.4% |
+| flat | 5.45 | 84.7% | 7.9% | 97.5% |
+| memphis | 7.77 | 71.5% | 17.7% | 97.7% |
+
+Print is past Python. Flat is within a point. Memphis mint sunburst rays
+still collapse into cyan — Pillow's unique-color population cut kept
+them; a naïve port of that cut spent the palette on cream JPEG noise and
+turned flat-vector gold coins red. Do not revive that cut.
+
 - Thin black outlines still fragment on print linocut texture.
 - No residual pass yet (rasterize SVG, vectorize leftover error blobs).
-- GIF frame stacking is out of scope until still-image parity is back
-  to the last Python prototype or better, without hue loss.
+- GIF frame stacking is out of scope until memphis mint is back.
 
 ## Layout
 

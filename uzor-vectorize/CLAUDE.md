@@ -20,12 +20,19 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-median-cut → k-means (large bins only; rare hues frozen) → merge similar
-→ 3×3 majority → two-tier speckle absorb → **median snap of each bin
-onto the source RGB** (mean was shifting cream fills toward JPEG fringe)
-→ 4-connected blobs → pixel-corner outlines → corner-preserving RDP.
+3×3 per-channel median denoise → Heckbert median-cut on pixels (largest
+luminance-weighted range; **box membership kept**, no nearest-centroid)
+→ hue-safe similar-color merge → two-tier speckle absorb → median snap
+of each bin onto the denoised RGB → 4-connected blobs → pixel-corner
+outlines → corner-preserving RDP.
+
+k-means and 3×3 majority are opt-in. Both steal or eat rare hues / thin
+black. Population unique-color cuts (Pillow's heap) looked right on
+memphis mint in a Python replica and then wrecked gold coins on
+flat-vector in Rust — do not bring them back without a fixture on all
+three tiles.
 
 ## Open work
 
-k-means starves rare colors. Next: protect small saturated bins, residual
-pass vs quant, then GIF frames.
+Memphis mint sunburst rays still merge into cyan. Residual pass vs
+quant. Then GIF frames.

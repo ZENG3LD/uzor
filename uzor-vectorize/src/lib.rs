@@ -1,7 +1,7 @@
 //! PNG/JPEG → SVG tracer for flat-color graphics.
 //!
 //! Inverse of [`uzor-icon`](https://docs.rs/uzor-icon): that crate rasterizes
-//! SVG, this one vectorizes a raster. Pipeline: median-cut + k-means palette,
+//! SVG, this one vectorizes a raster. Pipeline: denoise, median-cut palette,
 //! speckle absorb, pixel-boundary contours, SVG paths.
 
 mod contour;
@@ -25,6 +25,8 @@ pub struct VectorizeOptions {
     pub epsilon: f32,
     pub absorb_dist: f32,
     pub kmeans_iters: u32,
+    /// 3×3 majority on palette labels. Off: it ate thin black outlines.
+    pub majority: bool,
 }
 
 impl Default for VectorizeOptions {
@@ -35,7 +37,8 @@ impl Default for VectorizeOptions {
             min_area: 32,
             epsilon: 0.4,
             absorb_dist: 48.0,
-            kmeans_iters: 10,
+            kmeans_iters: 0,
+            majority: false,
         }
     }
 }
@@ -91,11 +94,16 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         rgb.extend_from_slice(&p.0);
     }
 
+    let rgb = quantize::median3(&rgb, w, h);
     let k = opt.colors.max(2) as usize;
     let (mut idx, mut pal) = quantize::median_cut(&rgb, k);
-    quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
+    if opt.kmeans_iters > 0 {
+        quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
+    }
     quantize::merge_similar(&mut idx, &mut pal, opt.merge);
-    region::majority_snap(&mut idx, w, h);
+    if opt.majority {
+        region::majority_snap(&mut idx, w, h);
+    }
     region::absorb_speckles(
         &mut idx,
         &pal,
@@ -223,6 +231,28 @@ pub fn parity_rgb(a: &RgbImage, b: &RgbImage) -> ParityStats {
     }
 }
 
+/// 2×2 contact: source | svg / quant | heatmap. Debug loop reads this.
+pub fn parity_sheet(src: &RgbImage, svg: &RgbImage, quant: &RgbImage, diff: &RgbImage) -> RgbImage {
+    let w = src.width();
+    let h = src.height();
+    let mut sheet = RgbImage::new(w * 2, h * 2);
+    blit(&mut sheet, src, 0, 0);
+    blit(&mut sheet, svg, w, 0);
+    blit(&mut sheet, quant, 0, h);
+    blit(&mut sheet, diff, w, h);
+    sheet
+}
+
+fn blit(dst: &mut RgbImage, src: &RgbImage, ox: u32, oy: u32) {
+    let iw = src.width();
+    let ih = src.height();
+    for y in 0..ih {
+        for x in 0..iw {
+            dst.put_pixel(ox + x, oy + y, *src.get_pixel(x, y));
+        }
+    }
+}
+
 pub fn quantized_image(doc: &SvgDocument) -> RgbImage {
     let mut img = RgbImage::new(doc.width, doc.height);
     for y in 0..doc.height {
@@ -254,15 +284,16 @@ pub fn diff_heatmap(src: &RgbImage, svg: &RgbImage) -> RgbImage {
             for c in 0..3 {
                 maxc = maxc.max((a[c] as i32 - b[c] as i32).abs());
             }
-            let heat = (maxc * 3).clamp(0, 255) as u8;
+            let luma = (((a[0] as u16 + a[1] as u16 + a[2] as u16) / 3) * 35 / 100) as u8;
+            let heat = if maxc <= 8 {
+                0u8
+            } else {
+                ((maxc - 8) * 4).clamp(0, 255) as u8
+            };
             out.put_pixel(
                 x,
                 y,
-                image::Rgb([
-                    ((a[0] as u16 * 45 / 100) as u8).saturating_add(heat),
-                    a[1] * 45 / 100,
-                    a[2] * 45 / 100,
-                ]),
+                image::Rgb([luma.saturating_add(heat), luma, luma]),
             );
         }
     }

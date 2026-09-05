@@ -1,29 +1,67 @@
-//! Median-cut palette + k-means refine + similar-color merge.
+//! Median-cut palette + optional k-means + similar-color merge.
+//!
+//! Default path: 3×3 median denoise, Heckbert median-cut on pixels
+//! (largest luminance-weighted range, box membership kept). Population
+//! unique-color cuts spent the palette on cream JPEG noise and turned
+//! gold coins red. Nearest-centroid / k-means steal rare hues.
 
+/// PIL `MedianFilter(3)` equivalent: per-channel 3×3 median.
+pub fn median3(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
+    let mut out = vec![0u8; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                let mut v = [0u8; 9];
+                let mut n = 0usize;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let ny = y as i32 + dy;
+                        let nx = x as i32 + dx;
+                        if ny < 0 || nx < 0 || ny >= h as i32 || nx >= w as i32 {
+                            continue;
+                        }
+                        v[n] = rgb[(ny as usize * w + nx as usize) * 3 + c];
+                        n += 1;
+                    }
+                }
+                let sl = &mut v[..n];
+                sl.sort_unstable();
+                out[(y * w + x) * 3 + c] = sl[n / 2];
+            }
+        }
+    }
+    out
+}
+
+/// Heckbert median-cut on pixels. Split the box with the largest
+/// luminance-weighted range; keep box membership (no nearest reassignment).
 pub fn median_cut(rgb: &[u8], k: usize) -> (Vec<u32>, Vec<[u8; 3]>) {
     let n = rgb.len() / 3;
     let k = k.max(1).min(n.max(1));
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
     let mut indices: Vec<u32> = (0..n as u32).collect();
-    let mut boxes: Vec<(usize, usize)> = vec![(0, n)]; // ranges into `indices`
+    let mut boxes: Vec<(usize, usize)> = vec![(0, n)];
 
     while boxes.len() < k {
         let mut best = 0usize;
-        let mut best_range = 0u32;
+        let mut best_w = 0u32;
         for (i, &(lo, hi)) in boxes.iter().enumerate() {
             if hi - lo < 2 {
                 continue;
             }
-            let r = channel_range(rgb, &indices[lo..hi]);
-            if r >= best_range {
-                best_range = r;
+            let w = weighted_range(rgb, &indices[lo..hi]);
+            if w >= best_w {
+                best_w = w;
                 best = i;
             }
         }
-        if best_range == 0 {
+        if best_w == 0 {
             break;
         }
         let (lo, hi) = boxes[best];
-        let axis = longest_axis(rgb, &indices[lo..hi]);
+        let axis = lum_axis(rgb, &indices[lo..hi]);
         indices[lo..hi].sort_by_key(|&p| rgb[p as usize * 3 + axis]);
         let mid = lo + (hi - lo) / 2;
         boxes[best] = (lo, mid);
@@ -31,11 +69,65 @@ pub fn median_cut(rgb: &[u8], k: usize) -> (Vec<u32>, Vec<[u8; 3]>) {
     }
 
     let mut pal = vec![[0u8; 3]; boxes.len()];
+    let mut idx = vec![0u32; n];
     for (bi, &(lo, hi)) in boxes.iter().enumerate() {
         pal[bi] = mean_color(rgb, &indices[lo..hi]);
+        for &p in &indices[lo..hi] {
+            idx[p as usize] = bi as u32;
+        }
     }
-    let idx = assign_nearest(rgb, n, &pal);
     (idx, pal)
+}
+
+fn box_minmax(rgb: &[u8], pix: &[u32]) -> ([u8; 3], [u8; 3]) {
+    let mut min = [255u8; 3];
+    let mut max = [0u8; 3];
+    for &p in pix {
+        let o = p as usize * 3;
+        for c in 0..3 {
+            min[c] = min[c].min(rgb[o + c]);
+            max[c] = max[c].max(rgb[o + c]);
+        }
+    }
+    (min, max)
+}
+
+fn weighted_range(rgb: &[u8], pix: &[u32]) -> u32 {
+    let (min, max) = box_minmax(rgb, pix);
+    (max[0] as u32 - min[0] as u32) * 77
+        + (max[1] as u32 - min[1] as u32) * 150
+        + (max[2] as u32 - min[2] as u32) * 29
+}
+
+fn lum_axis(rgb: &[u8], pix: &[u32]) -> usize {
+    let (min, max) = box_minmax(rgb, pix);
+    let f = [
+        (max[0] as u32 - min[0] as u32) * 77,
+        (max[1] as u32 - min[1] as u32) * 150,
+        (max[2] as u32 - min[2] as u32) * 29,
+    ];
+    if f[0] >= f[1] && f[0] >= f[2] {
+        0
+    } else if f[1] >= f[2] {
+        1
+    } else {
+        2
+    }
+}
+
+fn mean_color(rgb: &[u8], pix: &[u32]) -> [u8; 3] {
+    if pix.is_empty() {
+        return [0; 3];
+    }
+    let mut s = [0u64; 3];
+    for &p in pix {
+        let o = p as usize * 3;
+        s[0] += rgb[o] as u64;
+        s[1] += rgb[o + 1] as u64;
+        s[2] += rgb[o + 2] as u64;
+    }
+    let n = pix.len() as u64;
+    [(s[0] / n) as u8, (s[1] / n) as u8, (s[2] / n) as u8]
 }
 
 pub fn kmeans_refine(rgb: &[u8], idx: &mut [u32], pal: &mut Vec<[u8; 3]>, iters: u32) {
@@ -103,13 +195,13 @@ pub fn merge_similar(idx: &mut [u32], pal: &mut Vec<[u8; 3]>, thresh: f32) {
     for a in 0..live.len() {
         let i = live[a];
         for &j in live.iter().skip(a + 1) {
-            let d = dist2(pal[i], pal[j]);
-            if d <= t2 {
-                let ri = find(&mut parent, i);
-                let rj = find(&mut parent, j);
-                if ri != rj {
-                    parent[rj] = ri;
-                }
+            if !merge_ok(pal[i], pal[j], t2) {
+                continue;
+            }
+            let ri = find(&mut parent, i);
+            let rj = find(&mut parent, j);
+            if ri != rj {
+                parent[rj] = ri;
             }
         }
     }
@@ -199,6 +291,35 @@ fn assign_nearest(rgb: &[u8], n: usize, pal: &[[u8; 3]]) -> Vec<u32> {
     idx
 }
 
+fn chroma(c: [u8; 3]) -> i32 {
+    let max = c[0].max(c[1]).max(c[2]) as i32;
+    let min = c[0].min(c[1]).min(c[2]) as i32;
+    max - min
+}
+
+/// Union-find on RGB distance chains mint→mid-pastel→cyan. Refuse that
+/// when both colours are chromatic and their opponent-hue differs.
+fn merge_ok(a: [u8; 3], b: [u8; 3], t2: i32) -> bool {
+    if dist2(a, b) > t2 {
+        return false;
+    }
+    if chroma(a) < 32 || chroma(b) < 32 {
+        return true;
+    }
+    let a_rg = a[0] as i32 - a[1] as i32;
+    let a_yb = (a[0] as i32 + a[1] as i32) / 2 - a[2] as i32;
+    let b_rg = b[0] as i32 - b[1] as i32;
+    let b_yb = (b[0] as i32 + b[1] as i32) / 2 - b[2] as i32;
+    let dot = a_rg as i64 * b_rg as i64 + a_yb as i64 * b_yb as i64;
+    let na = a_rg as i64 * a_rg as i64 + a_yb as i64 * a_yb as i64;
+    let nb = b_rg as i64 * b_rg as i64 + b_yb as i64 * b_yb as i64;
+    if na == 0 || nb == 0 {
+        return true;
+    }
+    // cos² < 0.75 → more than ~30° apart in opponent hue
+    dot * dot * 4 >= na * nb * 3
+}
+
 fn dist2(a: [u8; 3], b: [u8; 3]) -> i32 {
     let dr = a[0] as i32 - b[0] as i32;
     let dg = a[1] as i32 - b[1] as i32;
@@ -206,55 +327,4 @@ fn dist2(a: [u8; 3], b: [u8; 3]) -> i32 {
     dr * dr + dg * dg + db * db
 }
 
-fn channel_range(rgb: &[u8], pix: &[u32]) -> u32 {
-    let mut min = [255u8; 3];
-    let mut max = [0u8; 3];
-    for &p in pix {
-        let o = p as usize * 3;
-        for c in 0..3 {
-            min[c] = min[c].min(rgb[o + c]);
-            max[c] = max[c].max(rgb[o + c]);
-        }
-    }
-    let r = max[0] as u32 - min[0] as u32;
-    let g = max[1] as u32 - min[1] as u32;
-    let b = max[2] as u32 - min[2] as u32;
-    r.max(g).max(b)
-}
 
-fn longest_axis(rgb: &[u8], pix: &[u32]) -> usize {
-    let mut min = [255u8; 3];
-    let mut max = [0u8; 3];
-    for &p in pix {
-        let o = p as usize * 3;
-        for c in 0..3 {
-            min[c] = min[c].min(rgb[o + c]);
-            max[c] = max[c].max(rgb[o + c]);
-        }
-    }
-    let r = max[0] as u32 - min[0] as u32;
-    let g = max[1] as u32 - min[1] as u32;
-    let b = max[2] as u32 - min[2] as u32;
-    if r >= g && r >= b {
-        0
-    } else if g >= b {
-        1
-    } else {
-        2
-    }
-}
-
-fn mean_color(rgb: &[u8], pix: &[u32]) -> [u8; 3] {
-    if pix.is_empty() {
-        return [0; 3];
-    }
-    let mut s = [0u64; 3];
-    for &p in pix {
-        let o = p as usize * 3;
-        s[0] += rgb[o] as u64;
-        s[1] += rgb[o + 1] as u64;
-        s[2] += rgb[o + 2] as u64;
-    }
-    let n = pix.len() as u64;
-    [(s[0] / n) as u8, (s[1] / n) as u8, (s[2] / n) as u8]
-}
