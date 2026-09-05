@@ -20,11 +20,9 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-GPU bilateral (wgpu, CPU fallback) → **Felzenszwalb on the 4-graph**
-(tau=80, hue barrier) → adjacent same-paint merge → speckle absorb →
-interior-median fill → pixel-corner paths, `fill-rule="nonzero"`.
-`--median-cut` is the old global palette. `--cpu` skips GPU.
+`uzor-vision` GPU bilateral + SLIC → adjacent merge → absorb →
+interior-median → nonzero paths. `--fz` / `--median-cut` / `--cpu`.
 
 ## Open work
 
-More vision stages on GPU (labels, not just denoise). GIF.
+More GPU stages in `uzor-vision` (not in this crate). GIF.

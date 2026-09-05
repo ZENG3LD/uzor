@@ -43,7 +43,8 @@ Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 | `absorb_dist` | 48 | max RGB distance when eating speckles into a neighbor |
 | `kmeans_iters` | 0 | off. k-means reassignment steals gold/floral/mint into large fills |
 | `majority` | false | 3×3 label majority. Off: it ate thin black outlines |
-| `tau` | 80 | Felzenszwalb k/size. `--median-cut` (`tau=0`) is the old global palette |
+| `tau` | 80 | Felzenszwalb k/size when `--fz` (slic=0) |
+| `slic` | 512 | GPU superpixels. 0 = FZ or median-cut |
 
 Two-tier absorb: area < 16 always eaten (JPEG dirt); 16..min_area only if
 the neighbor is within `absorb_dist` (gold must not fall into pink).
@@ -86,9 +87,9 @@ Fixture (re-trace after every algorithm change, look at the sheets):
 
 ## Known open delta (continue here)
 
-Default is **GPU bilateral denoise** (wgpu, RTX when present; `--cpu`
-falls back) then **spatial Felzenszwalb**. Global median-cut is
-`--median-cut`. Do not vendor vtracer.
+Vision lives in `uzor-vision` (GPU-first, CPU fallback). This crate
+traces the label map. Default: GPU bilateral + GPU SLIC. `--fz` is
+Felzenszwalb. `--median-cut` is the old global palette.
 
 Hue barrier: two chromatic flats with opponent-hue ≳30° never merge, even
 across a 1px JPEG ramp. Cream is not a universal solvent.

@@ -1,0 +1,16 @@
+[package]
+name = "uzor-vision"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "GPU-first computer vision frontend (uzor). Denoise + superpixels; CPU fallback. Consumed by uzor-vectorize and later MV."
+keywords = ["uzor", "gpu", "vision", "slic", "segmentation"]
+categories = ["graphics", "science"]
+
+[dependencies]
+wgpu = "29"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }

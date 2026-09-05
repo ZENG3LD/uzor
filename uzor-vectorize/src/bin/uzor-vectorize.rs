@@ -87,12 +87,20 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
             }
             "--median-cut" => {
                 opt.tau = 0.0;
+                opt.slic = 0;
             }
             "--cpu" => {
                 opt.gpu = GpuMode::Cpu;
             }
             "--gpu" => {
                 opt.gpu = GpuMode::Gpu;
+            }
+            "--slic" => {
+                i += 1;
+                opt.slic = args.get(i).ok_or("--slic")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            }
+            "--fz" => {
+                opt.slic = 0;
             }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => {

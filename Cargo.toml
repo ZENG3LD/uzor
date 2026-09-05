@@ -46,6 +46,8 @@ members = [
     "uzor-render-hub",
     # Icon utilities
     "uzor-icon",
+    # GPU-first computer vision frontend (denoise + superpixels)
+    "uzor-vision",
     # Raster → SVG tracer (inverse of uzor-icon)
     "uzor-vectorize",
     # Agent control plane (local HTTP API)
@@ -95,6 +97,7 @@ uzor-render-wgpu-instanced = { version = "1.5.1", path = "./uzor-render-wgpu-ins
 uzor-render-canvas2d = { version = "1.5.1", path = "./uzor-render-canvas2d" }
 uzor-window-desktop = { version = "1.5.1", path = "./uzor-window-desktop" }
 uzor-icon = { version = "1.5.1", path = "./uzor-icon" }
+uzor-vision = { version = "1.5.1", path = "./uzor-vision" }
 uzor-vectorize = { version = "1.5.1", path = "./uzor-vectorize" }
 uzor-window-web = { version = "1.5.1", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.5.1", path = "./uzor-window-mobile" }

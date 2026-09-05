@@ -16,6 +16,7 @@ AGENT_README.md
 DRAG_SCROLL_MIGRATION_SPEC.md
 CLAUDE.md
 !uzor-vectorize/CLAUDE.md
+!uzor-vision/CLAUDE.md
 .claude/
 
 # IDE

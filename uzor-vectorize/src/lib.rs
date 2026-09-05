@@ -1,11 +1,9 @@
 //! PNG/JPEG → SVG tracer for flat-color graphics.
 //!
 //! Inverse of [`uzor-icon`](https://docs.rs/uzor-icon): that crate rasterizes
-//! SVG, this one vectorizes a raster. Pipeline: denoise, median-cut palette,
-//! speckle absorb, pixel-boundary contours, SVG paths.
+//! SVG, this one vectorizes a raster. Labels come from `uzor-vision`.
 
 mod contour;
-mod gpu;
 mod quantize;
 mod region;
 mod segment;
@@ -18,7 +16,7 @@ use resvg::usvg::{Options as UsvgOptions, Tree};
 use tiny_skia::{Pixmap, Transform};
 
 pub use contour::Pt;
-pub use gpu::GpuMode;
+pub use uzor_vision::GpuMode;
 
 #[derive(Clone, Debug)]
 pub struct VectorizeOptions {
@@ -33,6 +31,8 @@ pub struct VectorizeOptions {
     /// Felzenszwalb `k` / size. Higher = coarser regions. 0 = median-cut.
     pub tau: f32,
     pub gpu: GpuMode,
+    /// Superpixels. 0 = Felzenszwalb (`tau`) or median-cut.
+    pub slic: u32,
 }
 
 impl Default for VectorizeOptions {
@@ -47,6 +47,7 @@ impl Default for VectorizeOptions {
             majority: false,
             tau: 80.0,
             gpu: GpuMode::Auto,
+            slic: 512,
         }
     }
 }
@@ -103,9 +104,22 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         rgb.extend_from_slice(&p.0);
     }
 
-    let (rgb, denoise_device) = gpu::denoise(&rgb, w, h, opt.gpu);
-    let (mut idx, mut pal) = if opt.tau > 0.0 {
-        segment::felzenszwalb(&rgb, w, h, opt.tau, opt.min_area)
+    let vcfg = uzor_vision::Config {
+        gpu: opt.gpu,
+        slic_k: opt.slic,
+        merge: opt.merge,
+    };
+    let frame = uzor_vision::process(&rgb, w, h, &vcfg);
+    let rgb = frame.rgb;
+    let denoise_device = frame.device;
+    let (mut idx, mut pal) = if opt.slic > 0 && !frame.idx.is_empty() {
+        (frame.idx, frame.pal)
+    } else if opt.tau > 0.0 {
+        let sp = segment::felzenszwalb(&rgb, w, h, opt.tau, opt.min_area);
+        let mut idx = sp.0;
+        let mut pal = sp.1;
+        region::merge_adjacent_similar(&mut idx, &mut pal, w, h, opt.merge);
+        (idx, pal)
     } else {
         let k = opt.colors.max(2) as usize;
         quantize::median_cut(&rgb, k)
@@ -113,9 +127,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     if opt.kmeans_iters > 0 {
         quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
     }
-    if opt.tau > 0.0 {
-        region::merge_adjacent_similar(&mut idx, &mut pal, w, h, opt.merge);
-    } else {
+    if opt.slic == 0 && opt.tau <= 0.0 {
         quantize::merge_similar(&mut idx, &mut pal, opt.merge);
     }
     if opt.majority {
