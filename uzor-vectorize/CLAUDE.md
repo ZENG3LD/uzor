@@ -20,20 +20,12 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-3×3 per-channel median denoise → Heckbert median-cut on pixels (largest
-luminance-weighted range; **box membership kept**, no nearest-centroid)
-→ hue-safe similar-color merge → two-tier speckle absorb → median snap
-of each bin onto the denoised RGB → 4-connected blobs → pixel-corner
-outlines → corner-preserving RDP.
-
-k-means and 3×3 majority are opt-in. Both steal or eat rare hues / thin
-black. Population unique-color cuts (Pillow's heap) looked right on
-memphis mint in a Python replica and then wrecked gold coins on
-flat-vector in Rust — do not bring them back without a fixture on all
-three tiles.
+3×3 median denoise → **Felzenszwalb on the 4-graph** (tau=80, hue barrier
+so cream is not a universal solvent) → speckle absorb → interior-median
+fill → 4-connected blobs → pixel-corner paths, `fill-rule="nonzero"`,
+large-first stack. `--median-cut` is the old global palette.
 
 ## Open work
 
-Memphis mint rays. Felzenszwalb (`--tau`) leaks through AA — next is
-spatial neighbour-merge, owned, not a vtracer dep. GIF after poster-like
-tiles sit at the quant ceiling.
+Collapse adjacent same-paint regions (SVG is 2–3k paths). GPU bilateral
+as the reusable vision denoise. Then GIF.

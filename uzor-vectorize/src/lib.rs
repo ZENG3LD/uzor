@@ -42,7 +42,7 @@ impl Default for VectorizeOptions {
             absorb_dist: 48.0,
             kmeans_iters: 0,
             majority: false,
-            tau: 0.0,
+            tau: 80.0,
         }
     }
 }
@@ -108,7 +108,9 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     if opt.kmeans_iters > 0 {
         quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
     }
-    quantize::merge_similar(&mut idx, &mut pal, opt.merge);
+    if opt.tau <= 0.0 {
+        quantize::merge_similar(&mut idx, &mut pal, opt.merge);
+    }
     if opt.majority {
         region::majority_snap(&mut idx, w, h);
     }
@@ -120,7 +122,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         opt.min_area,
         opt.absorb_dist,
     );
-    quantize::snap_palette_median(&rgb, &idx, &mut pal);
+    quantize::snap_palette_median(&rgb, &idx, &mut pal, w, h);
 
     let mut quantized = vec![0u8; w * h * 3];
     for i in 0..w * h {
@@ -161,7 +163,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         contour_count += loops.len() as u32;
         let d = svg::path_d(&loops);
         let fill = svg::hex_color(pal[color_i as usize]);
-        let path = format!("  <path fill=\"{fill}\" fill-rule=\"evenodd\" d=\"{d}\"/>");
+        let path = format!("  <path fill=\"{fill}\" fill-rule=\"nonzero\" d=\"{d}\"/>");
         layers.push((area, pal[color_i as usize], path));
     }
     layers.sort_by(|a, b| b.0.cmp(&a.0));

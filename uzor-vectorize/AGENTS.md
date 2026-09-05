@@ -43,7 +43,7 @@ Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 | `absorb_dist` | 48 | max RGB distance when eating speckles into a neighbor |
 | `kmeans_iters` | 0 | off. k-means reassignment steals gold/floral/mint into large fills |
 | `majority` | false | 3×3 label majority. Off: it ate thin black outlines |
-| `tau` | 0 | 0 = median-cut. `>0` = Felzenszwalb k/size (experimental) |
+| `tau` | 80 | Felzenszwalb k/size. `--median-cut` (`tau=0`) is the old global palette |
 
 Two-tier absorb: area < 16 always eaten (JPEG dirt); 16..min_area only if
 the neighbor is within `absorb_dist` (gold must not fall into pink).
@@ -86,24 +86,27 @@ Fixture (re-trace after every algorithm change, look at the sheets):
 
 ## Known open delta (continue here)
 
-Median-cut default (3×3 denoise, range cut, hue-safe merge, median snap):
+Default is **spatial Felzenszwalb** (owned rewrite of IJCV 2004), not a
+global palette. Global median-cut is `--median-cut`. Do not vendor vtracer.
 
-| tile | vs source MAE | close | visible | vs quant close | class |
+Hue barrier: two chromatic flats with opponent-hue ≳30° never merge, even
+across a 1px JPEG ramp. Cream is not a universal solvent.
+
+| tile | vs source MAE | close | visible | vs quant close | notes |
 |---|---|---|---|---|---|
-| neobrutalist | 2.77 | 93.4% | 3.9% | 99.1% | few hard flats — auto is enough |
-| print | 6.23 | 86.4% | 7.7% | 97.4% | at/past last Python |
-| sticker | 5.84 | 84.6% | 9.5% | 98.5% | same band as Python |
-| flat | 5.45 | 84.7% | 7.9% | 97.5% | gold/floral present |
-| memphis | 7.77 | 71.5% | 17.7% | 97.7% | mint rays still → cyan |
-| pixel | 19.14 | 62.1% | 25.1% | 87.4% | dense AA burst — not a poster |
+| neobrutalist | 2.53 | 93.8% | 3.5% | 99.4% | auto enough |
+| memphis | 5.16 | 87.3% | 6.8% | 98.9% | mint rays exact (was cyan) |
+| flat | 4.47 | 87.6% | 6.7% | 98.8% | gold/floral kept |
+| print | 6.28 | 87.3% | 7.2% | 98.6% | |
+| sticker | 3.91 | 91.4% | 5.0% | 99.5% | |
+| pixel | 11.08 | 71.6% | 16.8% | 97.5% | dense burst; still not a poster |
+
+SVG is fat (~2–3k paths) because same-fill neighbours are not yet
+collapsed spatially. Next: neighbour merge of identical paint, then GPU
+bilateral (`quantize::bilateral` is the CPU stand-in).
 
 100% vs JPEG with hard fills is not reachable (1px AA). 100% vs quant is
-the engine ceiling; we sit ~97–99% on poster-like art.
-
-Felzenszwalb graph segmentation is in `src/segment.rs`, opt-in `--tau N`.
-AA ramps leak (tau too high → one region). Next owned rewrite: spatial
-agglomerative merge of neighbouring regions (vtracer/Impression clustering
-rewritten, not vendored) — mint and cyan only meet if they share a border.
+the engine ceiling; poster-like tiles sit ~99%.
 
 - Thin black outlines still fragment on print linocut texture.
 - Residual pass vs quant not started.

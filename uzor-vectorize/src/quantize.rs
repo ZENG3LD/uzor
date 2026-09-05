@@ -33,6 +33,60 @@ pub fn median3(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
     out
 }
 
+/// Edge-preserving smooth. JPEG AA is a 1px ramp that would otherwise
+/// become a Felzenszwalb bridge between two flats. Range sigma is in
+/// max-channel units.
+#[allow(dead_code)] // vision frontend; GPU bilateral lands here
+pub fn bilateral(rgb: &[u8], w: usize, h: usize, radius: i32, sigma_s: f32, sigma_r: f32) -> Vec<u8> {
+    let mut out = vec![0u8; w * h * 3];
+    if w == 0 || h == 0 {
+        return out;
+    }
+    let inv_2s = 0.5 / (sigma_s * sigma_s).max(1e-6);
+    let inv_2r = 0.5 / (sigma_r * sigma_r).max(1e-6);
+    let r = radius.max(1);
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) * 3;
+            let cr = rgb[i] as f32;
+            let cg = rgb[i + 1] as f32;
+            let cb = rgb[i + 2] as f32;
+            let mut ar = 0.0f32;
+            let mut ag = 0.0f32;
+            let mut ab = 0.0f32;
+            let mut ws = 0.0f32;
+            for dy in -r..=r {
+                let ny = y as i32 + dy;
+                if ny < 0 || ny >= h as i32 {
+                    continue;
+                }
+                for dx in -r..=r {
+                    let nx = x as i32 + dx;
+                    if nx < 0 || nx >= w as i32 {
+                        continue;
+                    }
+                    let j = (ny as usize * w + nx as usize) * 3;
+                    let dr = rgb[j] as f32 - cr;
+                    let dg = rgb[j + 1] as f32 - cg;
+                    let db = rgb[j + 2] as f32 - cb;
+                    let ds2 = (dx * dx + dy * dy) as f32;
+                    let dc2 = dr * dr + dg * dg + db * db;
+                    let wt = (-ds2 * inv_2s - dc2 * inv_2r).exp();
+                    ar += rgb[j] as f32 * wt;
+                    ag += rgb[j + 1] as f32 * wt;
+                    ab += rgb[j + 2] as f32 * wt;
+                    ws += wt;
+                }
+            }
+            let den = ws.max(1e-6);
+            out[i] = (ar / den).round().clamp(0.0, 255.0) as u8;
+            out[i + 1] = (ag / den).round().clamp(0.0, 255.0) as u8;
+            out[i + 2] = (ab / den).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
 /// Heckbert median-cut on pixels. Split the box with the largest
 /// luminance-weighted range; keep box membership (no nearest reassignment).
 pub fn median_cut(rgb: &[u8], k: usize) -> (Vec<u32>, Vec<[u8; 3]>) {
@@ -239,9 +293,9 @@ pub fn merge_similar(idx: &mut [u32], pal: &mut Vec<[u8; 3]>, thresh: f32) {
     *pal = new_pal;
 }
 
-/// Per-bin median of the original RGB. Stops k-means/mean from shifting
-/// a flat fill (cream background) toward the JPEG fringe around it.
-pub fn snap_palette_median(rgb: &[u8], idx: &[u32], pal: &mut Vec<[u8; 3]>) {
+/// Per-bin median of **interior** pixels (4-neighbours same label).
+/// Fringe / AA does not pull the fill.
+pub fn snap_palette_median(rgb: &[u8], idx: &[u32], pal: &mut Vec<[u8; 3]>, w: usize, h: usize) {
     let k = pal.len();
     if k == 0 {
         return;
@@ -250,14 +304,55 @@ pub fn snap_palette_median(rgb: &[u8], idx: &[u32], pal: &mut Vec<[u8; 3]>) {
         .map(|_| [Vec::new(), Vec::new(), Vec::new()])
         .collect();
     let n = rgb.len() / 3;
-    for p in 0..n {
-        let lab = idx[p] as usize;
-        if lab >= k {
-            continue;
+    if w == 0 || h == 0 || w * h != n {
+        for p in 0..n {
+            let lab = idx[p] as usize;
+            if lab >= k {
+                continue;
+            }
+            buckets[lab][0].push(rgb[p * 3]);
+            buckets[lab][1].push(rgb[p * 3 + 1]);
+            buckets[lab][2].push(rgb[p * 3 + 2]);
         }
-        buckets[lab][0].push(rgb[p * 3]);
-        buckets[lab][1].push(rgb[p * 3 + 1]);
-        buckets[lab][2].push(rgb[p * 3 + 2]);
+    } else {
+        let mut any = vec![false; k];
+        for y in 0..h {
+            for x in 0..w {
+                let p = y * w + x;
+                let lab = idx[p] as usize;
+                if lab >= k {
+                    continue;
+                }
+                let mut interior = true;
+                if x == 0 || idx[p - 1] != idx[p] {
+                    interior = false;
+                }
+                if x + 1 == w || idx[p + 1] != idx[p] {
+                    interior = false;
+                }
+                if y == 0 || idx[p - w] != idx[p] {
+                    interior = false;
+                }
+                if y + 1 == h || idx[p + w] != idx[p] {
+                    interior = false;
+                }
+                if interior {
+                    buckets[lab][0].push(rgb[p * 3]);
+                    buckets[lab][1].push(rgb[p * 3 + 1]);
+                    buckets[lab][2].push(rgb[p * 3 + 2]);
+                    any[lab] = true;
+                }
+            }
+        }
+        for p in 0..n {
+            let lab = idx[p] as usize;
+            if lab >= k || any[lab] {
+                continue;
+            }
+            buckets[lab][0].push(rgb[p * 3]);
+            buckets[lab][1].push(rgb[p * 3 + 1]);
+            buckets[lab][2].push(rgb[p * 3 + 2]);
+        }
     }
     for lab in 0..k {
         if buckets[lab][0].is_empty() {
@@ -291,18 +386,15 @@ fn assign_nearest(rgb: &[u8], n: usize, pal: &[[u8; 3]]) -> Vec<u32> {
     idx
 }
 
-fn chroma(c: [u8; 3]) -> i32 {
+pub(crate) fn chroma(c: [u8; 3]) -> i32 {
     let max = c[0].max(c[1]).max(c[2]) as i32;
     let min = c[0].min(c[1]).min(c[2]) as i32;
     max - min
 }
 
-/// Union-find on RGB distance chains mint→mid-pastel→cyan. Refuse that
-/// when both colours are chromatic and their opponent-hue differs.
-fn merge_ok(a: [u8; 3], b: [u8; 3], t2: i32) -> bool {
-    if dist2(a, b) > t2 {
-        return false;
-    }
+/// Chromatic opponent-hue agreement. Low-chroma (cream, JPEG dirt) is
+/// compatible with anyone so spatial merge can swallow a fringe.
+pub(crate) fn hue_compatible(a: [u8; 3], b: [u8; 3]) -> bool {
     if chroma(a) < 32 || chroma(b) < 32 {
         return true;
     }
@@ -318,6 +410,27 @@ fn merge_ok(a: [u8; 3], b: [u8; 3], t2: i32) -> bool {
     }
     // cos² < 0.75 → more than ~30° apart in opponent hue
     dot * dot * 4 >= na * nb * 3
+}
+
+/// FZ merge barrier. Low-chroma cream is **not** a universal solvent:
+/// cream–pink would otherwise leak through the JPEG AA ramp.
+pub(crate) fn same_flat(a: [u8; 3], b: [u8; 3]) -> bool {
+    let ca = chroma(a);
+    let cb = chroma(b);
+    if ca < 32 && cb < 32 {
+        return true;
+    }
+    if ca < 32 || cb < 32 {
+        return false;
+    }
+    hue_compatible(a, b)
+}
+
+fn merge_ok(a: [u8; 3], b: [u8; 3], t2: i32) -> bool {
+    if dist2(a, b) > t2 {
+        return false;
+    }
+    hue_compatible(a, b)
 }
 
 fn dist2(a: [u8; 3], b: [u8; 3]) -> i32 {
