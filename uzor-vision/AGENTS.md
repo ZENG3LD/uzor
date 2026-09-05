@@ -21,6 +21,9 @@ No adapter → CPU. `--gpu` failure → hybrid, then CPU.
 2. Bilateral.
 3. SLIC.
 4. Adjacent same-paint merge (hue barrier).
+5. Rare-hue rescue against the **undenoised** raster (thin gold must not
+   stay cream because bilateral smeared it).
+6. Luma split inside a chromatic fill (coin highlight vs body).
 
 Output: denoised RGB + label map + per-label fill (interior median is
 the tracer's job).

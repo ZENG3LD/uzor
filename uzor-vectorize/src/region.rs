@@ -190,14 +190,15 @@ pub fn absorb_speckles(
             let src = pal[own[lab as usize] as usize];
             let mut target: Option<u32> = None;
             for &(cand, _) in v.iter() {
-                let d = dist2_rgb(src, pal[cand as usize]);
-                if d <= dist2 {
+                let dst = pal[cand as usize];
+                if !uzor_vision::same_flat(src, dst) {
+                    continue;
+                }
+                let d = dist2_rgb(src, dst);
+                if d <= dist2 || (area < 16 && uzor_vision::chroma(src) < 32) {
                     target = Some(cand);
                     break;
                 }
-            }
-            if target.is_none() && area < 16 {
-                target = Some(v[0].0);
             }
             remap[lab as usize] = target;
         }

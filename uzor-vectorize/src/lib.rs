@@ -113,6 +113,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     for p in img.pixels() {
         rgb.extend_from_slice(&p.0);
     }
+    let orig = rgb.clone();
 
     let vcfg = uzor_vision::Config {
         gpu: opt.gpu,
@@ -151,7 +152,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         opt.min_area,
         opt.absorb_dist,
     );
-    quantize::snap_palette_median(&rgb, &idx, &mut pal, w, h);
+    quantize::snap_palette_median(&orig, &idx, &mut pal, w, h);
 
     let mut quantized = vec![0u8; w * h * 3];
     for i in 0..w * h {
