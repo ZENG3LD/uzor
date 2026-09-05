@@ -46,6 +46,8 @@ members = [
     "uzor-render-hub",
     # Icon utilities
     "uzor-icon",
+    # Raster → SVG tracer (inverse of uzor-icon)
+    "uzor-vectorize",
     # Agent control plane (local HTTP API)
     "uzor-agent-api",
     # Reusable force-directed graph visualization engine
@@ -93,6 +95,7 @@ uzor-render-wgpu-instanced = { version = "1.5.1", path = "./uzor-render-wgpu-ins
 uzor-render-canvas2d = { version = "1.5.1", path = "./uzor-render-canvas2d" }
 uzor-window-desktop = { version = "1.5.1", path = "./uzor-window-desktop" }
 uzor-icon = { version = "1.5.1", path = "./uzor-icon" }
+uzor-vectorize = { version = "1.5.1", path = "./uzor-vectorize" }
 uzor-window-web = { version = "1.5.1", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.5.1", path = "./uzor-window-mobile" }
 uzor-framework-macros = { version = "1.5.1", path = "./uzor-framework-macros" }

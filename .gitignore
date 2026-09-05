@@ -15,6 +15,7 @@ ARCHITECTURE_LEVELS.md
 AGENT_README.md
 DRAG_SCROLL_MIGRATION_SPEC.md
 CLAUDE.md
+!uzor-vectorize/CLAUDE.md
 .claude/
 
 # IDE

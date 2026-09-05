@@ -19,6 +19,7 @@ The workspace is one version (**1.5.1**). Every crate below publishes at that nu
 | `uzor` | Engine: input, layout, panels, widgets, animation, `RenderContext` |
 | `uzor-fonts` | Bundled fonts |
 | `uzor-icon` | SVG → PNG/ICO helpers |
+| `uzor-vectorize` | PNG/JPEG → SVG tracer (flat-color) |
 | `uzor-framework-macros` | `view!` DSL |
 | `uzor-agent-api` | Local HTTP control plane for live apps |
 

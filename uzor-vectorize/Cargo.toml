@@ -1,0 +1,20 @@
+[package]
+name = "uzor-vectorize"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "PNG/JPEG → SVG tracer for flat-color graphics (uzor). Inverse of uzor-icon."
+keywords = ["uzor", "svg", "png", "vectorize", "trace"]
+categories = ["graphics"]
+
+[[bin]]
+name = "uzor-vectorize"
+path = "src/bin/uzor-vectorize.rs"
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+resvg = "0.45"
+tiny-skia = "0.11"
