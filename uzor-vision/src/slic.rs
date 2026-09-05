@@ -50,33 +50,62 @@ pub fn slic(
         }
     }
     let compact = (10.0 / step) * (10.0 / step);
-    let use_gpu = mode != GpuMode::Cpu;
+    let (labels, device) = match mode {
+        GpuMode::Gpu => match gpu::gpu_slic_full(rgb, w, h, &centers, step, compact, 8) {
+            Ok(lab) => {
+                let name = gpu::ctx()
+                    .map(|g| g.name.clone())
+                    .unwrap_or_else(|_| "gpu".into());
+                (lab, format!("gpu:{name}"))
+            }
+            Err(e) => {
+                eprintln!("gpu slic loop failed ({e}); hybrid fallback");
+                slic_hybrid(rgb, w, h, &mut centers, step, compact, gw)
+            }
+        },
+        GpuMode::Hybrid => slic_hybrid(rgb, w, h, &mut centers, step, compact, gw),
+        GpuMode::Cpu => {
+            let mut labels = vec![0u32; n];
+            for _ in 0..8 {
+                labels = slic_assign_cpu(rgb, w, h, &centers, step, compact, gw);
+                update_centers(rgb, w, h, &labels, &mut centers);
+            }
+            (labels, "cpu".into())
+        }
+    };
+    let pal = merge::pal_from_idx(rgb, &labels, k);
+    (labels, pal, device)
+}
+
+fn slic_hybrid(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    centers: &mut [gpu::Center],
+    step: f32,
+    compact: f32,
+    gw: usize,
+) -> (Vec<u32>, String) {
+    let n = w * h;
     let mut labels = vec![0u32; n];
     let mut device = "cpu".to_string();
     for _ in 0..8 {
-        if use_gpu {
-            match gpu::gpu_slic_assign(rgb, w, h, &centers, step, compact) {
-                Ok(lab) => {
-                    labels = lab;
-                    if let Ok(g) = gpu::ctx() {
-                        device = format!("gpu:{}", g.name);
-                    }
-                }
-                Err(e) => {
-                    if mode == GpuMode::Gpu {
-                        eprintln!("gpu slic failed ({e}); cpu fallback");
-                    }
-                    labels = slic_assign_cpu(rgb, w, h, &centers, step, compact, gw);
-                    device = format!("cpu(fallback:{e})");
+        match gpu::gpu_slic_assign(rgb, w, h, centers, step, compact) {
+            Ok(lab) => {
+                labels = lab;
+                if let Ok(g) = gpu::ctx() {
+                    device = format!("hybrid:{}", g.name);
                 }
             }
-        } else {
-            labels = slic_assign_cpu(rgb, w, h, &centers, step, compact, gw);
+            Err(e) => {
+                eprintln!("gpu slic assign failed ({e}); cpu fallback");
+                labels = slic_assign_cpu(rgb, w, h, centers, step, compact, gw);
+                device = format!("cpu(fallback:{e})");
+            }
         }
-        update_centers(rgb, w, h, &labels, &mut centers);
+        update_centers(rgb, w, h, &labels, centers);
     }
-    let pal = merge::pal_from_idx(rgb, &labels, k);
-    (labels, pal, device)
+    (labels, device)
 }
 
 fn slic_assign_cpu(

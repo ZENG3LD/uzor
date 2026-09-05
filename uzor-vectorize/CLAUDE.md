@@ -20,9 +20,10 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-`uzor-vision` GPU bilateral + SLIC → adjacent merge → absorb →
-interior-median → nonzero paths. `--fz` / `--median-cut` / `--cpu`.
+`uzor-vision` → contours. Modes `--cpu` / `--hybrid` / `--gpu`. `--fz` /
+`--median-cut`. PNG/JPEG → SVG only.
 
 ## Open work
 
-More GPU stages in `uzor-vision` (not in this crate). GIF.
+Push vs-quant to 99%+ on poster tiles without losing hues. GPU mode
+quality must not regress vs hybrid.

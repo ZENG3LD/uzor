@@ -46,7 +46,7 @@ impl Default for VectorizeOptions {
             kmeans_iters: 0,
             majority: false,
             tau: 80.0,
-            gpu: GpuMode::Auto,
+            gpu: GpuMode::Hybrid,
             slic: 512,
         }
     }

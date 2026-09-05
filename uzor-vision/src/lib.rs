@@ -1,7 +1,6 @@
-//! GPU-first computer vision frontend.
+//! Computer vision frontend: CPU / Hybrid / GPU.
 //!
-//! Denoise + superpixels on wgpu when an adapter exists; CPU otherwise.
-//! Downstream crates (uzor-vectorize, later detectors) consume the label map.
+//! Downstream crates consume the label map. Not an SVG crate.
 
 mod color;
 mod cpu;
@@ -22,7 +21,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            gpu: GpuMode::Auto,
+            gpu: GpuMode::Hybrid,
             slic_k: 512,
             merge: 14.0,
         }
@@ -50,11 +49,7 @@ pub fn process(rgb: &[u8], w: usize, h: usize, cfg: &Config) -> Frame {
     let (mut idx, mut pal, slic_dev) = slic::slic(&rgb, w, h, cfg.slic_k, cfg.gpu);
     merge::merge_adjacent_similar(&mut idx, &mut pal, w, h, cfg.merge);
     let pal = merge::pal_from_idx(&rgb, &idx, pal.len());
-    let device = if slic_dev.starts_with("gpu") {
-        slic_dev
-    } else {
-        format!("{denoise_dev}+{slic_dev}")
-    };
+    let device = slic_dev;
     Frame {
         rgb,
         idx,

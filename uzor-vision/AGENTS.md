@@ -5,18 +5,22 @@ GPU-first computer vision frontend. First consumer is `uzor-vectorize`
 not SVG. Do not vendor OpenCV / vtracer / SAM weights without a supply-
 chain review.
 
-## Device
+## Device (three modes, not a one-way move)
 
-- Default: HighPerformance wgpu adapter.
-- No adapter / `--cpu`: CPU bilateral + CPU SLIC.
-- `--gpu`: require the adapter; on failure log and fall back.
+| mode | denoise | SLIC |
+|---|---|---|
+| `--cpu` | CPU | CPU |
+| `--hybrid` (default) | GPU bilateral | GPU assign, CPU centers |
+| `--gpu` | GPU bilateral | assign+accum+div on device, one readback |
+
+No adapter → CPU. `--gpu` failure → hybrid, then CPU.
 
 ## Pipeline
 
-1. 3×3 median (CPU, cheap).
-2. Bilateral denoise — GPU compute, CPU fallback.
-3. SLIC superpixels — GPU assign + CPU center update, CPU fallback.
-4. Adjacent same-paint merge (hue barrier: cream is not a solvent).
+1. 3×3 median (CPU).
+2. Bilateral.
+3. SLIC.
+4. Adjacent same-paint merge (hue barrier).
 
 Output: denoised RGB + label map + per-label fill (interior median is
 the tracer's job).

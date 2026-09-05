@@ -4,9 +4,12 @@ use crate::cpu;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuMode {
-    Auto,
-    Gpu,
+    /// All stages on CPU.
     Cpu,
+    /// GPU denoise + GPU SLIC assign; CPU center update / merge.
+    Hybrid,
+    /// SLIC loop stays on the device; one labels readback.
+    Gpu,
 }
 
 pub struct GpuCtx {
@@ -17,6 +20,12 @@ pub struct GpuCtx {
     bilateral_bgl: wgpu::BindGroupLayout,
     slic: wgpu::ComputePipeline,
     slic_bgl: wgpu::BindGroupLayout,
+    slic_zero: wgpu::ComputePipeline,
+    slic_zero_bgl: wgpu::BindGroupLayout,
+    slic_accum: wgpu::ComputePipeline,
+    slic_accum_bgl: wgpu::BindGroupLayout,
+    slic_div: wgpu::ComputePipeline,
+    slic_div_bgl: wgpu::BindGroupLayout,
 }
 
 static GPU: OnceLock<Option<GpuCtx>> = OnceLock::new();
@@ -66,6 +75,36 @@ fn init_gpu() -> Option<GpuCtx> {
             wgpu::BufferBindingType::Uniform,
         ],
     );
+    let (slic_zero, slic_zero_bgl) = make_compute(
+        &device,
+        "slic-zero",
+        SLIC_ZERO_WGSL,
+        &[
+            wgpu::BufferBindingType::Storage { read_only: false },
+            wgpu::BufferBindingType::Uniform,
+        ],
+    );
+    let (slic_accum, slic_accum_bgl) = make_compute(
+        &device,
+        "slic-accum",
+        SLIC_ACCUM_WGSL,
+        &[
+            wgpu::BufferBindingType::Storage { read_only: true },
+            wgpu::BufferBindingType::Storage { read_only: true },
+            wgpu::BufferBindingType::Storage { read_only: false },
+            wgpu::BufferBindingType::Uniform,
+        ],
+    );
+    let (slic_div, slic_div_bgl) = make_compute(
+        &device,
+        "slic-div",
+        SLIC_DIV_WGSL,
+        &[
+            wgpu::BufferBindingType::Storage { read_only: false },
+            wgpu::BufferBindingType::Storage { read_only: false },
+            wgpu::BufferBindingType::Uniform,
+        ],
+    );
     Some(GpuCtx {
         device,
         queue,
@@ -74,6 +113,12 @@ fn init_gpu() -> Option<GpuCtx> {
         bilateral_bgl,
         slic,
         slic_bgl,
+        slic_zero,
+        slic_zero_bgl,
+        slic_accum,
+        slic_accum_bgl,
+        slic_div,
+        slic_div_bgl,
     })
 }
 
@@ -124,12 +169,13 @@ pub fn denoise(rgb: &[u8], w: usize, h: usize, mode: GpuMode) -> (Vec<u8>, Strin
     let rgb = cpu::median3(rgb, w, h);
     match mode {
         GpuMode::Cpu => (cpu::bilateral(&rgb, w, h, 3, 2.0, 16.0), "cpu".into()),
-        GpuMode::Gpu | GpuMode::Auto => match gpu_bilateral(&rgb, w, h) {
-            Ok((out, name)) => (out, format!("gpu:{name}")),
+        GpuMode::Hybrid | GpuMode::Gpu => match gpu_bilateral(&rgb, w, h) {
+            Ok((out, name)) => {
+                let tag = if mode == GpuMode::Gpu { "gpu" } else { "hybrid" };
+                (out, format!("{tag}:{name}"))
+            }
             Err(e) => {
-                if mode == GpuMode::Gpu {
-                    eprintln!("gpu denoise failed ({e}); cpu fallback");
-                }
+                eprintln!("gpu denoise failed ({e}); cpu fallback");
                 (
                     cpu::bilateral(&rgb, w, h, 3, 2.0, 16.0),
                     format!("cpu(fallback:{e})"),
@@ -208,6 +254,119 @@ pub fn gpu_slic_assign(
         h,
     )?;
     Ok(bytemuck::cast_slice(&bytes).to_vec())
+}
+
+/// Assign + accumulate + divide on the device. Labels read back once.
+pub fn gpu_slic_full(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    centers: &[Center],
+    step: f32,
+    compact: f32,
+    iters: u32,
+) -> Result<Vec<u32>, String> {
+    let g = ctx()?;
+    let n = w * h;
+    let k = centers.len();
+    let packed = cpu::pack_rgb(rgb, n);
+    let src = buf_storage_dst(&g.device, "sf-src", bytemuck::cast_slice(&packed));
+    let labels = buf_rw(&g.device, "sf-lab", (n * 4) as u64);
+    let ctr = buf_storage_dst(&g.device, "sf-ctr", bytemuck::cast_slice(centers));
+    let acc = buf_rw(&g.device, "sf-acc", (k * 6 * 4) as u64);
+    let params = SlicParams {
+        width: w as u32,
+        height: h as u32,
+        k: k as u32,
+        step,
+        compact,
+        _pad: 0.0,
+        _pad2: 0.0,
+        _pad3: 0.0,
+    };
+    let ub = buf_uniform(&g.device, "sf-p", bytemuck::bytes_of(&params));
+    let bg_assign = bind(
+        &g.device,
+        &g.slic_bgl,
+        &[&src, &labels, &ctr, &ub],
+    );
+    let bg_zero = bind(&g.device, &g.slic_zero_bgl, &[&acc, &ub]);
+    let bg_accum = bind(
+        &g.device,
+        &g.slic_accum_bgl,
+        &[&src, &labels, &acc, &ub],
+    );
+    let bg_div = bind(&g.device, &g.slic_div_bgl, &[&acc, &ctr, &ub]);
+    let mut enc = g.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("slic-full"),
+    });
+    let gx = ((w as u32) + 15) / 16;
+    let gy = ((h as u32) + 15) / 16;
+    let gz = ((k as u32) * 6 + 63) / 64;
+    let gd = (k as u32 + 63) / 64;
+    for _ in 0..iters.max(1) {
+        record(&mut enc, &g.slic, &bg_assign, gx, gy);
+        record(&mut enc, &g.slic_zero, &bg_zero, gz, 1);
+        record(&mut enc, &g.slic_accum, &bg_accum, gx, gy);
+        record(&mut enc, &g.slic_div, &bg_div, gd, 1);
+    }
+    let staging = g.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("sf-read"),
+        size: (n * 4) as u64,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    enc.copy_buffer_to_buffer(&labels, 0, &staging, 0, (n * 4) as u64);
+    g.queue.submit(Some(enc.finish()));
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    let _ = g.device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    });
+    rx.recv()
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("map {e}"))?;
+    let raw = slice.get_mapped_range();
+    let out: Vec<u32> = bytemuck::cast_slice(&raw).to_vec();
+    drop(raw);
+    staging.unmap();
+    Ok(out)
+}
+
+fn bind(device: &wgpu::Device, bgl: &wgpu::BindGroupLayout, bufs: &[&wgpu::Buffer]) -> wgpu::BindGroup {
+    let entries: Vec<wgpu::BindGroupEntry> = bufs
+        .iter()
+        .enumerate()
+        .map(|(i, b)| wgpu::BindGroupEntry {
+            binding: i as u32,
+            resource: b.as_entire_binding(),
+        })
+        .collect();
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("slic-bg"),
+        layout: bgl,
+        entries: &entries,
+    })
+}
+
+fn record(
+    enc: &mut wgpu::CommandEncoder,
+    pipe: &wgpu::ComputePipeline,
+    bg: &wgpu::BindGroup,
+    gx: u32,
+    gy: u32,
+) {
+    let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("slic-pass"),
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(pipe);
+    pass.set_bind_group(0, bg, &[]);
+    pass.dispatch_workgroups(gx, gy, 1);
 }
 
 fn buf_storage_dst(device: &wgpu::Device, label: &str, data: &[u8]) -> wgpu::Buffer {
@@ -440,5 +599,63 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     labels[i] = best;
+}
+"#;
+
+const SLIC_ZERO_WGSL: &str = r#"
+struct Params { width: u32, height: u32, k: u32, step: f32, compact: f32, _pad: f32, _pad2: f32, _pad3: f32 }
+@group(0) @binding(0) var<storage, read_write> acc: array<atomic<u32>>;
+@group(0) @binding(1) var<uniform> params: Params;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.k * 6u { return; }
+    atomicStore(&acc[i], 0u);
+}
+"#;
+
+const SLIC_ACCUM_WGSL: &str = r#"
+struct Params { width: u32, height: u32, k: u32, step: f32, compact: f32, _pad: f32, _pad2: f32, _pad3: f32 }
+@group(0) @binding(0) var<storage, read> src: array<u32>;
+@group(0) @binding(1) var<storage, read> labels: array<u32>;
+@group(0) @binding(2) var<storage, read_write> acc: array<atomic<u32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = gid.x;
+    let y = gid.y;
+    if x >= params.width || y >= params.height { return; }
+    let i = y * params.width + x;
+    let lab = labels[i];
+    if lab >= params.k { return; }
+    let p = src[i];
+    let base = lab * 6u;
+    atomicAdd(&acc[base + 0u], x);
+    atomicAdd(&acc[base + 1u], y);
+    atomicAdd(&acc[base + 2u], (p >> 16u) & 255u);
+    atomicAdd(&acc[base + 3u], (p >> 8u) & 255u);
+    atomicAdd(&acc[base + 4u], p & 255u);
+    atomicAdd(&acc[base + 5u], 1u);
+}
+"#;
+
+const SLIC_DIV_WGSL: &str = r#"
+struct Center { x: f32, y: f32, r: f32, g: f32, b: f32, _p0: f32, _p1: f32, _p2: f32 }
+struct Params { width: u32, height: u32, k: u32, step: f32, compact: f32, _pad: f32, _pad2: f32, _pad3: f32 }
+@group(0) @binding(0) var<storage, read_write> acc: array<atomic<u32>>;
+@group(0) @binding(1) var<storage, read_write> centers: array<Center>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.k { return; }
+    let base = i * 6u;
+    let n = max(atomicLoad(&acc[base + 5u]), 1u);
+    let nf = f32(n);
+    centers[i].x = f32(atomicLoad(&acc[base + 0u])) / nf;
+    centers[i].y = f32(atomicLoad(&acc[base + 1u])) / nf;
+    centers[i].r = f32(atomicLoad(&acc[base + 2u])) / nf;
+    centers[i].g = f32(atomicLoad(&acc[base + 3u])) / nf;
+    centers[i].b = f32(atomicLoad(&acc[base + 4u])) / nf;
 }
 "#;

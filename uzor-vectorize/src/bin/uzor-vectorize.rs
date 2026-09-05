@@ -92,6 +92,9 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
             "--cpu" => {
                 opt.gpu = GpuMode::Cpu;
             }
+            "--hybrid" => {
+                opt.gpu = GpuMode::Hybrid;
+            }
             "--gpu" => {
                 opt.gpu = GpuMode::Gpu;
             }

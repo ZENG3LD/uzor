@@ -9,9 +9,9 @@ parity numbers stabilize). Not a Python script, not a nemo-root tool.
 ## Why it exists
 
 Agents generate raster illustrations (Imagine, screenshots) and then need
-a real SVG that stays sharp at any size, plus later GIF frames that do not
-smear. JPEG/PNG anti-alias and JPEG ringing destroy naive traces. This
-crate owns that conversion so every harness uses one engine.
+a real SVG that stays sharp at any size. JPEG/PNG anti-alias and JPEG
+ringing destroy naive traces. This crate owns PNG/JPEG → SVG. Agnostic:
+no scene-specific palettes.
 
 Do **not** revive `PS/pig-slayer/tools/raster_vector.py` — it was a
 prototype and has been deleted.
@@ -105,18 +105,17 @@ across a 1px JPEG ramp. Cream is not a universal solvent.
 
 Adjacent same-paint merge after FZ (not global palette merge). Denoise
 device is printed on every `parity` line (`gpu:NVIDIA GeForce RTX 4060 Ti`
-or `cpu`). `--gpu` forces GPU and errors into cpu-fallback with a log;
-`--cpu` skips the adapter.
+or `cpu`). Modes: `--cpu` / `--hybrid` (default) / `--gpu`. Hybrid is GPU
+denoise + GPU SLIC assign, CPU center update. GPU keeps the SLIC loop on
+the device.
 
 100% vs JPEG with hard fills is not reachable (1px AA). 100% vs quant is
 the engine ceiling; poster-like tiles sit ~99%.
 
 - Thin black outlines still fragment on print linocut texture.
 - Residual pass vs quant not started.
-- GIF after still-image on poster-like tiles; pixel-burst is a different job.
-
 Agent loop after auto: skill `uzor-vectorize` (hand-finish fill hexes / holes,
-do not chase AA).
+do not chase AA). Not a GIF tool.
 
 ## Layout
 
