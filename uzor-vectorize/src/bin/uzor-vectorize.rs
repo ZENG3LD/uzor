@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use uzor_vectorize::{
     diff_heatmap, parity_rgb, parity_sheet, quantized_image, rasterize_svg, vectorize_path,
-    VectorizeOptions,
+    GpuMode, VectorizeOptions,
 };
 
 fn main() -> ExitCode {
@@ -88,6 +88,12 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
             "--median-cut" => {
                 opt.tau = 0.0;
             }
+            "--cpu" => {
+                opt.gpu = GpuMode::Cpu;
+            }
+            "--gpu" => {
+                opt.gpu = GpuMode::Gpu;
+            }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => {
                 if src.is_some() {
@@ -106,12 +112,13 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
     }
     fs::write(&out, &doc.svg).map_err(|e| e.to_string())?;
     println!(
-        "svg {}x{}  colors={}  contours={}  {} bytes  -> {}",
+        "svg {}x{}  colors={}  contours={}  {} bytes  denoise={}  -> {}",
         doc.width,
         doc.height,
         doc.colors_kept,
         doc.contours,
         doc.svg.len(),
+        doc.denoise_device,
         out.display()
     );
     if cmd == "svg" {

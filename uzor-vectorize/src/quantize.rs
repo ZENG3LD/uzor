@@ -36,7 +36,6 @@ pub fn median3(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
 /// Edge-preserving smooth. JPEG AA is a 1px ramp that would otherwise
 /// become a Felzenszwalb bridge between two flats. Range sigma is in
 /// max-channel units.
-#[allow(dead_code)] // vision frontend; GPU bilateral lands here
 pub fn bilateral(rgb: &[u8], w: usize, h: usize, radius: i32, sigma_s: f32, sigma_r: f32) -> Vec<u8> {
     let mut out = vec![0u8; w * h * 3];
     if w == 0 || h == 0 {

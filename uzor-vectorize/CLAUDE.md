@@ -20,12 +20,11 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-3×3 median denoise → **Felzenszwalb on the 4-graph** (tau=80, hue barrier
-so cream is not a universal solvent) → speckle absorb → interior-median
-fill → 4-connected blobs → pixel-corner paths, `fill-rule="nonzero"`,
-large-first stack. `--median-cut` is the old global palette.
+GPU bilateral (wgpu, CPU fallback) → **Felzenszwalb on the 4-graph**
+(tau=80, hue barrier) → adjacent same-paint merge → speckle absorb →
+interior-median fill → pixel-corner paths, `fill-rule="nonzero"`.
+`--median-cut` is the old global palette. `--cpu` skips GPU.
 
 ## Open work
 
-Collapse adjacent same-paint regions (SVG is 2–3k paths). GPU bilateral
-as the reusable vision denoise. Then GIF.
+More vision stages on GPU (labels, not just denoise). GIF.

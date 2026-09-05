@@ -5,6 +5,7 @@
 //! speckle absorb, pixel-boundary contours, SVG paths.
 
 mod contour;
+mod gpu;
 mod quantize;
 mod region;
 mod segment;
@@ -17,6 +18,7 @@ use resvg::usvg::{Options as UsvgOptions, Tree};
 use tiny_skia::{Pixmap, Transform};
 
 pub use contour::Pt;
+pub use gpu::GpuMode;
 
 #[derive(Clone, Debug)]
 pub struct VectorizeOptions {
@@ -30,6 +32,7 @@ pub struct VectorizeOptions {
     pub majority: bool,
     /// Felzenszwalb `k` / size. Higher = coarser regions. 0 = median-cut.
     pub tau: f32,
+    pub gpu: GpuMode,
 }
 
 impl Default for VectorizeOptions {
@@ -43,6 +46,7 @@ impl Default for VectorizeOptions {
             kmeans_iters: 0,
             majority: false,
             tau: 80.0,
+            gpu: GpuMode::Auto,
         }
     }
 }
@@ -56,6 +60,7 @@ pub struct SvgDocument {
     pub contours: u32,
     /// Packed RGB of the quantized source (length = width*height*3).
     pub quantized: Vec<u8>,
+    pub denoise_device: String,
 }
 
 #[derive(Debug)]
@@ -98,7 +103,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         rgb.extend_from_slice(&p.0);
     }
 
-    let rgb = quantize::median3(&rgb, w, h);
+    let (rgb, denoise_device) = gpu::denoise(&rgb, w, h, opt.gpu);
     let (mut idx, mut pal) = if opt.tau > 0.0 {
         segment::felzenszwalb(&rgb, w, h, opt.tau, opt.min_area)
     } else {
@@ -108,7 +113,9 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     if opt.kmeans_iters > 0 {
         quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
     }
-    if opt.tau <= 0.0 {
+    if opt.tau > 0.0 {
+        region::merge_adjacent_similar(&mut idx, &mut pal, w, h, opt.merge);
+    } else {
         quantize::merge_similar(&mut idx, &mut pal, opt.merge);
     }
     if opt.majority {
@@ -177,6 +184,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         colors_kept,
         contours: contour_count,
         quantized,
+        denoise_device,
     })
 }
 

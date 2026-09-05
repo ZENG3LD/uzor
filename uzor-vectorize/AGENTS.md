@@ -86,8 +86,9 @@ Fixture (re-trace after every algorithm change, look at the sheets):
 
 ## Known open delta (continue here)
 
-Default is **spatial Felzenszwalb** (owned rewrite of IJCV 2004), not a
-global palette. Global median-cut is `--median-cut`. Do not vendor vtracer.
+Default is **GPU bilateral denoise** (wgpu, RTX when present; `--cpu`
+falls back) then **spatial Felzenszwalb**. Global median-cut is
+`--median-cut`. Do not vendor vtracer.
 
 Hue barrier: two chromatic flats with opponent-hue ≳30° never merge, even
 across a 1px JPEG ramp. Cream is not a universal solvent.
@@ -101,9 +102,10 @@ across a 1px JPEG ramp. Cream is not a universal solvent.
 | sticker | 3.91 | 91.4% | 5.0% | 99.5% | |
 | pixel | 11.08 | 71.6% | 16.8% | 97.5% | dense burst; still not a poster |
 
-SVG is fat (~2–3k paths) because same-fill neighbours are not yet
-collapsed spatially. Next: neighbour merge of identical paint, then GPU
-bilateral (`quantize::bilateral` is the CPU stand-in).
+Adjacent same-paint merge after FZ (not global palette merge). Denoise
+device is printed on every `parity` line (`gpu:NVIDIA GeForce RTX 4060 Ti`
+or `cpu`). `--gpu` forces GPU and errors into cpu-fallback with a log;
+`--cpu` skips the adapter.
 
 100% vs JPEG with hard fills is not reachable (1px AA). 100% vs quant is
 the engine ceiling; poster-like tiles sit ~99%.
@@ -120,8 +122,9 @@ do not chase AA).
 ```
 uzor-vectorize/
   src/lib.rs           orchestrate + resvg roundtrip + parity stats
-  src/quantize.rs      median-cut, k-means, similar-color merge
-  src/segment.rs       Felzenszwalb (opt-in --tau)
+  src/gpu.rs           wgpu bilateral (GPU primary, CPU fallback)
+  src/quantize.rs      median-cut, CPU bilateral, hue barrier
+  src/segment.rs       Felzenszwalb
   src/region.rs        4-connected labels, majority snap, speckle absorb
   src/contour.rs       pixel-boundary loops, corner-preserving simplify
   src/svg.rs           path `d` + document

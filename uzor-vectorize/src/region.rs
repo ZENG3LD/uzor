@@ -214,6 +214,85 @@ pub fn absorb_speckles(
     }
 }
 
+/// Union neighbouring labels whose fills are the same flat. Global
+/// `merge_similar` is forbidden after Felzenszwalb (it chains 20k crumbs
+/// into mud). This only touches a shared 4-border.
+pub fn merge_adjacent_similar(
+    idx: &mut [u32],
+    pal: &mut Vec<[u8; 3]>,
+    w: usize,
+    h: usize,
+    thresh: f32,
+) {
+    let k = pal.len();
+    if k == 0 || w == 0 || h == 0 {
+        return;
+    }
+    let t2 = (thresh * thresh) as i32;
+    let mut parent: Vec<u32> = (0..k as u32).collect();
+    let find = |parent: &mut [u32], mut a: u32| -> u32 {
+        while parent[a as usize] != a {
+            let p = parent[a as usize];
+            parent[a as usize] = parent[p as usize];
+            a = p;
+        }
+        a
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let a = idx[i];
+            if (a as usize) >= k {
+                continue;
+            }
+            if x + 1 < w {
+                let b = idx[i + 1];
+                if (b as usize) < k && a != b {
+                    let ca = pal[a as usize];
+                    let cb = pal[b as usize];
+                    if crate::quantize::same_flat(ca, cb) && dist2_rgb(ca, cb) <= t2 {
+                        let ra = find(&mut parent, a);
+                        let rb = find(&mut parent, b);
+                        if ra != rb {
+                            parent[rb as usize] = ra;
+                        }
+                    }
+                }
+            }
+            if y + 1 < h {
+                let b = idx[i + w];
+                if (b as usize) < k && a != b {
+                    let ca = pal[a as usize];
+                    let cb = pal[b as usize];
+                    if crate::quantize::same_flat(ca, cb) && dist2_rgb(ca, cb) <= t2 {
+                        let ra = find(&mut parent, a);
+                        let rb = find(&mut parent, b);
+                        if ra != rb {
+                            parent[rb as usize] = ra;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut remap = vec![u32::MAX; k];
+    let mut next = 0u32;
+    for i in 0..k {
+        let r = find(&mut parent, i as u32);
+        if remap[r as usize] == u32::MAX {
+            remap[r as usize] = next;
+            next += 1;
+        }
+        remap[i] = remap[r as usize];
+    }
+    for lab in idx.iter_mut() {
+        if (*lab as usize) < k {
+            *lab = remap[*lab as usize];
+        }
+    }
+    pal.resize(next as usize, [0; 3]);
+}
+
 fn dist2_rgb(a: [u8; 3], b: [u8; 3]) -> i32 {
     let dr = a[0] as i32 - b[0] as i32;
     let dg = a[1] as i32 - b[1] as i32;
