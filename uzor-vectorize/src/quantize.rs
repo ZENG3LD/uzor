@@ -57,8 +57,14 @@ pub fn kmeans_refine(rgb: &[u8], idx: &mut [u32], pal: &mut Vec<[u8; 3]>, iters:
             acc[lab * 3 + 2] += rgb[p * 3 + 2] as u64;
             cnt[lab] += 1;
         }
+        // Mean is pulled by JPEG fringe. Rare saturated bins (coins,
+        // flowers) stay on their previous centroid if they are small.
+        let protect = (n as u64 / 80).max(256);
         for lab in 0..k {
             if cnt[lab] == 0 {
+                continue;
+            }
+            if cnt[lab] < protect {
                 continue;
             }
             pal[lab] = [
@@ -139,6 +145,40 @@ pub fn merge_similar(idx: &mut [u32], pal: &mut Vec<[u8; 3]>, thresh: f32) {
         *v = remap[*v as usize];
     }
     *pal = new_pal;
+}
+
+/// Per-bin median of the original RGB. Stops k-means/mean from shifting
+/// a flat fill (cream background) toward the JPEG fringe around it.
+pub fn snap_palette_median(rgb: &[u8], idx: &[u32], pal: &mut Vec<[u8; 3]>) {
+    let k = pal.len();
+    if k == 0 {
+        return;
+    }
+    let mut buckets: Vec<[Vec<u8>; 3]> = (0..k)
+        .map(|_| [Vec::new(), Vec::new(), Vec::new()])
+        .collect();
+    let n = rgb.len() / 3;
+    for p in 0..n {
+        let lab = idx[p] as usize;
+        if lab >= k {
+            continue;
+        }
+        buckets[lab][0].push(rgb[p * 3]);
+        buckets[lab][1].push(rgb[p * 3 + 1]);
+        buckets[lab][2].push(rgb[p * 3 + 2]);
+    }
+    for lab in 0..k {
+        if buckets[lab][0].is_empty() {
+            continue;
+        }
+        let mut med = [0u8; 3];
+        for c in 0..3 {
+            let v = &mut buckets[lab][c];
+            v.sort_unstable();
+            med[c] = v[v.len() / 2];
+        }
+        pal[lab] = med;
+    }
 }
 
 fn assign_nearest(rgb: &[u8], n: usize, pal: &[[u8; 3]]) -> Vec<u32> {

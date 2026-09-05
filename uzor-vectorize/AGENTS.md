@@ -71,9 +71,10 @@ Do not ship a “better MAE” that washed out a color the source still has.
 
 ## Known open delta (continue here)
 
-- k-means pulls centroids toward large cream/black regions and starves
-  small saturated hues (coins, flowers). Protect rare bins or re-seed
-  from max-error pixels.
+- k-means + mean centroids shifted flat fills (whole cream background
+  off-hue). Mitigated: freeze small bins, snap palette to per-bin median
+  of the source. Watch for a return of that regression on the heatmap
+  (full-field red = fill hue, not just edges).
 - Thin black outlines still fragment on print linocut texture.
 - No residual pass yet (rasterize SVG, vectorize leftover error blobs).
 - GIF frame stacking is out of scope until still-image parity is back

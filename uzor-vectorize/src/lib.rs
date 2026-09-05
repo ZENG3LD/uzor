@@ -104,6 +104,7 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         opt.min_area,
         opt.absorb_dist,
     );
+    quantize::snap_palette_median(&rgb, &idx, &mut pal);
 
     let mut quantized = vec![0u8; w * h * 3];
     for i in 0..w * h {

@@ -20,9 +20,10 @@ member, `publish = false`. Full contract: `AGENTS.md` in this directory.
 
 ## Current pipeline
 
-median-cut → k-means refine → merge similar → 3×3 majority on the index
-map → two-tier speckle absorb → 4-connected blobs → pixel-corner outlines
-→ corner-preserving RDP → SVG paths, large-area first.
+median-cut → k-means (large bins only; rare hues frozen) → merge similar
+→ 3×3 majority → two-tier speckle absorb → **median snap of each bin
+onto the source RGB** (mean was shifting cream fills toward JPEG fringe)
+→ 4-connected blobs → pixel-corner outlines → corner-preserving RDP.
 
 ## Open work
 
