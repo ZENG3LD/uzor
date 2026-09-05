@@ -109,6 +109,135 @@ pub fn label_same_color(idx: &[u32], w: usize, h: usize) -> (Vec<u32>, u32) {
     (labels, nlab)
 }
 
+/// Flip a pixel if its label is a 1–2 px island in the 3×3.
+/// Fills white holes inside black outlines without eating a 1px line
+/// (a line has 3 collinear hits). Python never needed this: 32-color
+/// median-cut does not fragment ink.
+pub fn despeckle_labels(idx: &mut [u32], w: usize, h: usize) {
+    for _ in 0..2 {
+        let old = idx.to_vec();
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                let center = old[i];
+                let mut counts: [(u32, u8); 9] = [(0, 0); 9];
+                let mut nuniq = 0usize;
+                let mut ncenter = 0u8;
+                let mut best_lab = center;
+                let mut best_n = 0u8;
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        let ny = y as i32 + dy;
+                        let nx = x as i32 + dx;
+                        if ny < 0 || nx < 0 || ny >= h as i32 || nx >= w as i32 {
+                            continue;
+                        }
+                        let lab = old[ny as usize * w + nx as usize];
+                        if lab == center {
+                            ncenter += 1;
+                        }
+                        let mut found = false;
+                        for slot in counts.iter_mut().take(nuniq) {
+                            if slot.0 == lab {
+                                slot.1 += 1;
+                                if slot.1 > best_n {
+                                    best_n = slot.1;
+                                    best_lab = lab;
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found && nuniq < 9 {
+                            counts[nuniq] = (lab, 1);
+                            if best_n == 0 {
+                                best_n = 1;
+                                best_lab = lab;
+                            }
+                            nuniq += 1;
+                        }
+                    }
+                }
+                if ncenter <= 2 && best_lab != center {
+                    idx[i] = best_lab;
+                }
+            }
+        }
+    }
+}
+
+/// Fill enclosed holes smaller than `max_hole` inside each label.
+/// White dots in black ink are holes, not border gaps.
+pub fn fill_small_holes(idx: &mut [u32], w: usize, h: usize, max_hole: u32) {
+    let n = w * h;
+    let mut max_lab = 0u32;
+    for &v in idx.iter() {
+        if v > max_lab {
+            max_lab = v;
+        }
+    }
+    let mut parent = vec![0u32; n];
+    let find = |p: &mut [u32], mut a: u32| -> u32 {
+        while p[a as usize] != a {
+            let n = p[a as usize];
+            p[a as usize] = p[n as usize];
+            a = n;
+        }
+        a
+    };
+    for host in 0..=max_lab {
+        for i in 0..n {
+            parent[i] = i as u32;
+        }
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if idx[i] == host {
+                    continue;
+                }
+                if x + 1 < w && idx[i + 1] != host {
+                    let ra = find(&mut parent, i as u32);
+                    let rb = find(&mut parent, (i + 1) as u32);
+                    if ra != rb {
+                        parent[rb as usize] = ra;
+                    }
+                }
+                if y + 1 < h && idx[i + w] != host {
+                    let ra = find(&mut parent, i as u32);
+                    let rb = find(&mut parent, (i + w) as u32);
+                    if ra != rb {
+                        parent[rb as usize] = ra;
+                    }
+                }
+            }
+        }
+        let mut area = vec![0u32; n];
+        let mut touches = vec![false; n];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if idx[i] == host {
+                    continue;
+                }
+                let r = find(&mut parent, i as u32) as usize;
+                area[r] += 1;
+                if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                    touches[r] = true;
+                }
+            }
+        }
+        for i in 0..n {
+            if idx[i] == host {
+                continue;
+            }
+            let r = find(&mut parent, i as u32) as usize;
+            if !touches[r] && area[r] > 0 && area[r] <= max_hole {
+                idx[i] = host;
+            }
+        }
+    }
+}
+
 pub fn absorb_speckles(
     idx: &mut [u32],
     pal: &[[u8; 3]],

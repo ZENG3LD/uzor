@@ -152,6 +152,8 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         opt.min_area,
         opt.absorb_dist,
     );
+    region::despeckle_labels(&mut idx, w, h);
+    region::fill_small_holes(&mut idx, w, h, 16);
     quantize::snap_palette_median(&orig, &idx, &mut pal, w, h);
 
     let mut quantized = vec![0u8; w * h * 3];
