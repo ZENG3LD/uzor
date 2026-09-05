@@ -103,11 +103,9 @@ across a 1px JPEG ramp. Cream is not a universal solvent.
 | sticker | 3.91 | 91.4% | 5.0% | 99.5% | |
 | pixel | 11.08 | 71.6% | 16.8% | 97.5% | dense burst; still not a poster |
 
-Adjacent same-paint merge after FZ (not global palette merge). Denoise
-device is printed on every `parity` line (`gpu:NVIDIA GeForce RTX 4060 Ti`
-or `cpu`). Modes: `--cpu` / `--hybrid` (default) / `--gpu`. Hybrid is GPU
-denoise + GPU SLIC assign, CPU center update. GPU keeps the SLIC loop on
-the device.
+Same-color blobs share one `nonzero` path (not one path per island).
+Thin dark runs (luma<40, mean width<2.2) emit as `stroke`, not fill.
+Low-chroma neighbours merge a bit more aggressively than chromatic ones.
 
 100% vs JPEG with hard fills is not reachable (1px AA). 100% vs quant is
 the engine ceiling; poster-like tiles sit ~99%.

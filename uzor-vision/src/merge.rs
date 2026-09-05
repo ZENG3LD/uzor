@@ -1,4 +1,17 @@
-use crate::color::{dist2, same_flat};
+use crate::color::{chroma, dist2, same_flat};
+
+fn should_join(a: [u8; 3], b: [u8; 3], thresh: f32, t2: i32) -> bool {
+    if !same_flat(a, b) {
+        return false;
+    }
+    let cap = if chroma(a) < 32 && chroma(b) < 32 {
+        let t = thresh * 1.6;
+        (t * t) as i32
+    } else {
+        t2
+    };
+    dist2(a, b) <= cap
+}
 
 pub fn merge_adjacent_similar(
     idx: &mut [u32],
@@ -33,7 +46,7 @@ pub fn merge_adjacent_similar(
                 if (b as usize) < k && a != b {
                     let ca = pal[a as usize];
                     let cb = pal[b as usize];
-                    if same_flat(ca, cb) && dist2(ca, cb) <= t2 {
+                    if should_join(ca, cb, thresh, t2) {
                         let ra = find(&mut parent, a);
                         let rb = find(&mut parent, b);
                         if ra != rb {
@@ -47,7 +60,7 @@ pub fn merge_adjacent_similar(
                 if (b as usize) < k && a != b {
                     let ca = pal[a as usize];
                     let cb = pal[b as usize];
-                    if same_flat(ca, cb) && dist2(ca, cb) <= t2 {
+                    if should_join(ca, cb, thresh, t2) {
                         let ra = find(&mut parent, a);
                         let rb = find(&mut parent, b);
                         if ra != rb {

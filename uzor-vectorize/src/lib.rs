@@ -83,6 +83,16 @@ impl std::fmt::Display for VectorizeError {
 
 impl std::error::Error for VectorizeError {}
 
+fn loop_len(lp: &[contour::Pt]) -> f32 {
+    let mut s = 0.0f32;
+    for i in 1..lp.len() {
+        let dx = (lp[i].0 - lp[i - 1].0) as f32;
+        let dy = (lp[i].1 - lp[i - 1].1) as f32;
+        s += (dx * dx + dy * dy).sqrt();
+    }
+    s
+}
+
 pub fn vectorize_path(
     path: impl AsRef<Path>,
     opt: &VectorizeOptions,
@@ -156,7 +166,9 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     for (i, &lab) in labels.iter().enumerate() {
         members[lab as usize].push(i);
     }
-    let mut layers: Vec<(u32, [u8; 3], String)> = Vec::new();
+    let img_area = (w * h) as u32;
+    let mut fills: Vec<(u32, [u8; 3], Vec<Vec<contour::Pt>>)> = Vec::new();
+    let mut strokes: Vec<(u32, [u8; 3], f32, Vec<Vec<contour::Pt>>)> = Vec::new();
     let mut contour_count = 0u32;
     for blob_id in 1..=nlab {
         let pix = &members[blob_id as usize];
@@ -168,10 +180,12 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         for &i in pix {
             mask[i] = true;
         }
-        let color_i = idx[pix[0]];
+        let color = pal[idx[pix[0]] as usize];
         let loops_raw = contour::blob_loops(&mask, w, h);
         let mut loops = Vec::new();
+        let mut peri = 0.0f32;
         for lp in loops_raw {
+            peri += loop_len(&lp);
             if let Some(s) = contour::simplify_loop(&lp, opt.epsilon) {
                 loops.push(s);
             }
@@ -180,13 +194,47 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
             continue;
         }
         contour_count += loops.len() as u32;
-        let d = svg::path_d(&loops);
-        let fill = svg::hex_color(pal[color_i as usize]);
-        let path = format!("  <path fill=\"{fill}\" fill-rule=\"nonzero\" d=\"{d}\"/>");
-        layers.push((area, pal[color_i as usize], path));
+        let width = 2.0 * area as f32 / peri.max(1.0);
+        let luma = (color[0] as u32 + color[1] as u32 + color[2] as u32) / 3;
+        let thin_dark = luma < 40 && width < 2.2 && area < img_area / 20;
+        if thin_dark {
+            strokes.push((area, color, width.clamp(0.8, 5.0), loops));
+        } else {
+            fills.push((area, color, loops));
+        }
     }
-    layers.sort_by(|a, b| b.0.cmp(&a.0));
-    let paths: Vec<String> = layers.into_iter().map(|l| l.2).collect();
+    fills.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut fill_by_color: Vec<(u32, [u8; 3], Vec<Vec<contour::Pt>>)> = Vec::new();
+    for (area, color, loops) in fills {
+        if let Some(slot) = fill_by_color.iter_mut().find(|s| s.1 == color) {
+            slot.0 += area;
+            slot.2.extend(loops);
+        } else {
+            fill_by_color.push((area, color, loops));
+        }
+    }
+    fill_by_color.sort_by(|a, b| b.0.cmp(&a.0));
+    let mut paths: Vec<String> = Vec::new();
+    for (_, color, loops) in fill_by_color {
+        let hex = svg::hex_color(color);
+        paths.push(svg::fill_path(&hex, &svg::path_d(&loops)));
+    }
+    let mut stroke_by_color: Vec<(u32, [u8; 3], f32, u32, Vec<Vec<contour::Pt>>)> = Vec::new();
+    for (area, color, width, loops) in strokes {
+        if let Some(slot) = stroke_by_color.iter_mut().find(|s| s.1 == color) {
+            slot.0 += area;
+            slot.2 += width * area as f32;
+            slot.3 += area;
+            slot.4.extend(loops);
+        } else {
+            stroke_by_color.push((area, color, width * area as f32, area, loops));
+        }
+    }
+    for (_, color, wsum, warea, loops) in stroke_by_color {
+        let hex = svg::hex_color(color);
+        let sw = (wsum / warea.max(1) as f32).clamp(0.8, 5.0);
+        paths.push(svg::stroke_path(&hex, sw, &svg::path_d(&loops)));
+    }
     let colors_kept = paths.len() as u32;
     let svg = svg::document(w as u32, h as u32, &paths);
     Ok(SvgDocument {

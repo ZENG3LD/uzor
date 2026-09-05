@@ -19,6 +19,16 @@ pub fn hex_color(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
+pub fn fill_path(hex: &str, d: &str) -> String {
+    format!("  <path fill=\"{hex}\" fill-rule=\"nonzero\" d=\"{d}\"/>")
+}
+
+pub fn stroke_path(hex: &str, width: f32, d: &str) -> String {
+    format!(
+        "  <path fill=\"none\" stroke=\"{hex}\" stroke-width=\"{width:.2}\" stroke-linecap=\"round\" stroke-linejoin=\"round\" d=\"{d}\"/>"
+    )
+}
+
 pub fn document(width: u32, height: u32, paths: &[String]) -> String {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
