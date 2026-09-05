@@ -164,39 +164,32 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
         quantized[i * 3 + 2] = c[2];
     }
 
-    let (labels, nlab) = region::label_same_color(&idx, w, h);
-    let mut members: Vec<Vec<usize>> = vec![Vec::new(); nlab as usize + 1];
-    for (i, &lab) in labels.iter().enumerate() {
-        members[lab as usize].push(i);
+    let mut area_of = vec![0u32; pal.len()];
+    for &lab in idx.iter() {
+        let i = lab as usize;
+        if i < area_of.len() {
+            area_of[i] += 1;
+        }
     }
     let img_area = (w * h) as u32;
     let mut fills: Vec<(u32, [u8; 3], Vec<Vec<contour::Pt>>)> = Vec::new();
     let mut strokes: Vec<(u32, [u8; 3], f32, Vec<Vec<contour::Pt>>)> = Vec::new();
     let mut contour_count = 0u32;
-    for blob_id in 1..=nlab {
-        let pix = &members[blob_id as usize];
-        let area = pix.len() as u32;
-        if area < opt.min_area {
+    for (lab, loops) in contour::planar_loops(&idx, w, h) {
+        let li = lab as usize;
+        if li >= pal.len() {
             continue;
         }
-        let mut mask = vec![false; w * h];
-        for &i in pix {
-            mask[i] = true;
+        let area = area_of[li];
+        if area < opt.min_area || loops.is_empty() {
+            continue;
         }
-        let color = pal[idx[pix[0]] as usize];
-        let loops_raw = contour::blob_loops(&mask, w, h);
-        let mut loops = Vec::new();
         let mut peri = 0.0f32;
-        for lp in loops_raw {
-            peri += loop_len(&lp);
-            if let Some(s) = contour::simplify_loop(&lp, opt.epsilon) {
-                loops.push(s);
-            }
-        }
-        if loops.is_empty() {
-            continue;
+        for lp in &loops {
+            peri += loop_len(lp);
         }
         contour_count += loops.len() as u32;
+        let color = pal[li];
         let width = 2.0 * area as f32 / peri.max(1.0);
         let luma = (color[0] as u32 + color[1] as u32 + color[2] as u32) / 3;
         let thin_dark = luma < 40 && width < 2.2 && area < img_area / 20;

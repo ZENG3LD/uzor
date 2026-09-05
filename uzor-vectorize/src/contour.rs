@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 pub type Pt = (i32, i32);
 
+#[allow(dead_code)]
 pub fn blob_loops(mask: &[bool], w: usize, h: usize) -> Vec<Vec<Pt>> {
     let mut nxt: HashMap<Pt, Vec<Pt>> = HashMap::new();
     let mut add = |a: Pt, b: Pt| {
@@ -78,6 +79,134 @@ pub fn blob_loops(mask: &[bool], w: usize, h: usize) -> Vec<Vec<Pt>> {
     loops
 }
 
+/// Shared crack graph: each pixel-corner edge is emitted once per side.
+/// Faces of the same label share geometry, so independent RDP cannot
+/// open a 1px gap. Collinear runs are collapsed; no per-face RDP.
+pub fn planar_loops(idx: &[u32], w: usize, h: usize) -> Vec<(u32, Vec<Vec<Pt>>)> {
+    let mut nxt: HashMap<Pt, Vec<Pt>> = HashMap::new();
+    let mut left_of: HashMap<(Pt, Pt), u32> = HashMap::new();
+    let mut add = |a: Pt, b: Pt, lab: u32| {
+        nxt.entry(a).or_default().push(b);
+        left_of.insert((a, b), lab);
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let p = idx[y * w + x];
+            let xi = x as i32;
+            let yi = y as i32;
+            let up = if y == 0 { None } else { Some(idx[(y - 1) * w + x]) };
+            if up != Some(p) {
+                add((xi, yi), (xi + 1, yi), p);
+            }
+            let rgt = if x + 1 == w { None } else { Some(idx[y * w + x + 1]) };
+            if rgt != Some(p) {
+                add((xi + 1, yi), (xi + 1, yi + 1), p);
+            }
+            let dn = if y + 1 == h { None } else { Some(idx[(y + 1) * w + x]) };
+            if dn != Some(p) {
+                add((xi + 1, yi + 1), (xi, yi + 1), p);
+            }
+            let lft = if x == 0 { None } else { Some(idx[y * w + x - 1]) };
+            if lft != Some(p) {
+                add((xi, yi + 1), (xi, yi), p);
+            }
+        }
+    }
+
+    let mut used: HashSet<(Pt, Pt)> = HashSet::new();
+    let mut by_lab: HashMap<u32, Vec<Vec<Pt>>> = HashMap::new();
+    let keys: Vec<Pt> = nxt.keys().copied().collect();
+    for start in keys {
+        let dests = match nxt.get(&start) {
+            Some(d) => d.clone(),
+            None => continue,
+        };
+        for dest in dests {
+            if used.contains(&(start, dest)) {
+                continue;
+            }
+            let lab = match left_of.get(&(start, dest)) {
+                Some(&l) => l,
+                None => continue,
+            };
+            let mut loop_pts = vec![start];
+            let mut b = dest;
+            used.insert((start, b));
+            let mut incoming = (b.0 - start.0, b.1 - start.1);
+            let mut guard = 0;
+            let max_steps = (w + h) * 8;
+            while b != start && guard < max_steps {
+                guard += 1;
+                loop_pts.push(b);
+                let cands: Vec<Pt> = nxt
+                    .get(&b)
+                    .map(|v| {
+                        v.iter()
+                            .copied()
+                            .filter(|c| !used.contains(&(b, *c)))
+                            .filter(|c| left_of.get(&(b, *c)) == Some(&lab))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if cands.is_empty() {
+                    break;
+                }
+                let c = if cands.len() == 1 {
+                    cands[0]
+                } else {
+                    let vecs: Vec<(i32, i32)> =
+                        cands.iter().map(|c| (c.0 - b.0, c.1 - b.1)).collect();
+                    let pick = rightmost_turn(incoming, &vecs);
+                    (b.0 + pick.0, b.1 + pick.1)
+                };
+                used.insert((b, c));
+                incoming = (c.0 - b.0, c.1 - b.1);
+                b = c;
+            }
+            if loop_pts.len() >= 4 {
+                loop_pts.push(loop_pts[0]);
+                if let Some(s) = collapse_collinear(&loop_pts) {
+                    by_lab.entry(lab).or_default().push(s);
+                }
+            }
+        }
+    }
+    by_lab.into_iter().collect()
+}
+
+fn collapse_collinear(pts: &[Pt]) -> Option<Vec<Pt>> {
+    if pts.len() < 4 {
+        return None;
+    }
+    let mut body = pts.to_vec();
+    if body.first() == body.last() {
+        body.pop();
+    }
+    let n = body.len();
+    if n < 3 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for i in 0..n {
+        let a = body[(i + n - 1) % n];
+        let b = body[i];
+        let c = body[(i + 1) % n];
+        let ux = b.0 - a.0;
+        let uy = b.1 - a.1;
+        let vx = c.0 - b.0;
+        let vy = c.1 - b.1;
+        if ux * vy - uy * vx != 0 {
+            out.push(b);
+        }
+    }
+    if out.len() < 3 {
+        return None;
+    }
+    let first = out[0];
+    out.push(first);
+    Some(out)
+}
+
 fn rightmost_turn(incoming: (i32, i32), outgoing: &[(i32, i32)]) -> (i32, i32) {
     let (ix, iy) = incoming;
     let mut best = outgoing[0];
@@ -96,6 +225,7 @@ fn rightmost_turn(incoming: (i32, i32), outgoing: &[(i32, i32)]) -> (i32, i32) {
 }
 
 /// Keep corners (turning angle away from 180°) and RDP the collinear runs.
+#[allow(dead_code)]
 pub fn simplify_loop(pts: &[Pt], epsilon: f32) -> Option<Vec<Pt>> {
     if pts.len() < 4 {
         return None;
@@ -119,6 +249,7 @@ pub fn simplify_loop(pts: &[Pt], epsilon: f32) -> Option<Vec<Pt>> {
     Some(out)
 }
 
+#[allow(dead_code)]
 fn rdp_corners(pts: &[Pt], epsilon: f32) -> Vec<Pt> {
     if pts.len() < 3 {
         return pts.to_vec();
@@ -168,6 +299,7 @@ fn rdp_corners(pts: &[Pt], epsilon: f32) -> Vec<Pt> {
     out
 }
 
+#[allow(dead_code)]
 fn rdp(pts: &[Pt], epsilon: f32) -> Vec<Pt> {
     if pts.len() < 3 || epsilon <= 0.0 {
         return pts.to_vec();
