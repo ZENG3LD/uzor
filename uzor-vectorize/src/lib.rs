@@ -7,6 +7,7 @@
 mod contour;
 mod quantize;
 mod region;
+mod segment;
 mod svg;
 
 use std::path::Path;
@@ -27,6 +28,8 @@ pub struct VectorizeOptions {
     pub kmeans_iters: u32,
     /// 3×3 majority on palette labels. Off: it ate thin black outlines.
     pub majority: bool,
+    /// Felzenszwalb `k` / size. Higher = coarser regions. 0 = median-cut.
+    pub tau: f32,
 }
 
 impl Default for VectorizeOptions {
@@ -39,6 +42,7 @@ impl Default for VectorizeOptions {
             absorb_dist: 48.0,
             kmeans_iters: 0,
             majority: false,
+            tau: 0.0,
         }
     }
 }
@@ -95,8 +99,12 @@ pub fn vectorize_rgb(img: &RgbImage, opt: &VectorizeOptions) -> Result<SvgDocume
     }
 
     let rgb = quantize::median3(&rgb, w, h);
-    let k = opt.colors.max(2) as usize;
-    let (mut idx, mut pal) = quantize::median_cut(&rgb, k);
+    let (mut idx, mut pal) = if opt.tau > 0.0 {
+        segment::felzenszwalb(&rgb, w, h, opt.tau, opt.min_area)
+    } else {
+        let k = opt.colors.max(2) as usize;
+        quantize::median_cut(&rgb, k)
+    };
     if opt.kmeans_iters > 0 {
         quantize::kmeans_refine(&rgb, &mut idx, &mut pal, opt.kmeans_iters);
     }

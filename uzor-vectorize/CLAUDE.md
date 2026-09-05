@@ -34,5 +34,6 @@ three tiles.
 
 ## Open work
 
-Memphis mint sunburst rays still merge into cyan. Residual pass vs
-quant. Then GIF frames.
+Memphis mint rays. Felzenszwalb (`--tau`) leaks through AA — next is
+spatial neighbour-merge, owned, not a vtracer dep. GIF after poster-like
+tiles sit at the quant ceiling.

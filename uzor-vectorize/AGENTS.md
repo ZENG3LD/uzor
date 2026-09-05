@@ -43,6 +43,7 @@ Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 | `absorb_dist` | 48 | max RGB distance when eating speckles into a neighbor |
 | `kmeans_iters` | 0 | off. k-means reassignment steals gold/floral/mint into large fills |
 | `majority` | false | 3×3 label majority. Off: it ate thin black outlines |
+| `tau` | 0 | 0 = median-cut. `>0` = Felzenszwalb k/size (experimental) |
 
 Two-tier absorb: area < 16 always eaten (JPEG dirt); 16..min_area only if
 the neighbor is within `absorb_dist` (gold must not fall into pink).
@@ -69,31 +70,47 @@ red) is a **regression**, even if the number looks finer.
 2. Open `preview`, `*-quant.png`, `*-diff.png`, and the source. Look.
 3. Name the failure (lost hue, hole in a fill, broken outline, AA halo).
 4. Change one knob or one pipeline stage.
-5. Re-trace the same three Pig Slayer tiles:
-   `PS/pig-slayer/assets/tiles-graphic/{01-flat-vector,07-print-noblood,12-memphis}.jpg`
+5. Re-trace the fixture (six tiles, see below). Do not tune for one scene.
 
 Do not ship a “better MAE” that washed out a color the source still has.
 
+## Agnostic engine, fixture is not the product
+
+This crate traces **any** flat-color PNG/JPEG. Pig Slayer tiles are a
+regression fixture. Do not add scene-specific palettes, colour names, or
+per-tile knobs.
+
+Fixture (re-trace after every algorithm change, look at the sheets):
+
+`PS/pig-slayer/assets/tiles-graphic/{01-flat-vector,07-print-noblood,12-memphis,02-sticker,09-neobrutalist,11-pixel}.jpg`
+
 ## Known open delta (continue here)
 
-Last Python prototype (Pillow `MEDIANCUT`, no k-means): print MAE 6.93 /
-close 85.1%; flat 4.94 / 85.1%; memphis 6.25 / 80.2%. Rust as of this
-pipeline (3×3 denoise, range median-cut, hue-safe merge, median snap):
+Median-cut default (3×3 denoise, range cut, hue-safe merge, median snap):
 
-| tile | vs source MAE | close | visible | vs quant close |
-|---|---|---|---|---|
-| print | 6.23 | 86.4% | 7.7% | 97.4% |
-| flat | 5.45 | 84.7% | 7.9% | 97.5% |
-| memphis | 7.77 | 71.5% | 17.7% | 97.7% |
+| tile | vs source MAE | close | visible | vs quant close | class |
+|---|---|---|---|---|---|
+| neobrutalist | 2.77 | 93.4% | 3.9% | 99.1% | few hard flats — auto is enough |
+| print | 6.23 | 86.4% | 7.7% | 97.4% | at/past last Python |
+| sticker | 5.84 | 84.6% | 9.5% | 98.5% | same band as Python |
+| flat | 5.45 | 84.7% | 7.9% | 97.5% | gold/floral present |
+| memphis | 7.77 | 71.5% | 17.7% | 97.7% | mint rays still → cyan |
+| pixel | 19.14 | 62.1% | 25.1% | 87.4% | dense AA burst — not a poster |
 
-Print is past Python. Flat is within a point. Memphis mint sunburst rays
-still collapse into cyan — Pillow's unique-color population cut kept
-them; a naïve port of that cut spent the palette on cream JPEG noise and
-turned flat-vector gold coins red. Do not revive that cut.
+100% vs JPEG with hard fills is not reachable (1px AA). 100% vs quant is
+the engine ceiling; we sit ~97–99% on poster-like art.
+
+Felzenszwalb graph segmentation is in `src/segment.rs`, opt-in `--tau N`.
+AA ramps leak (tau too high → one region). Next owned rewrite: spatial
+agglomerative merge of neighbouring regions (vtracer/Impression clustering
+rewritten, not vendored) — mint and cyan only meet if they share a border.
 
 - Thin black outlines still fragment on print linocut texture.
-- No residual pass yet (rasterize SVG, vectorize leftover error blobs).
-- GIF frame stacking is out of scope until memphis mint is back.
+- Residual pass vs quant not started.
+- GIF after still-image on poster-like tiles; pixel-burst is a different job.
+
+Agent loop after auto: skill `uzor-vectorize` (hand-finish fill hexes / holes,
+do not chase AA).
 
 ## Layout
 
@@ -101,6 +118,7 @@ turned flat-vector gold coins red. Do not revive that cut.
 uzor-vectorize/
   src/lib.rs           orchestrate + resvg roundtrip + parity stats
   src/quantize.rs      median-cut, k-means, similar-color merge
+  src/segment.rs       Felzenszwalb (opt-in --tau)
   src/region.rs        4-connected labels, majority snap, speckle absorb
   src/contour.rs       pixel-boundary loops, corner-preserving simplify
   src/svg.rs           path `d` + document

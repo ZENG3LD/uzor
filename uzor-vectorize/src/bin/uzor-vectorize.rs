@@ -81,6 +81,13 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
             "--majority" => {
                 opt.majority = true;
             }
+            "--tau" => {
+                i += 1;
+                opt.tau = args.get(i).ok_or("--tau")?.parse().map_err(|e: std::num::ParseFloatError| e.to_string())?;
+            }
+            "--median-cut" => {
+                opt.tau = 0.0;
+            }
             s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
             s => {
                 if src.is_some() {
