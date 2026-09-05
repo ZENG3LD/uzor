@@ -377,3 +377,128 @@ pub fn diff_heatmap(src: &RgbImage, svg: &RgbImage) -> RgbImage {
     }
     out
 }
+
+#[derive(Clone, Debug)]
+pub struct Hotspot {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+    pub area: u32,
+    pub mean_err: f32,
+}
+
+/// Largest visible-error blobs (max-channel > 18). Agent control plane:
+/// one crop per hotspot, not one sheet of the whole image.
+pub fn vis_hotspots(src: &RgbImage, svg: &RgbImage, n: usize) -> Vec<Hotspot> {
+    let w = src.width().min(svg.width()) as usize;
+    let h = src.height().min(svg.height()) as usize;
+    let mut vis = vec![false; w * h];
+    let mut err = vec![0u16; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let a = src.get_pixel(x as u32, y as u32).0;
+            let b = svg.get_pixel(x as u32, y as u32).0;
+            let mut maxc = 0i32;
+            for c in 0..3 {
+                maxc = maxc.max((a[c] as i32 - b[c] as i32).abs());
+            }
+            if maxc > 18 {
+                vis[y * w + x] = true;
+                err[y * w + x] = maxc as u16;
+            }
+        }
+    }
+    let mut parent: Vec<u32> = (0..(w * h) as u32).collect();
+    let find = |p: &mut [u32], mut a: u32| -> u32 {
+        while p[a as usize] != a {
+            let n = p[a as usize];
+            p[a as usize] = p[n as usize];
+            a = n;
+        }
+        a
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !vis[i] {
+                continue;
+            }
+            if x + 1 < w && vis[i + 1] {
+                let ra = find(&mut parent, i as u32);
+                let rb = find(&mut parent, (i + 1) as u32);
+                if ra != rb {
+                    parent[rb as usize] = ra;
+                }
+            }
+            if y + 1 < h && vis[i + w] {
+                let ra = find(&mut parent, i as u32);
+                let rb = find(&mut parent, (i + w) as u32);
+                if ra != rb {
+                    parent[rb as usize] = ra;
+                }
+            }
+        }
+    }
+    use std::collections::HashMap;
+    let mut acc: HashMap<u32, (u32, u32, u32, u32, u32, u32)> = HashMap::new();
+    // root -> minx miny maxx maxy area errsum
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !vis[i] {
+                continue;
+            }
+            let r = find(&mut parent, i as u32);
+            let e = acc.entry(r).or_insert((x as u32, y as u32, x as u32, y as u32, 0, 0));
+            e.0 = e.0.min(x as u32);
+            e.1 = e.1.min(y as u32);
+            e.2 = e.2.max(x as u32);
+            e.3 = e.3.max(y as u32);
+            e.4 += 1;
+            e.5 += err[i] as u32;
+        }
+    }
+    let mut spots: Vec<Hotspot> = acc
+        .into_values()
+        .filter(|e| e.4 >= 40)
+        .map(|e| Hotspot {
+            x: e.0,
+            y: e.1,
+            w: e.2 - e.0 + 1,
+            h: e.3 - e.1 + 1,
+            area: e.4,
+            mean_err: e.5 as f32 / e.4 as f32,
+        })
+        .collect();
+    spots.sort_by(|a, b| b.area.cmp(&a.area));
+    spots.truncate(n.max(1));
+    let pad = 24u32;
+    let ww = src.width();
+    let hh = src.height();
+    for s in spots.iter_mut() {
+        let x0 = s.x.saturating_sub(pad);
+        let y0 = s.y.saturating_sub(pad);
+        let x1 = (s.x + s.w + pad).min(ww);
+        let y1 = (s.y + s.h + pad).min(hh);
+        s.x = x0;
+        s.y = y0;
+        s.w = x1 - x0;
+        s.h = y1 - y0;
+    }
+    spots
+}
+
+pub fn hotspot_strip(src: &RgbImage, svg: &RgbImage, heat: &RgbImage, hs: &Hotspot) -> RgbImage {
+    let mut strip = RgbImage::new(hs.w * 3, hs.h);
+    for y in 0..hs.h {
+        for x in 0..hs.w {
+            let sx = hs.x + x;
+            let sy = hs.y + y;
+            strip.put_pixel(x, y, *src.get_pixel(sx, sy));
+            strip.put_pixel(hs.w + x, y, *svg.get_pixel(sx, sy));
+            strip.put_pixel(hs.w * 2 + x, y, *heat.get_pixel(sx, sy));
+        }
+    }
+    strip
+}

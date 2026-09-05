@@ -25,9 +25,14 @@ cargo build -p uzor-vectorize --bin uzor-vectorize --release
 target/release/uzor-vectorize.exe parity <in.png|jpg> -o out.svg --preview out.png --diff out-diff.png
 ```
 
-`parity` writes: SVG, resvg preview PNG, quantized reconstruction, heatmap,
-and a 2×2 `*-sheet.png`. Read the sheet. Do not declare quality from MAE
-alone.
+`parity` writes the 2×2 sheet. Agent loop uses **inspect**, not one sheet:
+
+```
+uzor-vectorize inspect <src.jpg> <out.svg> --dir crops/ --n 12
+```
+
+Each crop is source|svg|heat of one visible-error blob. Patch a few paths,
+inspect again. Do not declare quality from MAE alone.
 
 Library: `vectorize_path` / `vectorize_rgb` → `SvgDocument`. Rasterize with
 `rasterize_svg` (resvg, same path as `uzor-icon`).

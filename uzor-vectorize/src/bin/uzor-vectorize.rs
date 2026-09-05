@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use uzor_vectorize::{
-    diff_heatmap, parity_rgb, parity_sheet, quantized_image, rasterize_svg, vectorize_path,
-    GpuMode, VectorizeOptions,
+    diff_heatmap, hotspot_strip, parity_rgb, parity_sheet, quantized_image, rasterize_svg,
+    vectorize_path, vis_hotspots, GpuMode, VectorizeOptions,
 };
 
 fn main() -> ExitCode {
@@ -13,7 +13,8 @@ fn main() -> ExitCode {
     if args.is_empty() {
         eprintln!(
             "uzor-vectorize svg <in> -o <out.svg> [--preview p.png]\n\
-             uzor-vectorize parity <in> -o <out.svg> [--preview p.png] [--diff d.png]"
+             uzor-vectorize parity <in> -o <out.svg> [--preview p.png] [--diff d.png]\n\
+             uzor-vectorize inspect <in.jpg> <in.svg> --dir <crops/> [--n 12]"
         );
         return ExitCode::from(2);
     }
@@ -21,6 +22,12 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "svg" | "parity" => {
             if let Err(e) = run(&cmd, &args) {
+                eprintln!("{e}");
+                return ExitCode::from(1);
+            }
+        }
+        "inspect" => {
+            if let Err(e) = inspect(&args) {
                 eprintln!("{e}");
                 return ExitCode::from(1);
             }
@@ -196,5 +203,68 @@ fn run(cmd: &str, args: &[String]) -> Result<(), String> {
         quant_path.display(),
         sheet_path.display()
     );
+    Ok(())
+}
+
+fn inspect(args: &[String]) -> Result<(), String> {
+    let mut src: Option<PathBuf> = None;
+    let mut svg_path: Option<PathBuf> = None;
+    let mut dir: Option<PathBuf> = None;
+    let mut n = 12usize;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dir" => {
+                i += 1;
+                dir = Some(PathBuf::from(args.get(i).ok_or("--dir")?));
+            }
+            "--n" => {
+                i += 1;
+                n = args.get(i).ok_or("--n")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag {s}")),
+            s => {
+                if src.is_none() {
+                    src = Some(PathBuf::from(s));
+                } else if svg_path.is_none() {
+                    svg_path = Some(PathBuf::from(s));
+                } else {
+                    return Err("extra positional".into());
+                }
+            }
+        }
+        i += 1;
+    }
+    let src = src.ok_or("inspect <src> <svg> --dir <dir>")?;
+    let svg_path = svg_path.ok_or("inspect <src> <svg> --dir <dir>")?;
+    let dir = dir.ok_or("missing --dir")?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let src_img = image::open(&src).map_err(|e| e.to_string())?.to_rgb8();
+    let svg_text = fs::read_to_string(&svg_path).map_err(|e| e.to_string())?;
+    let svg_img = rasterize_svg(&svg_text, src_img.width(), src_img.height()).map_err(|e| e.to_string())?;
+    let heat = diff_heatmap(&src_img, &svg_img);
+    let spots = vis_hotspots(&src_img, &svg_img, n);
+    let mut json = String::from("[\n");
+    for (k, hs) in spots.iter().enumerate() {
+        let strip = hotspot_strip(&src_img, &svg_img, &heat, hs);
+        let name = format!("crop-{:02}.png", k + 1);
+        strip
+            .save(dir.join(&name))
+            .map_err(|e| e.to_string())?;
+        println!(
+            "{}  {}x{} @{},{}  area={}  mean_err={:.1}",
+            name, hs.w, hs.h, hs.x, hs.y, hs.area, hs.mean_err
+        );
+        if k > 0 {
+            json.push_str(",\n");
+        }
+        json.push_str(&format!(
+            "  {{\"file\":\"{name}\",\"x\":{},\"y\":{},\"w\":{},\"h\":{},\"area\":{},\"mean_err\":{:.1}}}",
+            hs.x, hs.y, hs.w, hs.h, hs.area, hs.mean_err
+        ));
+    }
+    json.push_str("\n]\n");
+    fs::write(dir.join("crops.json"), json).map_err(|e| e.to_string())?;
+    println!("wrote {} crops -> {}", spots.len(), dir.display());
     Ok(())
 }
