@@ -117,6 +117,13 @@ the engine ceiling; poster-like tiles sit ~99%.
 
 - Thin black outlines still fragment on print linocut texture.
 - Residual pass vs quant not started.
+- Real-art scene (foxhound crest badge, 1000×1000, stipple world map):
+  GPU SLIC eats 3–5 px dot textures at segmentation (quant already
+  dot-free; `--min-area` cannot help — loss is upstream). `--median-cut`
+  keeps the dots, `--fz` partially. Contours bake raster noise/AA stairs
+  into geometry — visible as "raster bytes" when zooming the SVG; curve
+  fitting/smoothing is wanted. Handoff:
+  `docs/uzor/handoffs/handoff-2026-09-11T002600Z-crest-vectorize-remarks-kimi-code.md`.
 Agent loop after auto: skill `uzor-vectorize` (hand-finish fill hexes / holes,
 do not chase AA). Not a GIF tool.
 
