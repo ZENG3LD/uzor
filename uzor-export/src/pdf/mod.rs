@@ -138,7 +138,7 @@ use tagging::{write_struct_tree, PageTagState, StructElemSpec};
 pub use font_cache::PdfFontCache;
 pub use render_context::{PdfContentStream, PdfRenderContext};
 pub use tagging::{PdfTagRole, StructElemId};
-use render_context::{emit_ops, PdfOp};
+use render_context::{emit_ops, ImageXObjectCache, PdfOp};
 
 /// Opaque handle to a font registered via [`PdfBuilder::register_font`].
 /// Deliberately a lightweight `Copy` id, not a borrowed `&PdfFont` — a
@@ -599,10 +599,18 @@ impl PdfBuilder {
         // build the `/ParentTree` (only meaningful when `self.tagged`).
         let mut page_struct_occurrences: Vec<Vec<(u32, i32)>> = Vec::with_capacity(self.pages.len());
 
+        // ONE document-wide cache, shared across every page in this loop —
+        // the same decoded image (a repeated footer/cover mark, or any
+        // figure painted on more than one page) resolves to exactly one
+        // `/XObject`, written once, referenced from every page it appears
+        // on (see `ImageXObjectCache`'s own doc comment).
+        let mut image_cache = ImageXObjectCache::new();
+
         for (i, page) in self.pages.iter().enumerate() {
             let occurrences = write_page(
                 &mut pdf,
                 &mut refs,
+                &mut image_cache,
                 page_tree_id,
                 &page_refs[i],
                 &font_names,
@@ -814,6 +822,7 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
 fn write_page(
     pdf: &mut Pdf,
     ref_alloc: &mut RefAllocator,
+    image_cache: &mut ImageXObjectCache,
     page_tree_id: Ref,
     refs: &PageRefs,
     font_names: &[String],
@@ -853,7 +862,8 @@ fn write_page(
             content.x_object(Name(image_name.as_bytes()));
             content.restore_state();
         }
-        let op_resources = emit_ops(pdf, ref_alloc, &mut content, &page.content_ops, page.height_pt, font_data, font_names, tagged, struct_roles, &mut tag_state);
+        let op_resources =
+            emit_ops(pdf, ref_alloc, image_cache, &mut content, &page.content_ops, page.height_pt, font_data, font_names, tagged, struct_roles, &mut tag_state);
         if !page.runs.is_empty() {
             content.begin_text();
             // Typography wave 5: contiguous runs sharing the SAME

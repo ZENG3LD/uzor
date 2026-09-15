@@ -94,7 +94,9 @@
 //!   [`RenderContext`] default applies) — no current figure/chrome caller
 //!   needs one.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use jpeg_encoder::{ColorType as JpegColorType, Encoder as JpegEncoder};
 use pdf_writer::types::{ColorSpaceOperand, FunctionShadingType, LineCapStyle, LineJoinStyle};
@@ -887,6 +889,16 @@ impl ImagePainter for PdfRenderContext<'_> {
         false
     }
 
+    /// Records a `PdfOp::Image` op for THIS page — the actual `/XObject`
+    /// PDF object is not written here at all, only later, at
+    /// [`super::PdfBuilder::finish`] serialization time, where every
+    /// occurrence across the WHOLE document (any number of pages, any
+    /// number of `draw_image_rgba` calls) resolves through one shared
+    /// [`ImageXObjectCache`] — byte-identical RGBA content drawn N times
+    /// still costs exactly one embedded image, not N (see that type's own
+    /// doc comment). This call site itself has no document-wide state to
+    /// dedupe against (a fresh [`PdfRenderContext`] per page, per this
+    /// module's own doc comment), so nothing here changes.
     fn draw_image_rgba(&mut self, data: &[u8], img_width: u32, img_height: u32, x: f64, y: f64, width: f64, height: f64) {
         if img_width == 0 || img_height == 0 || width <= 0.0 || height <= 0.0 {
             return;
@@ -1070,6 +1082,7 @@ pub(crate) struct PageOpResources {
 pub(crate) fn emit_ops(
     pdf: &mut Pdf,
     refs: &mut RefAllocator,
+    image_cache: &mut ImageXObjectCache,
     content: &mut Content,
     ops: &[PdfOp],
     page_height_pt: f64,
@@ -1183,7 +1196,7 @@ pub(crate) fn emit_ops(
             PdfOp::Image { x_pt, y_pt, w_pt, h_pt, rgb, alpha_mask, px_w, px_h, alpha } => {
                 let name = format!("CImg{image_idx}");
                 image_idx += 1;
-                let img_ref = write_image_xobject(pdf, refs, rgb, alpha_mask.as_deref(), *px_w, *px_h);
+                let img_ref = image_cache.resolve(pdf, refs, rgb, alpha_mask.as_deref(), *px_w, *px_h);
                 resources.images.push((name.clone(), img_ref));
 
                 apply_alpha_gstate(pdf, refs, content, &mut resources, &mut gstate_cache, *alpha);
@@ -1372,6 +1385,67 @@ fn encode_jpeg_rgb(rgb: &[u8], px_w: u32, px_h: u32) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Document-wide image-XObject reuse. Every occurrence of the SAME
+/// decoded image (a repeated footer/cover brand mark, or any figure drawn
+/// on more than one page) must resolve to exactly ONE `/XObject`, shared
+/// across every page's own `/Resources` dict — a PDF `Ref` is a plain
+/// indirect-object pointer, legal to reference from any number of pages
+/// at once, so there is nothing PDF-side stopping this beyond this
+/// crate's own writer previously never trying. `PdfBuilder::finish` owns
+/// ONE instance of this cache for the whole document (constructed once,
+/// threaded through every [`super::write_page`]/[`emit_ops`] call in its
+/// own per-page loop) — a per-page-scoped cache would defeat the whole
+/// point, since the bloat this exists to fix is precisely "the same
+/// image re-embedded once per PAGE."
+///
+/// Keyed by a fast content hash FIRST (bucket lookup), then verified by
+/// real byte-for-byte equality on any hash hit before trusting reuse — a
+/// hash collision can only ever cost one extra bucket entry (falls
+/// through to [`write_image_xobject`] and writes a genuine new XObject),
+/// never a wrong image silently reused for a different one.
+#[derive(Default)]
+pub(crate) struct ImageXObjectCache(HashMap<u64, Vec<CachedImage>>);
+
+struct CachedImage {
+    px_w: u32,
+    px_h: u32,
+    rgb: Vec<u8>,
+    alpha_mask: Option<Vec<u8>>,
+    xobject_ref: Ref,
+}
+
+impl ImageXObjectCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Same contract as [`write_image_xobject`] (`px_w * px_h * 3 ==
+    /// rgb.len()`, `alpha_mask`, if present, `px_w * px_h` bytes) — but
+    /// every call sharing byte-identical `(px_w, px_h, rgb, alpha_mask)`
+    /// with an EARLIER call on this same cache returns that earlier
+    /// call's own `Ref` verbatim, writing no new PDF object at all.
+    pub(crate) fn resolve(&mut self, pdf: &mut Pdf, refs: &mut RefAllocator, rgb: &[u8], alpha_mask: Option<&[u8]>, px_w: u32, px_h: u32) -> Ref {
+        let hash = Self::content_hash(rgb, alpha_mask, px_w, px_h);
+        if let Some(bucket) = self.0.get(&hash) {
+            if let Some(hit) = bucket.iter().find(|c| c.px_w == px_w && c.px_h == px_h && c.rgb == rgb && c.alpha_mask.as_deref() == alpha_mask) {
+                return hit.xobject_ref;
+            }
+        }
+        let xobject_ref = write_image_xobject(pdf, refs, rgb, alpha_mask, px_w, px_h);
+        self.0.entry(hash).or_default().push(CachedImage { px_w, px_h, rgb: rgb.to_vec(), alpha_mask: alpha_mask.map(<[u8]>::to_vec), xobject_ref });
+        xobject_ref
+    }
+
+    fn content_hash(rgb: &[u8], alpha_mask: Option<&[u8]>, px_w: u32, px_h: u32) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        px_w.hash(&mut hasher);
+        px_h.hash(&mut hasher);
+        rgb.hash(&mut hasher);
+        alpha_mask.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// Write one content-embedded image XObject plus its own `/SMask`
 /// grayscale XObject when `alpha_mask` carries real per-pixel
 /// transparency. An OPAQUE image (`alpha_mask: None`) encodes as a real
@@ -1383,6 +1457,11 @@ fn encode_jpeg_rgb(rgb: &[u8], px_w: u32, px_h: u32) -> Option<Vec<u8>> {
 /// alpha) — its own `/SMask` always stays Flate/`DeviceGray`, unchanged.
 /// `encode_jpeg_rgb` returning `None` (a defensive backstop, not a path
 /// any current caller reaches) also falls back to Flate.
+///
+/// Always writes a NEW object — never call this directly for content
+/// that might repeat across pages; go through [`ImageXObjectCache::
+/// resolve`] instead (the ONLY caller within this crate, [`emit_ops`]'s
+/// own `PdfOp::Image` arm, already does).
 fn write_image_xobject(pdf: &mut Pdf, refs: &mut RefAllocator, rgb: &[u8], alpha_mask: Option<&[u8]>, px_w: u32, px_h: u32) -> Ref {
     let smask_ref = alpha_mask.map(|mask| {
         let sref = refs.next();
