@@ -13,10 +13,9 @@ bash.exe.stackdump
 *_SPEC.md
 ARCHITECTURE_LEVELS.md
 AGENT_README.md
+AGENTS.md
 DRAG_SCROLL_MIGRATION_SPEC.md
 CLAUDE.md
-!uzor-vectorize/CLAUDE.md
-!uzor-vision/CLAUDE.md
 .claude/
 
 # IDE
