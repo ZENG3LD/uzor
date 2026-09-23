@@ -212,16 +212,25 @@ impl WebWindowProvider {
         }
 
         // ── Wheel event ───────────────────────────────────────────────────────
+        //
+        // `WheelEvent.deltaX/deltaY` are only in CSS pixels when `deltaMode ==
+        // DOM_DELTA_PIXEL` (Chrome/Windows' default — ~100-120 per physical
+        // notch). `DOM_DELTA_LINE` (some Firefox / OS "scroll by lines"
+        // settings) and `DOM_DELTA_PAGE` report entirely different
+        // magnitudes in the SAME fields, so every consumer of
+        // `PlatformEvent::Scroll` must otherwise special-case the browser's
+        // scroll-unit setting itself. Normalize once, here, so the contract
+        // documented on `PlatformEvent::Scroll` (CSS pixels, always) holds
+        // regardless of `deltaMode`.
 
         {
             let pending_clone = pending.clone();
+            let canvas_for_wheel = canvas.clone();
             let closure = Closure::wrap(Box::new(move |raw: Event| {
                 raw.prevent_default();
                 if let Ok(ev) = raw.dyn_into::<WheelEvent>() {
-                    pending_clone.borrow_mut().push(PlatformEvent::Scroll {
-                        dx: -ev.delta_x(),
-                        dy: -ev.delta_y(),
-                    });
+                    let (dx, dy) = normalize_wheel_delta_to_css_px(&ev, &canvas_for_wheel);
+                    pending_clone.borrow_mut().push(PlatformEvent::Scroll { dx: -dx, dy: -dy });
                 }
             }) as Box<dyn FnMut(Event)>);
             canvas_target
@@ -560,6 +569,37 @@ fn map_pointer_event(event_type: &str, ev: &MouseEvent) -> Option<PlatformEvent>
         "pointerenter"  => Some(PlatformEvent::PointerEntered),
         "pointerleave"  => Some(PlatformEvent::PointerLeft),
         _               => None,
+    }
+}
+
+// `WheelEvent.deltaMode` values (DOM spec constants — `web_sys::WheelEvent`
+// exposes the raw `u32` via `delta_mode()` but not these as named consts).
+const DOM_DELTA_LINE: u32 = 1;
+const DOM_DELTA_PAGE: u32 = 2;
+
+/// Assumed CSS-pixel height of one "line" for `DOM_DELTA_LINE` wheel events.
+/// There is no DOM API exposing the browser's actual line-scroll height —
+/// this matches the common ~16px default line-box browsers themselves fall
+/// back to (`font-size: 16px` UA default, `line-height: normal`).
+const ASSUMED_LINE_HEIGHT_PX: f64 = 16.0;
+
+/// Normalize a DOM wheel event's raw delta to CSS pixels regardless of
+/// `deltaMode`: pixel mode passes through unchanged, line mode multiplies
+/// by [`ASSUMED_LINE_HEIGHT_PX`], page mode multiplies by the canvas's own
+/// width/height (a "page" of scroll is one screenful of the app itself —
+/// there is no separate document to scroll on a canvas-only page).
+fn normalize_wheel_delta_to_css_px(ev: &WheelEvent, canvas: &HtmlCanvasElement) -> (f64, f64) {
+    match ev.delta_mode() {
+        DOM_DELTA_LINE => (
+            ev.delta_x() * ASSUMED_LINE_HEIGHT_PX,
+            ev.delta_y() * ASSUMED_LINE_HEIGHT_PX,
+        ),
+        DOM_DELTA_PAGE => (
+            ev.delta_x() * canvas.client_width() as f64,
+            ev.delta_y() * canvas.client_height() as f64,
+        ),
+        // DOM_DELTA_PIXEL (0) and any future/unknown mode — pass through.
+        _ => (ev.delta_x(), ev.delta_y()),
     }
 }
 

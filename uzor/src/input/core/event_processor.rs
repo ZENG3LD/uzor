@@ -42,6 +42,15 @@ pub enum PlatformEvent {
     TouchMove { id: u64, x: f64, y: f64 },
     TouchEnd { id: u64, x: f64, y: f64 },
     TouchCancel { id: u64 },
+    /// Mouse wheel / trackpad scroll. Unit is backend-dependent — each
+    /// `WindowProvider` documents its own contract; the web backend
+    /// (`uzor-window-web`) always delivers CSS pixels, normalizing away
+    /// `WheelEvent.deltaMode` (pixel/line/page) at the DOM boundary so
+    /// consumers never see raw ~100-120px-per-notch pixel mode versus a
+    /// handful of line-mode units interchangeably. Consumers that need a
+    /// platform-uniform "one physical notch" unit (as opposed to raw
+    /// pixels) must still normalize themselves against their own backend's
+    /// documented contract — this variant does not impose one.
     Scroll { dx: f64, dy: f64 },
     KeyDown { key: KeyCode, modifiers: ModifierKeys },
     KeyUp { key: KeyCode, modifiers: ModifierKeys },
