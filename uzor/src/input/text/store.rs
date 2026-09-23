@@ -319,6 +319,25 @@ impl TextFieldStore {
         }
     }
 
+    /// Stamp a field as "on screen this frame" WITHOUT touching its
+    /// click-to-cursor geometry — the light-weight sibling of
+    /// [`Self::update_field`] for a field whose on-screen model does not
+    /// fit a real rect + char-boundary list (a whole-button pseudo-field
+    /// with no per-char caret, a raw terminal grid with its own selection
+    /// state, ...). Sets only the frame-liveness signal
+    /// [`Self::focused_is_stale`] and [`Self::focused_was_never_stamped`]
+    /// read; leaves `last_rect`/`last_char_positions` untouched, so calling
+    /// this can never make [`Self::on_drag_start`]'s hit-test start
+    /// matching a field whose host never drew a real, clickable text box
+    /// for it. Every field that can hold focus must be stamped by EITHER
+    /// this or `update_field` each frame its host draws it — one of the two
+    /// is the whole contract `focused_is_stale` relies on.
+    pub fn mark_seen(&mut self, id: &WidgetId) {
+        if let Some(state) = self.fields.get_mut(id) {
+            state.last_frame = self.current_frame;
+        }
+    }
+
     // =========================================================================
     // Query
     // =========================================================================
@@ -362,29 +381,43 @@ impl TextFieldStore {
     }
 
     /// Whether the currently focused field's screen geometry has gone
-    /// stale: `update_field` refreshed it at least once (so its host DOES
-    /// report geometry on every frame it actually draws) but has not been
-    /// called again for more than [`Self::FOCUS_STALE_FRAME_LAG`]
-    /// frame-counter ticks. This is the shape a modal or inline editor
-    /// leaves behind when it stops being drawn without first calling
-    /// [`Self::blur`] on its own field — a caller can use this to detect
-    /// and clear that leftover focus instead of trusting it forever.
+    /// stale: it has not been stamped (`update_field` or [`Self::mark_seen`])
+    /// for more than [`Self::FOCUS_STALE_FRAME_LAG`] frame-counter ticks.
+    /// This is the shape a modal or inline editor leaves behind when it
+    /// stops being drawn without first calling [`Self::blur`] on its own
+    /// field — a caller can use this to detect and clear that leftover
+    /// focus instead of trusting it forever.
     ///
-    /// Fields whose host never wires `update_field` at all stay at
-    /// `last_frame == 0` for their entire lifetime (registration does not
-    /// set it) — there is no per-frame signal to judge those by, so they
-    /// are never flagged here. Treating "never observed" as "stale" would
-    /// blur every keystroke into an un-instrumented field on the very
-    /// first press, which is worse than not checking at all. `false` (not
-    /// stale) is always the safe default, including when nothing is
-    /// focused.
+    /// A field that has NEVER once been stamped (`last_frame == 0` since
+    /// registration) is treated the same as one whose stamps stopped: it
+    /// goes stale as soon as more than `FOCUS_STALE_FRAME_LAG` frames have
+    /// elapsed since it was focused. Every field that can hold focus is
+    /// expected to be stamped by its host on every frame it draws it — a
+    /// caller that focuses a field and never stamps it has a real bug, and
+    /// [`Self::focused_was_never_stamped`] is the sharper, immediate signal
+    /// for that specific case (a caller can `debug_assert!` on it instead
+    /// of waiting out the frame lag). `false` (not stale) is always the
+    /// safe default when nothing is focused.
     pub fn focused_is_stale(&self) -> bool {
         let Some(id) = self.focused.as_ref() else { return false };
         let Some(state) = self.fields.get(id) else { return false };
-        if state.last_frame == 0 {
-            return false;
-        }
         self.current_frame.wrapping_sub(state.last_frame) > Self::FOCUS_STALE_FRAME_LAG
+    }
+
+    /// Whether the currently focused field has NEVER once been stamped via
+    /// `update_field` or [`Self::mark_seen`] — a regression tripwire.
+    ///
+    /// `focused_is_stale` alone eventually self-heals this shape (see its
+    /// own doc), but only after `FOCUS_STALE_FRAME_LAG` frames of silently
+    /// swallowed keystrokes. A caller that dispatches keys should check
+    /// this FIRST and `debug_assert!`/`log::warn!` under
+    /// `cfg(debug_assertions)` — it means a focusable field's draw site is
+    /// missing its stamp call entirely, a coding-time bug that should be
+    /// caught in development rather than shipped. `false` when nothing is
+    /// focused.
+    pub fn focused_was_never_stamped(&self) -> bool {
+        let Some(id) = self.focused.as_ref() else { return false };
+        self.fields.get(id).map(|s| s.last_frame == 0).unwrap_or(false)
     }
 
     /// Whether the cursor should be visible right now (500 ms blink).
@@ -1035,17 +1068,74 @@ mod tests {
     }
 
     #[test]
-    fn focused_is_stale_ignores_unobserved_fields() {
+    fn focused_is_stale_eventually_catches_a_never_stamped_field() {
         let mut s = store();
         s.register("f", TextFieldConfig::text());
         s.focus("f");
-        // last_frame stays 0 forever if update_field is never called — not
-        // stale, no matter how many frames pass, because there is no
-        // signal to judge it by.
+        // A field whose host never calls update_field/mark_seen at all
+        // goes stale the same way one whose stamps stopped does — a
+        // focusable field with no stamp call anywhere is a bug, not a
+        // safe default to trust forever.
         for _ in 0..10 {
             s.begin_frame();
         }
+        assert!(s.focused_is_stale());
+    }
+
+    #[test]
+    fn mark_seen_keeps_a_button_style_field_fresh_without_touching_geometry() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        for _ in 0..10 {
+            s.begin_frame();
+            s.mark_seen(&id("f"));
+        }
         assert!(!s.focused_is_stale());
+        // mark_seen never sets rect/char_positions — a field stamped only
+        // this way must never become hit-testable by on_drag_start.
+        assert!(s.field_state(&id("f")).unwrap().last_rect.is_none());
+        assert!(s.field_state(&id("f")).unwrap().last_char_positions.is_empty());
+    }
+
+    #[test]
+    fn mark_seen_clears_the_never_stamped_flag() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        assert!(s.focused_was_never_stamped());
+        // current_frame must have advanced past 0 for the stamp to be
+        // distinguishable from "never stamped" (both read as last_frame == 0
+        // at the very first tick) — an ordinary host has rendered many
+        // frames before the first keystroke ever reaches dispatch.
+        s.begin_frame();
+        s.mark_seen(&id("f"));
+        assert!(!s.focused_was_never_stamped());
+    }
+
+    #[test]
+    fn focused_was_never_stamped_true_immediately_after_focus() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        assert!(!s.focused_was_never_stamped(), "nothing focused yet");
+        s.focus("f");
+        assert!(s.focused_was_never_stamped());
+    }
+
+    #[test]
+    fn focused_was_never_stamped_false_once_update_field_lands() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        s.begin_frame();
+        s.update_field(&id("f"), (0.0, 0.0, 10.0, 10.0), vec![0.0, 10.0]);
+        assert!(!s.focused_was_never_stamped());
+    }
+
+    #[test]
+    fn focused_was_never_stamped_false_when_nothing_focused() {
+        let s = store();
+        assert!(!s.focused_was_never_stamped());
     }
 
     #[test]
