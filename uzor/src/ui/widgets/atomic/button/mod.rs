@@ -28,6 +28,7 @@
 //!                 + `draw_dropdown_menu_row`
 //!                 + view structs.
 //! - `input`     — `register` helper for `InputCoordinator`.
+//! - `a11y`      — `node_for`, this button's per-frame accessibility node.
 
 pub mod types;
 pub mod defaults;
@@ -37,6 +38,7 @@ pub mod style;
 pub mod settings;
 pub mod render;
 pub mod input;
+pub mod a11y;
 
 pub use types::{
     ButtonType, ActionVariant, ToggleVariant, CheckboxVariant, TabVariant,
@@ -103,6 +105,7 @@ pub use input::{
     register_context_manager_button,
     register_layout_manager_button,
 };
+pub use a11y::node_for;
 
 // Re-exports from extracted atomic modules (backward-compat surface).
 // New code should import directly from atomic::color_swatch, etc.
