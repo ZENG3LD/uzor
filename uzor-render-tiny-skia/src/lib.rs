@@ -7,6 +7,11 @@ mod context;
 
 pub use context::TinySkiaCpuRenderContext;
 
+/// Golden PNG compare/bless for regression-testing this backend's own
+/// render output against a committed reference image.
+#[cfg(feature = "golden")]
+pub mod golden;
+
 // ---------------------------------------------------------------------------
 // Phase 5 text_to_path spot-checks
 // ---------------------------------------------------------------------------
