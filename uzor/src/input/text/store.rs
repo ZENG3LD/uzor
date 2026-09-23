@@ -644,8 +644,39 @@ impl TextFieldStore {
     }
 
     /// Begin a mouse drag on the field whose rect contains `(x, y)`.
+    ///
+    /// Geometrically hit-tests every registered field's last-drawn rect
+    /// (`TextFieldState::last_rect`) and, if one is hit, delegates to
+    /// [`Self::begin_drag_at`]. Use this when the caller does NOT already
+    /// know which field was hit (e.g. a raw platform mousedown handler with
+    /// no z-order-aware coordinator of its own). When the caller already
+    /// knows the hit field — e.g. `InputCoordinator::end_frame`, which just
+    /// ran its own z-order-aware hit test — call [`Self::begin_drag_at`]
+    /// directly instead; it skips this geometric re-search entirely, so it
+    /// works even on the very first frame a field is registered, before any
+    /// draw call has stamped a `last_rect` for it via [`Self::update_field`].
     pub fn on_drag_start(&mut self, x: f64, y: f64) {
-        let mut hit_id: Option<WidgetId> = None;
+        let hit_id = self.hit_test_field_rect(x, y);
+        match hit_id {
+            Some(id) => self.begin_drag_at(id, x),
+            None => {
+                // A press that landed on nothing editable ENDS engagement. The
+                // field stays armed for the keyboard, but it stops looking
+                // live: clicking a dialog's header, or anywhere else outside
+                // the box, must take the caret and the ring away. Without this
+                // the ring survived every click that was not a close.
+                for state in self.fields.values_mut() {
+                    state.engaged = false;
+                }
+            }
+        }
+    }
+
+    /// Geometric hit-test against every registered field's last-drawn rect,
+    /// skipping mouse-incapable fields and fields whose geometry has gone
+    /// stale (not stamped via [`Self::update_field`] this frame or the
+    /// previous one).
+    fn hit_test_field_rect(&self, x: f64, y: f64) -> Option<WidgetId> {
         for (id, state) in &self.fields {
             if state.config.capability == InputCapability::Keyboard {
                 continue;
@@ -656,27 +687,25 @@ impl TextFieldStore {
             }
             if let Some((rx, ry, rw, rh)) = state.last_rect {
                 if x >= rx && x <= rx + rw && y >= ry && y <= ry + rh {
-                    hit_id = Some(id.clone());
-                    break;
+                    return Some(id.clone());
                 }
             }
         }
+        None
+    }
 
-        let id = match hit_id {
-            Some(id) => id,
-            None => {
-                // A press that landed on nothing editable ENDS engagement. The
-                // field stays armed for the keyboard, but it stops looking
-                // live: clicking a dialog's header, or anywhere else outside
-                // the box, must take the caret and the ring away. Without this
-                // the ring survived every click that was not a close.
-                for state in self.fields.values_mut() {
-                    state.engaged = false;
-                }
-                return;
-            }
-        };
-
+    /// Focus `id` and place the caret at the character nearest `x`, arming a
+    /// drag-select session on it — the same effect [`Self::on_drag_start`]
+    /// has once it has resolved which field was hit, but for a field the
+    /// caller already knows (skips the geometric `last_rect` search).
+    ///
+    /// This is the caret-placement half of a click/press on a text-sense
+    /// widget: focusing alone arms the field for the keyboard but leaves the
+    /// caret wherever it happened to be from a previous session (or at 0 on
+    /// first focus) — calling this instead moves it under the pointer, the
+    /// way every native text field behaves on click.
+    pub fn begin_drag_at(&mut self, id: impl Into<WidgetId>, x: f64) {
+        let id = id.into();
         self.focus(id.clone());
 
         let state = match self.fields.get_mut(&id) {
@@ -1198,6 +1227,34 @@ mod tests {
         assert_ne!(cursor_after, anchor.unwrap());
         s.on_drag_end();
         assert!(s.selection_range(&id("f")).is_some());
+    }
+
+    #[test]
+    fn begin_drag_at_places_caret_without_geometric_search() {
+        // A caller that already knows which field was hit (e.g. a z-order-
+        // aware coordinator) can go straight through `begin_drag_at` — this
+        // must work even before the field has ever been drawn (no
+        // `update_field` call yet, so `last_rect` is `None` and the
+        // geometric search `on_drag_start` relies on would find nothing).
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.set_text(&id("f"), "hello");
+        assert_eq!(s.cursor(&id("f")), 5);
+
+        // No update_field call — last_char_positions is empty, so
+        // cursor_from_x degrades to 0 rather than panicking.
+        s.begin_drag_at("f", 12.0);
+        assert!(s.is_focused(&id("f")));
+        assert_eq!(s.cursor(&id("f")), 0);
+        assert!(s.is_engaged(&id("f")));
+
+        // Once geometry is known, the caret lands on the character nearest x.
+        let positions: Vec<f64> = (0..=5).map(|i| i as f64 * 10.0).collect();
+        s.update_field(&id("f"), (0.0, 0.0, 50.0, 20.0), positions);
+        s.begin_drag_at("f", 25.0);
+        assert_eq!(s.cursor(&id("f")), 3);
+        // A fresh press collapses any prior selection to a point at the hit char.
+        assert_eq!(s.field_state(&id("f")).unwrap().selection_start, Some(3));
     }
 
     #[test]

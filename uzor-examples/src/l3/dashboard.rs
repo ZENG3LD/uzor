@@ -2035,11 +2035,16 @@ fn draw_l3_frame(
                             (body_rect.width - 32.0).max(120.0),
                             32.0,
                         );
+                        // Scope to the modal's own layer (see `layer` above) —
+                        // otherwise this field lands on main, behind the
+                        // modal's own hit-test barrier, and is unclickable.
+                        state.layout.ctx_mut().input.set_default_layer(Some(layer.clone()));
                         state.layout.ctx_mut().input.register_text_field(
                             ti_id.clone(),
                             ti_rect,
                             StoreTextFieldConfig::text(),
                         );
+                        state.layout.ctx_mut().input.set_default_layer(None);
                         let text_str = state.layout.ctx().input.text_fields()
                             .text(&ti_id).to_owned();
                         let cursor_pos = state.layout.ctx().input.text_fields().cursor(&ti_id);

@@ -301,6 +301,12 @@ pub fn register_modal_text_fields<P: DockPanel>(
     fields:    &[(&str, Rect, TextFieldConfig)],
 ) {
     let coord = &mut layout.ctx_mut().input;
+    // Scope registration to the modal's own layer — the modal frame itself
+    // was pushed on `LayerId::modal()` (see `register_input_coordinator_modal`
+    // above), which blocks lower layers while it's open. A text field
+    // registered without this would land on main, behind that barrier, and
+    // never receive a click.
+    coord.set_default_layer(Some(LayerId::modal()));
     for (id, local_rect, config) in fields {
         let screen_rect = Rect::new(
             body_rect.x + local_rect.x,
@@ -310,6 +316,7 @@ pub fn register_modal_text_fields<P: DockPanel>(
         );
         coord.register_text_field(*id, screen_rect, config.clone());
     }
+    coord.set_default_layer(None);
 }
 
 /// Register a button inside a modal body as a composite Panel + atomic Button child.

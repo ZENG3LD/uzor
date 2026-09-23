@@ -593,7 +593,19 @@ impl InputCoordinator {
                     if is_hovered && clicked.is_some() && widget.sense.click {
                         response.clicked = true;
                         if widget.sense.text {
-                            self.text_fields.focus(widget.id.clone());
+                            // Place the caret at the hit character instead of
+                            // only arming focus — the coordinator already
+                            // knows exactly which widget was hit (z-order +
+                            // modal-barrier aware), so hand that straight to
+                            // the text store instead of making it re-derive
+                            // the same answer from a geometric `last_rect`
+                            // search the way `on_drag_start` does for callers
+                            // that don't already have a hit-test of their own.
+                            if let Some((mx, _my)) = mouse_pos {
+                                self.text_fields.begin_drag_at(widget.id.clone(), mx);
+                            } else {
+                                self.text_fields.focus(widget.id.clone());
+                            }
                         }
                     }
 
@@ -912,12 +924,21 @@ impl InputCoordinator {
         self.text_fields.blur();
     }
 
-    /// Register a widget as a text field on the main layer.
+    /// Register a widget as a text field on the widget's own layer — the
+    /// layer plain [`Self::register`] calls land on (main unless overridden
+    /// via [`Self::set_default_layer`]).
     ///
     /// Registers with `Sense::TEXT_INPUT` and stores the text field config.
+    /// Mirrors [`Self::register`]'s own layer resolution exactly; a text
+    /// field registered while [`Self::set_default_layer`] scopes a nested
+    /// render (a modal/popup/dropdown body) lands on THAT layer, not
+    /// unconditionally on main — landing on main under an active modal
+    /// layer put the field behind the modal's own hit-test barrier, so a
+    /// click inside it was silently swallowed.
     pub fn register_text_field(&mut self, id: impl Into<WidgetId>, rect: Rect, config: TextFieldConfig) {
         let id = id.into();
-        self.register_on_layer(id.clone(), rect, Sense::TEXT_INPUT, &LayerId::main());
+        let layer = self.default_layer.clone().unwrap_or_else(LayerId::main);
+        self.register_on_layer(id.clone(), rect, Sense::TEXT_INPUT, &layer);
         self.text_fields.register(id, config);
     }
 
@@ -1697,6 +1718,101 @@ mod tests {
 
         // Text field should be focused after click
         assert!(coord.text_fields().is_focused(&id));
+    }
+
+    #[test]
+    fn test_register_text_field_respects_default_layer() {
+        // A text field registered while `set_default_layer` scopes a nested
+        // render (the shape a modal/popup/dropdown body uses) must land on
+        // THAT layer, not unconditionally on main — landing on main behind
+        // an active modal barrier means the field's rect is registered but
+        // the coordinator's z-order-aware hit test never reaches it, so a
+        // click inside it is silently swallowed. Regression test for the
+        // `register_text_field` hardcoded-`LayerId::main()` bug.
+        let mut coord = make_coordinator();
+        let input = make_click_at(50.0, 30.0);
+        coord.begin_frame(input);
+
+        let modal_layer = LayerId::new("modal");
+        coord.push_layer(modal_layer.clone(), 1, true); // modal = true, blocks lower layers
+
+        let id = WidgetId::new("modal_field");
+        coord.set_default_layer(Some(modal_layer.clone()));
+        coord.register_text_field(id.clone(), Rect::new(10.0, 10.0, 100.0, 40.0), TextFieldConfig::text());
+        coord.set_default_layer(None);
+
+        // A plain widget left on main (unscoped) stays behind the barrier —
+        // confirms the modal really is blocking, so the field's hit below
+        // is not just an artifact of an empty layer stack.
+        coord.register("main_widget", Rect::new(200.0, 200.0, 40.0, 40.0), Sense::CLICK);
+
+        assert_eq!(
+            coord.widget_rect(&id).is_some(),
+            true,
+            "field must still be registered this frame"
+        );
+
+        let responses = coord.end_frame();
+        assert!(
+            responses.iter().any(|(wid, r)| wid == &id && r.clicked),
+            "click on a text field registered on the modal layer must reach it, not be swallowed by the modal's own blocking barrier"
+        );
+        assert!(coord.text_fields().is_focused(&id));
+    }
+
+    #[test]
+    fn test_register_text_field_defaults_to_main_layer() {
+        // Without an overriding `set_default_layer`, behaviour is unchanged
+        // from before the fix: the field lands on main, same as a plain
+        // `register()` call would.
+        let mut coord = make_coordinator();
+        let input = make_click_at(50.0, 30.0);
+        coord.begin_frame(input);
+
+        let id = WidgetId::new("plain_field");
+        coord.register_text_field(id.clone(), Rect::new(10.0, 10.0, 100.0, 40.0), TextFieldConfig::text());
+
+        let responses = coord.end_frame();
+        assert!(responses.iter().any(|(wid, r)| wid == &id && r.clicked));
+        assert!(coord.text_fields().is_focused(&id));
+    }
+
+    #[test]
+    fn test_click_places_caret_at_hit_character_not_just_focus() {
+        // A click on a text field must move the caret to the character under
+        // the pointer, not merely arm focus while leaving the caret wherever
+        // it was left from a previous session. Regression test for the
+        // `end_frame` click branch that used to call only `text_fields.focus`.
+        let mut coord = make_coordinator();
+
+        let id = WidgetId::new("caret_field");
+        // Frame 1: register + focus via an initial click, then simulate a
+        // prior edit session that left the caret at the end of "hello" (5)
+        // with geometry stamped from a draw pass.
+        let input1 = make_click_at(999.0, 999.0); // click elsewhere first
+        coord.begin_frame(input1);
+        coord.register_text_field(id.clone(), Rect::new(0.0, 0.0, 100.0, 30.0), TextFieldConfig::text());
+        coord.text_fields_mut().set_text(&id, "hello");
+        // char boundaries: 10px per character, 0..=5
+        let positions: Vec<f64> = (0..=5).map(|i| i as f64 * 10.0).collect();
+        coord.text_fields_mut().update_field(&id, (0.0, 0.0, 100.0, 30.0), positions);
+        coord.end_frame();
+        assert_eq!(coord.text_fields().cursor(&id), 5, "cursor starts at end of text after set_text");
+
+        // Frame 2: click at x=12 inside the field's screen rect — nearest
+        // char boundary is char index 1 (positions 10/20, midpoint 15; x=12 < 15).
+        let input2 = make_click_at(12.0, 15.0);
+        coord.begin_frame(input2);
+        coord.register_text_field(id.clone(), Rect::new(0.0, 0.0, 100.0, 30.0), TextFieldConfig::text());
+        let responses = coord.end_frame();
+
+        assert!(responses.iter().any(|(wid, r)| wid == &id && r.clicked));
+        assert!(coord.text_fields().is_focused(&id));
+        assert_eq!(
+            coord.text_fields().cursor(&id),
+            1,
+            "click must move the caret to the character nearest the click x, not leave it at the stale position 5"
+        );
     }
 
     #[test]
