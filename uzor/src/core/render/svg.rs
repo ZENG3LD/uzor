@@ -33,8 +33,15 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     // opacity/fill-opacity/stroke-opacity below (SVG's cascading opacity model).
     let root_opacity = parse_root_opacity(svg);
 
-    // Fixed stroke width for crisp rendering — round to nearest 0.5 for pixel-aligned strokes
-    let stroke_width = (1.5 * scale * 2.0).round() / 2.0;
+    // Device pixel ratio — lets the pixel-grid snapping below land on actual device
+    // pixels rather than logical (CSS) ones. On a backend that reports `dpr() == 1.0`
+    // (no HiDPI info) this collapses to snapping in the context's own coordinate space.
+    let dpr = ctx.dpr();
+
+    // Base pen weight: the root `stroke-width` (default 1.5 — this crate's historical
+    // Lucide-icon weight — when the root doesn't declare one), scaled and quantized to
+    // whole device pixels so the stroke doesn't straddle a pixel row/column and blur.
+    let stroke_width = quantize_stroke_width(parse_root_stroke_width(svg) * scale, dpr);
 
     // Set stroke style
     ctx.set_stroke_color(color);
@@ -49,23 +56,32 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     let eff_scale_x = gt.sx * scale;
     let eff_scale_y = gt.sy * scale;
 
-    // Parse and render all path elements
+    // Parse and render all path elements. Fill and stroke are built as SEPARATE path
+    // geometries (rather than one shared begin_path/render reused for both) so a path
+    // that is both filled and stroked can keep its fill exact while snapping only the
+    // axis-aligned (H/V) portions of its stroke — "fills are not snapped".
     for path_info in parse_svg_paths(svg, default_filled) {
-        ctx.begin_path();
-        render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
-
-        // Fill first, then stroke (so stroke is on top)
         if path_info.filled {
+            ctx.begin_path();
+            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y, None);
             let fill_alpha = path_info.opacity.fill * root_opacity;
             ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         }
         if path_info.stroked {
             // Per-element stroke-width override (e.g. thin construction lines).
-            let override_width = path_info.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = path_info.stroke_width.map(|w| scaled_stroke_width_override(w, scale, dpr));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
+            let effective_width = override_width.unwrap_or(stroke_width);
+
+            ctx.begin_path();
+            render_path_data(
+                ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y,
+                Some(AxisSnap { width: effective_width, dpr }),
+            );
+
             // Per-element stroke opacity — only touch stroke color when it actually
             // differs from the up-front default, and restore it afterward so nothing
             // leaks into the next (unmodified) stroked element.
@@ -83,10 +99,11 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         }
     }
 
-    // Parse and render all circle elements
+    // Parse and render all circle elements. Circles are curved, not axis-aligned, so
+    // per item 2's scope (h/v lines, rect edges) their geometry is never snapped.
     for (cx, cy, r, filled, style) in parse_svg_circles(svg, default_filled) {
-        let tx = snap_half(eff_offset_x + cx * eff_scale_x);
-        let ty = snap_half(eff_offset_y + cy * eff_scale_y);
+        let tx = eff_offset_x + cx * eff_scale_x;
+        let ty = eff_offset_y + cy * eff_scale_y;
         let tr = r * scale;
 
         ctx.begin_path();
@@ -102,7 +119,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             ctx.set_fill_color(&color_with_alpha(color, stroke_alpha));
             ctx.fill();
         } else {
-            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale, dpr));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
@@ -120,10 +137,12 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         }
     }
 
-    // Parse and render all rect elements
+    // Parse and render all rect elements. Rect edges are axis-aligned, so a stroked
+    // rect's corner is snapped (both x and y — a corner is where one h and one v edge
+    // meet); a filled rect's corner is left exact ("fills are not snapped").
     for (rx, ry, rw, rh, rounding, filled, style) in parse_svg_rects(svg, default_filled) {
-        let tx = snap_half(eff_offset_x + rx * eff_scale_x);
-        let ty = snap_half(eff_offset_y + ry * eff_scale_y);
+        let raw_tx = eff_offset_x + rx * eff_scale_x;
+        let raw_ty = eff_offset_y + ry * eff_scale_y;
         let tw = rw * eff_scale_x;
         let th = rh * eff_scale_y;
         let tr = rounding * scale;
@@ -132,15 +151,19 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             let fill_alpha = style.opacity.fill * root_opacity;
             ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             if tr > 0.0 {
-                ctx.fill_rounded_rect(tx, ty, tw, th, tr);
+                ctx.fill_rounded_rect(raw_tx, raw_ty, tw, th, tr);
             } else {
-                ctx.fill_rect(tx, ty, tw, th);
+                ctx.fill_rect(raw_tx, raw_ty, tw, th);
             }
         } else {
-            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale, dpr));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
+            let effective_width = override_width.unwrap_or(stroke_width);
+            let tx = snap_axis(raw_tx, effective_width, dpr);
+            let ty = snap_axis(raw_ty, effective_width, dpr);
+
             let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
             if stroke_alpha < 1.0 {
                 ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
@@ -161,17 +184,32 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         }
     }
 
-    // Parse and render all line elements
+    // Parse and render all line elements. Axis-aligned lines (x1 == x2, a vertical run;
+    // y1 == y2, a horizontal run) get their constant coordinate snapped; diagonal lines
+    // keep their exact geometry.
     for (x1, y1, x2, y2, style) in parse_svg_lines(svg) {
-        let tx1 = eff_offset_x + x1 * eff_scale_x;
-        let ty1 = eff_offset_y + y1 * eff_scale_y;
-        let tx2 = eff_offset_x + x2 * eff_scale_x;
-        let ty2 = eff_offset_y + y2 * eff_scale_y;
+        let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale, dpr));
+        let effective_width = override_width.unwrap_or(stroke_width);
+
+        let mut tx1 = eff_offset_x + x1 * eff_scale_x;
+        let mut ty1 = eff_offset_y + y1 * eff_scale_y;
+        let mut tx2 = eff_offset_x + x2 * eff_scale_x;
+        let mut ty2 = eff_offset_y + y2 * eff_scale_y;
+        if x1 == x2 {
+            // Vertical run — snap the shared X so it doesn't straddle a pixel column.
+            let sx = snap_axis(tx1, effective_width, dpr);
+            tx1 = sx;
+            tx2 = sx;
+        } else if y1 == y2 {
+            // Horizontal run — snap the shared Y so it doesn't straddle a pixel row.
+            let sy = snap_axis(ty1, effective_width, dpr);
+            ty1 = sy;
+            ty2 = sy;
+        }
 
         ctx.begin_path();
         ctx.move_to(tx1, ty1);
         ctx.line_to(tx2, ty2);
-        let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
         if let Some(w) = override_width {
             ctx.set_stroke_width(w);
         }
@@ -200,7 +238,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             if closed {
                 ctx.close_path();
             }
-            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale, dpr));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
@@ -569,18 +607,62 @@ fn arc_to_points(
     points
 }
 
-/// Snap a coordinate to the nearest half-pixel for crisp 1px strokes.
-#[inline]
-fn snap_half(v: f64) -> f64 {
-    (v * 2.0).round() / 2.0
+/// Root `<svg>` `stroke-width` attribute — the base pen weight every element inherits
+/// unless it declares its own override. Defaults to `1.5` (this crate's historical
+/// Lucide-icon weight) when the root has no explicit `stroke-width`, so icons that
+/// never specified one keep today's look.
+fn parse_root_stroke_width(svg: &str) -> f64 {
+    let Some(start) = svg.find("<svg") else { return 1.5 };
+    let Some(end) = svg[start..].find('>') else { return 1.5 };
+    let tag = &svg[start..start + end + 1];
+    find_attr_value(tag, "stroke-width").and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(1.5)
 }
 
-/// Scale a per-element `stroke-width` override into device pixels, matching the
-/// fixed default formula `(1.5 * scale * 2.0).round() / 2.0` for the Lucide root
-/// default of `stroke-width="2"` (0.75 * 2 == 1.5), clamped to a visible minimum.
+/// Quantize a logical stroke width to whole device pixels for crisp rendering: widths
+/// at or above 0.75 device px round to the nearest whole device pixel (never below 1,
+/// so a hairline never rounds away to nothing); thinner widths are left at their exact
+/// fractional value. `dpr` (`RenderContext::dpr`) converts between this context's
+/// logical coordinate space and actual device pixels — on a backend that reports
+/// `dpr() == 1.0` (no HiDPI scaling info) the two spaces coincide and this quantizes
+/// directly in the context's own coordinate space.
 #[inline]
-fn scaled_stroke_width_override(w: f64, scale: f64) -> f64 {
-    (((0.75 * w * scale) * 2.0).round() / 2.0).max(0.5)
+fn quantize_stroke_width(logical_width: f64, dpr: f64) -> f64 {
+    let device_width = logical_width * dpr;
+    let device_width = if device_width >= 0.75 { device_width.round().max(1.0) } else { device_width };
+    device_width / dpr
+}
+
+/// Per-axis pixel-grid snapping parameters for a stroked element's geometry — the
+/// device-quantized stroke width (to decide odd/even centring) and the context's
+/// device pixel ratio (to convert logical coordinates to the device grid and back).
+#[derive(Clone, Copy)]
+struct AxisSnap {
+    width: f64,
+    dpr: f64,
+}
+
+/// Snap a logical coordinate to the device-pixel grid appropriate for a stroke of the
+/// given logical width: an odd device-pixel width centres the stroke on a half device
+/// pixel (so e.g. a 1px axis-aligned line covers exactly one device pixel instead of
+/// straddling two and reading soft); an even width centres on a whole device pixel.
+/// Used ONLY for axis-aligned geometry — H/V path commands, `<line>` elements running
+/// exactly horizontal/vertical, and stroked `<rect>` corners — diagonal and curved
+/// geometry is left exact, matching real SVG rendering.
+#[inline]
+fn snap_axis(v: f64, stroke_width: f64, dpr: f64) -> f64 {
+    let device_width = (stroke_width * dpr).round().max(1.0) as i64;
+    let odd = device_width % 2 != 0;
+    let device_v = v * dpr;
+    let snapped_device = if odd { (device_v - 0.5).round() + 0.5 } else { device_v.round() };
+    snapped_device / dpr
+}
+
+/// Scale a per-element `stroke-width` override into a device-pixel-quantized logical
+/// width, using the same [`quantize_stroke_width`] rounding as the base width so an
+/// override reads exactly like the base would at that same attribute value.
+#[inline]
+fn scaled_stroke_width_override(w: f64, scale: f64, dpr: f64) -> f64 {
+    quantize_stroke_width(w * scale, dpr)
 }
 
 /// Compose an alpha factor (`0.0..=1.0`) onto a color string by scaling its existing alpha
@@ -640,8 +722,19 @@ fn draw_circle_bezier(ctx: &mut dyn RenderContext, cx: f64, cy: f64, r: f64) {
     ctx.close_path();
 }
 
-/// Render SVG path data onto a RenderContext
-fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64, offset_y: f64, scale_x: f64, scale_y: f64) {
+/// Render SVG path data onto a RenderContext.
+///
+/// `snap` is `Some` only when rendering geometry for a stroke (fills always pass
+/// `None` — "fills are not snapped"). Only the `H`/`V` commands consult it: each
+/// snaps its OWN constant/perpendicular coordinate (a horizontal run's y, a
+/// vertical run's x) to the pixel grid so the run doesn't straddle a pixel row or
+/// column; every other command (`M`/`L`/curves/arcs) keeps its exact geometry,
+/// since it may be diagonal or curved.
+fn render_path_data(
+    ctx: &mut dyn RenderContext, path_data: &str,
+    offset_x: f64, offset_y: f64, scale_x: f64, scale_y: f64,
+    snap: Option<AxisSnap>,
+) {
     let mut current_x = 0.0;
     let mut current_y = 0.0;
     let mut start_x = 0.0;
@@ -671,89 +764,111 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
 
         match current_cmd {
             'M' => {
-                // Absolute move
+                // Absolute move — exact geometry (may be the start of a diagonal run).
                 if let Some((x, y)) = parse_two_numbers(&mut chars) {
                     current_x = x;
                     current_y = y;
                     start_x = x;
                     start_y = y;
-                    ctx.move_to(snap_half(offset_x + x * scale_x), snap_half(offset_y + y * scale_y));
+                    ctx.move_to(offset_x + x * scale_x, offset_y + y * scale_y);
                     current_cmd = 'L'; // Subsequent coordinates are line-to
                     last_control = None;
                 }
             }
             'm' => {
-                // Relative move
+                // Relative move — exact geometry.
                 if let Some((dx, dy)) = parse_two_numbers(&mut chars) {
                     current_x += dx;
                     current_y += dy;
                     start_x = current_x;
                     start_y = current_y;
-                    ctx.move_to(snap_half(offset_x + current_x * scale_x), snap_half(offset_y + current_y * scale_y));
+                    ctx.move_to(offset_x + current_x * scale_x, offset_y + current_y * scale_y);
                     current_cmd = 'l'; // Subsequent coordinates are relative line-to
                     last_control = None;
                 }
             }
             'L' => {
-                // Absolute line
+                // Absolute line — exact geometry (diagonal segments keep their shape).
                 if let Some((x, y)) = parse_two_numbers(&mut chars) {
                     current_x = x;
                     current_y = y;
-                    ctx.line_to(snap_half(offset_x + x * scale_x), snap_half(offset_y + y * scale_y));
+                    ctx.line_to(offset_x + x * scale_x, offset_y + y * scale_y);
                     last_control = None;
                 }
             }
             'l' => {
-                // Relative line
+                // Relative line — exact geometry.
                 if let Some((dx, dy)) = parse_two_numbers(&mut chars) {
                     current_x += dx;
                     current_y += dy;
-                    ctx.line_to(snap_half(offset_x + current_x * scale_x), snap_half(offset_y + current_y * scale_y));
+                    ctx.line_to(offset_x + current_x * scale_x, offset_y + current_y * scale_y);
                     last_control = None;
                 }
             }
             'H' => {
-                // Absolute horizontal line
+                // Absolute horizontal line — axis-aligned: snap the CONSTANT y (the
+                // perpendicular axis), leave x (along the run) exact.
                 if let Some(x) = parse_number(&mut chars) {
                     current_x = x;
-                    ctx.line_to(snap_half(offset_x + x * scale_x), offset_y + current_y * scale_y);
+                    let py_raw = offset_y + current_y * scale_y;
+                    let py = match snap {
+                        Some(s) => snap_axis(py_raw, s.width, s.dpr),
+                        None => py_raw,
+                    };
+                    ctx.line_to(offset_x + x * scale_x, py);
                     last_control = None;
                 }
             }
             'h' => {
-                // Relative horizontal line
+                // Relative horizontal line — same axis-aligned snapping as 'H'.
                 if let Some(dx) = parse_number(&mut chars) {
                     current_x += dx;
-                    ctx.line_to(snap_half(offset_x + current_x * scale_x), offset_y + current_y * scale_y);
+                    let py_raw = offset_y + current_y * scale_y;
+                    let py = match snap {
+                        Some(s) => snap_axis(py_raw, s.width, s.dpr),
+                        None => py_raw,
+                    };
+                    ctx.line_to(offset_x + current_x * scale_x, py);
                     last_control = None;
                 }
             }
             'V' => {
-                // Absolute vertical line
+                // Absolute vertical line — axis-aligned: snap the CONSTANT x, leave y
+                // (along the run) exact.
                 if let Some(y) = parse_number(&mut chars) {
                     current_y = y;
-                    ctx.line_to(offset_x + current_x * scale_x, snap_half(offset_y + y * scale_y));
+                    let px_raw = offset_x + current_x * scale_x;
+                    let px = match snap {
+                        Some(s) => snap_axis(px_raw, s.width, s.dpr),
+                        None => px_raw,
+                    };
+                    ctx.line_to(px, offset_y + y * scale_y);
                     last_control = None;
                 }
             }
             'v' => {
-                // Relative vertical line
+                // Relative vertical line — same axis-aligned snapping as 'V'.
                 if let Some(dy) = parse_number(&mut chars) {
                     current_y += dy;
-                    ctx.line_to(offset_x + current_x * scale_x, snap_half(offset_y + current_y * scale_y));
+                    let px_raw = offset_x + current_x * scale_x;
+                    let px = match snap {
+                        Some(s) => snap_axis(px_raw, s.width, s.dpr),
+                        None => px_raw,
+                    };
+                    ctx.line_to(px, offset_y + current_y * scale_y);
                     last_control = None;
                 }
             }
             'C' => {
-                // Absolute cubic bezier
+                // Absolute cubic bezier — curved, exact geometry.
                 if let Some((c1x, c1y, c2x, c2y, x, y)) = parse_six_numbers(&mut chars) {
                     ctx.bezier_curve_to(
                         offset_x + c1x * scale_x,
                         offset_y + c1y * scale_y,
                         offset_x + c2x * scale_x,
                         offset_y + c2y * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -761,7 +876,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'c' => {
-                // Relative cubic bezier
+                // Relative cubic bezier — curved, exact geometry.
                 if let Some((dc1x, dc1y, dc2x, dc2y, dx, dy)) = parse_six_numbers(&mut chars) {
                     let c1x = current_x + dc1x;
                     let c1y = current_y + dc1y;
@@ -774,8 +889,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale_y,
                         offset_x + c2x * scale_x,
                         offset_y + c2y * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -783,7 +898,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'S' => {
-                // Smooth cubic bezier (absolute)
+                // Smooth cubic bezier (absolute) — curved, exact geometry.
                 if let Some((c2x, c2y, x, y)) = parse_four_numbers(&mut chars) {
                     // Reflect last control point
                     let (c1x, c1y) = match last_control {
@@ -795,8 +910,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale_y,
                         offset_x + c2x * scale_x,
                         offset_y + c2y * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -804,7 +919,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             's' => {
-                // Smooth cubic bezier (relative)
+                // Smooth cubic bezier (relative) — curved, exact geometry.
                 if let Some((dc2x, dc2y, dx, dy)) = parse_four_numbers(&mut chars) {
                     let (c1x, c1y) = match last_control {
                         Some((lx, ly)) => (2.0 * current_x - lx, 2.0 * current_y - ly),
@@ -819,8 +934,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale_y,
                         offset_x + c2x * scale_x,
                         offset_y + c2y * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -828,13 +943,13 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'Q' => {
-                // Absolute quadratic bezier
+                // Absolute quadratic bezier — curved, exact geometry.
                 if let Some((cx, cy, x, y)) = parse_four_numbers(&mut chars) {
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale_x,
                         offset_y + cy * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -842,7 +957,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'q' => {
-                // Relative quadratic bezier
+                // Relative quadratic bezier — curved, exact geometry.
                 if let Some((dcx, dcy, dx, dy)) = parse_four_numbers(&mut chars) {
                     let cx = current_x + dcx;
                     let cy = current_y + dcy;
@@ -851,8 +966,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale_x,
                         offset_y + cy * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -860,7 +975,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'T' => {
-                // Smooth quadratic bezier (absolute)
+                // Smooth quadratic bezier (absolute) — curved, exact geometry.
                 if let Some((x, y)) = parse_two_numbers(&mut chars) {
                     let (cx, cy) = match last_control {
                         Some((lx, ly)) => (2.0 * current_x - lx, 2.0 * current_y - ly),
@@ -869,8 +984,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale_x,
                         offset_y + cy * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -878,7 +993,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             't' => {
-                // Smooth quadratic bezier (relative)
+                // Smooth quadratic bezier (relative) — curved, exact geometry.
                 if let Some((dx, dy)) = parse_two_numbers(&mut chars) {
                     let (cx, cy) = match last_control {
                         Some((lx, ly)) => (2.0 * current_x - lx, 2.0 * current_y - ly),
@@ -889,8 +1004,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale_x,
                         offset_y + cy * scale_y,
-                        snap_half(offset_x + x * scale_x),
-                        snap_half(offset_y + y * scale_y),
+                        offset_x + x * scale_x,
+                        offset_y + y * scale_y,
                     );
                     current_x = x;
                     current_y = y;
@@ -898,7 +1013,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 }
             }
             'A' | 'a' => {
-                // Arc command: rx ry x-rotation large-arc-flag sweep-flag x y
+                // Arc command: rx ry x-rotation large-arc-flag sweep-flag x y — curved,
+                // exact geometry.
                 let is_relative = current_cmd == 'a';
                 if let Some((rx, ry, rotation, large, sweep, x, y)) = parse_arc_params(&mut chars) {
                     let (end_x, end_y) = if is_relative {
@@ -918,7 +1034,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     );
 
                     for (px, py) in arc_points {
-                        ctx.line_to(snap_half(offset_x + px * scale_x), snap_half(offset_y + py * scale_y));
+                        ctx.line_to(offset_x + px * scale_x, offset_y + py * scale_y);
                     }
 
                     current_x = end_x;
@@ -1625,7 +1741,10 @@ pub fn draw_svg_icon_rotated(
 
     let has_fill_none = svg_root_has_fill_none(svg);
     let default_filled = !has_fill_none;
-    let stroke_width = 1.5 * scale;
+    // Same base-width quantization as draw_svg_icon (item 1 + item 2's width rounding).
+    // Geometry snapping itself is skipped here — a rotated icon has no axis-aligned
+    // edges left in screen space to snap.
+    let stroke_width = quantize_stroke_width(parse_root_stroke_width(svg) * scale, ctx.dpr());
 
     // Ancestor opacity from the root <svg>/<g>, multiplied onto every element's own
     // opacity/fill-opacity/stroke-opacity below — same model as draw_svg_icon.
@@ -1984,6 +2103,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     // opacity/fill-opacity/stroke-opacity below — same model as draw_svg_icon.
     let root_opacity = parse_root_opacity(svg);
 
+    let dpr = ctx.dpr();
     let gt = parse_g_transform(svg);
     let eff_offset_x = offset_x + gt.tx * scale;
     let eff_offset_y = offset_y + gt.ty * scale;
@@ -1993,12 +2113,14 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     // Render path elements preserving each path's fill and stroke colors.
     // NOTE: vello's fill()/stroke()/fill_linear_gradient() consume the path
     // (path_builder.take()), so when a path needs BOTH fill AND stroke we must
-    // build the path geometry twice.
+    // build the path geometry twice — which also gives us "fills are not
+    // snapped" for free: the fill pass renders with `None`, the stroke pass
+    // with `Some(AxisSnap { .. })`, per element loop shared with draw_svg_icon.
     for path_info in parse_svg_paths(svg, default_filled) {
         // ── Fill pass ───────────────────────────────────────────────────
         if path_info.filled {
             ctx.begin_path();
-            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
+            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y, None);
 
             let fill_alpha = path_info.opacity.fill * root_opacity;
             if let Some(ref color) = path_info.fill_color {
@@ -2038,11 +2160,15 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
 
         // ── Stroke pass (rebuild path since fill consumed it) ───────────
         if path_info.stroked {
+            let sw = quantize_stroke_width(path_info.stroke_width.unwrap_or(1.0) * scale, dpr);
+
             ctx.begin_path();
-            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
+            render_path_data(
+                ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y,
+                Some(AxisSnap { width: sw, dpr }),
+            );
 
             let sc = path_info.stroke_color.as_deref().unwrap_or("black");
-            let sw = path_info.stroke_width.unwrap_or(1.0) * scale;
             let stroke_alpha = path_info.opacity.stroke * root_opacity;
             ctx.set_stroke_color(&color_with_alpha(sc, stroke_alpha));
             ctx.set_stroke_width(sw);
@@ -2432,10 +2558,11 @@ mod tests {
 
     #[test]
     fn test_path_stroke_width_override_thinner_line() {
-        // Lucide idiom: root stroke-width="2" (default), one construction path
-        // overrides to stroke-width="1.2" (thinner). At scale=1.0 the default
-        // width is (1.5*1.0*2.0).round()/2.0 == 1.5; the override must produce
-        // a strictly thinner scaled width: (0.75*1.2*1.0*2.0).round()/2.0 == 1.0.
+        // Lucide idiom: root stroke-width="2" (honored as the base now — item 1), one
+        // construction path overrides to stroke-width="1.2" (thinner). At scale=1.0,
+        // dpr=1.0 the base is quantize_stroke_width(2.0 * 1.0, 1.0) == 2.0 (already a
+        // whole device pixel); the override is quantize_stroke_width(1.2 * 1.0, 1.0) ==
+        // 1.0 (rounds down to the nearest whole device pixel) — strictly thinner.
         let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1L23 23" stroke-width="1.2"/></svg>"#;
 
         let mut ctx = MockContext::new();
@@ -2446,8 +2573,8 @@ mod tests {
             println!("  [{:3}] {}", i, op);
         }
 
-        // The default width is set once up-front.
-        assert!(ctx.ops.contains(&"set_stroke_width(1.50)".to_string()), "Should set the default 1.5 stroke width up-front");
+        // The default width is set once up-front, honoring the root stroke-width="2".
+        assert!(ctx.ops.contains(&"set_stroke_width(2.00)".to_string()), "Should set the honored root stroke-width (2.0) up-front");
         // The per-element override (thinner) must appear before the stroke() it applies to.
         let override_idx = ctx.ops.iter().position(|op| op == "set_stroke_width(1.00)");
         assert!(override_idx.is_some(), "Should set the thinner overridden stroke width (1.0) for the path with stroke-width=\"1.2\"");
@@ -2456,7 +2583,7 @@ mod tests {
         assert!(override_idx.unwrap() < stroke_idx.unwrap(), "Override width must be set before stroke() is called");
 
         // Width must be restored to the default afterward (no permanent width change).
-        let restore_idx = ctx.ops.iter().skip(stroke_idx.unwrap()).position(|op| op == "set_stroke_width(1.50)");
+        let restore_idx = ctx.ops.iter().skip(stroke_idx.unwrap()).position(|op| op == "set_stroke_width(2.00)");
         assert!(restore_idx.is_some(), "Should restore the default stroke width after the overridden stroke");
     }
 
@@ -2577,6 +2704,111 @@ mod tests {
             ctx.fill_colors,
             vec!["#11223340".to_string()],
             "draw_svg_icon_rotated must compose opacity the same way as draw_svg_icon (shared helper)"
+        );
+    }
+
+    // =============================================================================
+    // Pixel-grid stroke width / snapping tests (owner: toolbar icons look blurry)
+    // =============================================================================
+
+    #[test]
+    fn test_root_stroke_width_honored() {
+        // Root declares an explicit stroke-width="4" — item 1 requires it to be
+        // honored as the base pen weight instead of the old hardcoded 1.5. At
+        // scale=1.0, dpr=1.0 (MockContext) the quantized base is exactly 4.0.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4"><path d="M1 1L23 23"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        assert!(
+            ctx.ops.contains(&"set_stroke_width(4.00)".to_string()),
+            "Root stroke-width=\"4\" should be honored as the base width, ops: {:?}", ctx.ops
+        );
+    }
+
+    #[test]
+    fn test_root_stroke_width_default_when_absent() {
+        // No root stroke-width attribute must fall back to exactly the same default
+        // as an SVG that declares stroke-width="1.5" explicitly — "existing icons
+        // keep today's weight" (item 1).
+        let svg_absent = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M1 1L23 23"/></svg>"#;
+        let svg_explicit = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 1L23 23"/></svg>"#;
+
+        let mut ctx_absent = MockContext::new();
+        draw_svg_icon(&mut ctx_absent, svg_absent, 0.0, 0.0, 24.0, 24.0, "#000000");
+        let mut ctx_explicit = MockContext::new();
+        draw_svg_icon(&mut ctx_explicit, svg_explicit, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        let base_width = |ctx: &MockContext| ctx.ops.iter().find(|op| op.starts_with("set_stroke_width")).cloned();
+        assert_eq!(
+            base_width(&ctx_absent), base_width(&ctx_explicit),
+            "Absent root stroke-width should produce the exact same base width as an explicit stroke-width=\"1.5\""
+        );
+    }
+
+    #[test]
+    fn test_h_command_snapped_to_half_pixel_at_1px_width() {
+        // Root stroke-width="1" quantizes to an ODD device pixel width — the H
+        // command's constant y (the perpendicular axis, 10) must snap to the HALF
+        // pixel 10.5 so the 1px horizontal run covers exactly one device pixel row
+        // instead of straddling two and reading soft.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M0 10H20"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        assert!(
+            ctx.ops.iter().any(|op| op == "line_to(20.0,10.5)"),
+            "1px H run should snap its constant y to the half pixel 10.5, ops: {:?}", ctx.ops
+        );
+    }
+
+    #[test]
+    fn test_h_command_snapped_to_whole_pixel_at_2px_width() {
+        // Root stroke-width="2" quantizes to an EVEN device pixel width — the H
+        // command's constant y (10.3) must snap to the WHOLE pixel 10.0, not a half
+        // pixel, so the 2px run centres symmetrically on the pixel grid.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M0 10.3H20"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        assert!(
+            ctx.ops.iter().any(|op| op == "line_to(20.0,10.0)"),
+            "2px H run should snap its constant y to the whole pixel 10.0, ops: {:?}", ctx.ops
+        );
+    }
+
+    #[test]
+    fn test_diagonal_path_segment_not_snapped() {
+        // 'L' is a general line-to (may be diagonal) — per item 2 it must keep its
+        // exact geometry always, never snapped to the pixel grid like H/V are.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M1 1L7.3 12.7"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        assert!(
+            ctx.ops.iter().any(|op| op == "line_to(7.3,12.7)"),
+            "Diagonal L segment must keep its exact (unsnapped) coordinates, ops: {:?}", ctx.ops
+        );
+    }
+
+    #[test]
+    fn test_rotated_icon_h_command_not_snapped() {
+        // draw_svg_icon_rotated must skip geometry snapping entirely (item 2: "skip
+        // snapping when rotated") — even for an H command, whose non-rotated sibling
+        // (draw_svg_icon, see test_h_command_snapped_to_whole_pixel_at_2px_width)
+        // WOULD snap the constant y to the pixel grid.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M0 10.3H20"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon_rotated(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000", 0.0);
+
+        assert!(
+            ctx.ops.iter().any(|op| op == "line_to(20.0,10.3)"),
+            "Rotated icon must render the H command's exact (unsnapped) y — 10.3, not pixel-grid-snapped, ops: {:?}", ctx.ops
         );
     }
 }
