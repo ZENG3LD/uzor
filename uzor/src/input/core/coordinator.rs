@@ -11,7 +11,7 @@ use crate::types::{Rect, WidgetId, CompositeId, AtomicId};
 use crate::input::core::sense::Sense;
 use crate::input::core::response::WidgetResponse;
 use crate::input::core::widget_kind::WidgetKind;
-use crate::input::pointer::state::InputState;
+use crate::input::pointer::state::{InputState, MouseButton};
 use crate::input::core::widget_state::WidgetInputState;
 use crate::input::text::store::{TextFieldStore, TextFieldConfig, TextAction};
 
@@ -206,6 +206,7 @@ impl InputCoordinator {
             .pointer
             .pos
             .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        self.bake_pressed(&hovered, input.pointer.button_down);
         self.widget_state.hover.set_hovered(hovered);
 
         self.widgets.clear();
@@ -259,6 +260,8 @@ impl InputCoordinator {
             .pointer
             .pos
             .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        let button_down = self.input.pointer.button_down;
+        self.bake_pressed(&hovered, button_down);
         self.widget_state.hover.set_hovered(hovered);
 
         self.widgets.clear();
@@ -272,6 +275,27 @@ impl InputCoordinator {
         });
         self.frame += 1;
         self.text_fields.begin_frame();
+    }
+
+    /// Bake this frame's `mouse_pressed` flag and press-origin widget from
+    /// `button_down`, shared by [`Self::begin_frame`] and
+    /// [`Self::begin_frame_widgets_only`].
+    ///
+    /// Must run BEFORE `hover.set_hovered` overwrites `hover.hovered` and
+    /// reads `hover.mouse_pressed` as its OWN previous value (the value
+    /// baked on the last call) to detect the up-to-down transition —
+    /// that's the only frame the press can be considered to "start" on
+    /// `hovered`. Once the button is released the origin is cleared so a
+    /// stale origin never survives into the next press.
+    fn bake_pressed(&mut self, hovered: &Option<WidgetId>, button_down: Option<MouseButton>) {
+        let was_down = self.widget_state.hover.mouse_pressed;
+        let is_down = button_down.is_some();
+        if is_down && !was_down {
+            self.widget_state.hover.set_press_origin(hovered.clone());
+        } else if !is_down {
+            self.widget_state.hover.set_press_origin(None);
+        }
+        self.widget_state.hover.set_pressed(is_down);
     }
 
     /// Register widget for this frame on the default layer (main unless
@@ -889,16 +913,21 @@ impl InputCoordinator {
 
     /// Query the interaction state of a widget by id.
     ///
-    /// Returns [`WidgetState::Pressed`] when the widget is both hovered and the
-    /// mouse button is held, [`WidgetState::Hovered`] when only hovered, and
-    /// [`WidgetState::Normal`] otherwise.
+    /// Returns [`WidgetState::Pressed`] when the widget is hovered, the mouse
+    /// button is held, AND the press originated on this exact widget (see
+    /// [`crate::input::core::widget_state::HoverState::press_origin`]) —
+    /// dragging a held button in from a different widget does not make this
+    /// widget report `Pressed`. Returns [`WidgetState::Hovered`] when hovered
+    /// without qualifying as pressed, and [`WidgetState::Normal`] otherwise.
     ///
     /// This is the canonical way to read button state — no string comparison or
     /// manual `l1_btn_hovered`/`l1_btn_pressed` fields needed in caller code.
     pub fn widget_state(&self, id: &WidgetId) -> crate::types::WidgetState {
         use crate::types::WidgetState;
         let hovered = self.is_hovered(id);
-        if hovered && self.widget_state.hover.mouse_pressed {
+        let pressed = self.widget_state.hover.mouse_pressed
+            && self.widget_state.hover.is_press_origin(id);
+        if hovered && pressed {
             WidgetState::Pressed
         } else if hovered {
             WidgetState::Hovered
@@ -1310,7 +1339,7 @@ impl Default for InputCoordinator {
 mod tests {
     use crate::input::*;
     use crate::input::pointer::state::MouseButton;
-    use crate::types::Rect;
+    use crate::types::{Rect, WidgetState};
 
     fn make_coordinator() -> InputCoordinator {
         InputCoordinator::new()
@@ -2054,5 +2083,97 @@ mod tests {
 
         assert_eq!(coord.widget_kind(&WidgetId::new("btn")), Some(WidgetKind::Custom));
         assert_eq!(coord.widget_parent(&WidgetId::new("btn")), None);
+    }
+
+    // -------------------------------------------------------------------
+    // Regression: `widget_state()` reaching `Pressed` through the ordinary
+    // public API (`begin_frame` alone — no private-field poke). Covers the
+    // H0 bug where `begin_frame`/`begin_frame_widgets_only` never baked
+    // `HoverState::mouse_pressed`, so `widget_state()` could never return
+    // `Pressed` outside this crate's own tests.
+    //
+    // `widget_state()` reads a hover/press bake computed from the PREVIOUS
+    // frame's widget registrations (see `begin_frame`'s own doc comment —
+    // deliberate, fixes a z-order leak), so every scenario here drives at
+    // least two frames: one to register the widget so the next frame's
+    // bake can see it, then the frame(s) under test.
+    // -------------------------------------------------------------------
+
+    /// Drive one `begin_frame` + `register` cycle at `pos` with the given
+    /// button state, using only the public `InputState`/`begin_frame` API.
+    fn step(coord: &mut InputCoordinator, btn: &WidgetId, rect: Rect, pos: (f64, f64), button_down: Option<MouseButton>) {
+        let mut input = make_input_at(pos.0, pos.1);
+        input.pointer.button_down = button_down;
+        coord.begin_frame(input);
+        coord.register(btn.clone(), rect, Sense::CLICK);
+    }
+
+    #[test]
+    fn test_widget_state_pressed_when_press_starts_on_widget() {
+        let mut coord = make_coordinator();
+        let btn = WidgetId::new("btn");
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let pos = (50.0, 20.0);
+
+        // Frame 1: register so frame 2's hover bake can see the widget.
+        step(&mut coord, &btn, rect, pos, None);
+        // Frame 2: bake now sees frame 1's registration under the pointer.
+        step(&mut coord, &btn, rect, pos, None);
+        assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+
+        // Frame 3: button goes down while still over the widget — the
+        // press originates here, so this frame must report Pressed.
+        step(&mut coord, &btn, rect, pos, Some(MouseButton::Left));
+        assert_eq!(coord.widget_state(&btn), WidgetState::Pressed);
+    }
+
+    #[test]
+    fn test_widget_state_not_pressed_when_dragged_in_from_elsewhere() {
+        let mut coord = make_coordinator();
+        let btn = WidgetId::new("btn");
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let elsewhere = (500.0, 500.0);
+        let on_widget = (50.0, 20.0);
+
+        // Frames 1-2: pointer stays away from the widget, button up.
+        step(&mut coord, &btn, rect, elsewhere, None);
+        step(&mut coord, &btn, rect, elsewhere, None);
+        assert_eq!(coord.widget_state(&btn), WidgetState::Normal);
+
+        // Frame 3: button goes down away from the widget — press origin is
+        // NOT this widget.
+        step(&mut coord, &btn, rect, elsewhere, Some(MouseButton::Left));
+        assert_eq!(coord.widget_state(&btn), WidgetState::Normal);
+
+        // Frame 4: pointer moves onto the widget while the button is still
+        // held — must NOT show Pressed, only (at most) Hovered, since the
+        // press did not start on this widget.
+        step(&mut coord, &btn, rect, on_widget, Some(MouseButton::Left));
+        assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+    }
+
+    #[test]
+    fn test_widget_state_not_pressed_after_release() {
+        let mut coord = make_coordinator();
+        let btn = WidgetId::new("btn");
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let pos = (50.0, 20.0);
+
+        // Frames 1-2: warm up hover, then press starts on the widget.
+        step(&mut coord, &btn, rect, pos, None);
+        step(&mut coord, &btn, rect, pos, None);
+        assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+
+        step(&mut coord, &btn, rect, pos, Some(MouseButton::Left));
+        assert_eq!(coord.widget_state(&btn), WidgetState::Pressed);
+
+        // Button released — must fall back to Hovered, never Pressed, and
+        // the cleared press-origin must not resurrect Pressed on a later
+        // frame where the button is still up.
+        step(&mut coord, &btn, rect, pos, None);
+        assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+
+        step(&mut coord, &btn, rect, pos, None);
+        assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
     }
 }

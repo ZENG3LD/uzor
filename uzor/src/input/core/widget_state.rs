@@ -55,6 +55,14 @@ pub struct HoverState {
     pub mouse_pos: (f64, f64),
     /// Whether mouse is pressed
     pub mouse_pressed: bool,
+    /// Widget id that was hovered at the moment `mouse_pressed` most
+    /// recently transitioned from `false` to `true` — `None` once the
+    /// button is released. This is the "press origin": the widget the
+    /// press actually started on. `InputCoordinator::widget_state` reads
+    /// it so dragging a held button in from elsewhere never shows
+    /// `Pressed` on a widget merely hovered underneath the pointer — only
+    /// the widget the press began on can ever report `Pressed`.
+    pub press_origin: Option<WidgetId>,
 }
 
 impl HoverState {
@@ -80,6 +88,16 @@ impl HoverState {
     /// Set mouse pressed state
     pub fn set_pressed(&mut self, pressed: bool) {
         self.mouse_pressed = pressed;
+    }
+
+    /// Set the press-origin widget (see [`Self::press_origin`]).
+    pub fn set_press_origin(&mut self, id: Option<WidgetId>) {
+        self.press_origin = id;
+    }
+
+    /// Check whether `id` is the widget the current press originated on.
+    pub fn is_press_origin(&self, id: &WidgetId) -> bool {
+        self.press_origin.as_ref() == Some(id)
     }
 }
 
