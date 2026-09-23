@@ -8,7 +8,7 @@
 /// License: MIT (ISC)
 ///
 /// Design: Side-view cargo/container ship
-pub const CARGO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10.189V14" /><path d="M12 2v3" /><path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6" /><path d="M19.38 20A11.6 11.6 0 0 0 21 14l-8.188-3.639a2 2 0 0 0-1.624 0L3 14a11.6 11.6 0 0 0 2.81 7.76" /><path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" /></svg>"#;
+pub const CARGO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10.189V14" /><path d="M12 2v3" /><path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6" /><path d="M19.38 20A11.6 11.6 0 0 0 21 14l-8.188-3.639a2 2 0 0 0-1.624 0L3 14a11.6 11.6 0 0 0 2.81 7.76" /><path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1s1.2 1 2.5 1c2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1" /></svg>"#;
 
 /// Sailboat (side-view, use with CHEVRON for direction)
 /// Source: Lucide Icons
@@ -16,7 +16,7 @@ pub const CARGO: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" he
 ///
 /// Design: Side-view sailboat with mast. Render smaller (~14px) with
 /// a CHEVRON indicator nearby for heading direction.
-pub const SAILBOAT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v15" /><path d="M7 22a4 4 0 0 1-4-4 1 1 0 0 1 1-1h16a1 1 0 0 1 1 1 4 4 0 0 1-4 4z" /><path d="M9.159 2.46a1 1 0 0 1 1.521-.193l9.977 8.98A1 1 0 0 1 20 13H4a1 1 0 0 1-.824-1.567z" /></svg>"#;
+pub const SAILBOAT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v15" /><path d="M7 22a4 4 0 0 1-4-4 1 1 0 0 1 1-1h16a1 1 0 0 1 1 1 4 4 0 0 1-4 4z" /><path d="M9.159 2.46a1 1 0 0 1 1.521-.193l9.977 8.98A1 1 0 0 1 20 13H4a1 1 0 0 1-.824-1.567z" /></svg>"#;
 
 /// Generic boat (top-down view)
 /// Source: Custom hand-drawn
@@ -31,7 +31,7 @@ pub const BOAT_GENERIC: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width=
 /// License: MIT
 ///
 /// Design: Side-view submarine with periscope and conning tower
-pub const SUBMARINE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v6h2l1 -1.5l3 1.5h10a3 3 0 0 0 0 -6h-10l-3 1.5l-1 -1.5h-2" /><path d="M17 11l-1 -3h-5l-1 3" /><path d="M13 8v-2a1 1 0 0 1 1 -1h1" /></svg>"#;
+pub const SUBMARINE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11v6h2l1 -1.5l3 1.5h10a3 3 0 0 0 0 -6h-10l-3 1.5l-1 -1.5h-2" /><path d="M17 11l-1 -3h-5l-1 3" /><path d="M13 8v-2a1 1 0 0 1 1 -1h1" /></svg>"#;
 
 /// Bulk carrier / cargo ship (top-down view)
 /// Source: Custom hand-drawn
@@ -62,7 +62,7 @@ pub const CHEVRON: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" 
 /// License: MIT (ISC)
 ///
 /// Design: Traditional ship anchor
-pub const ANCHOR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v16" /><path d="m19 13 2-1a9 9 0 0 1-18 0l2 1" /><path d="M9 11h6" /><circle cx="12" cy="4" r="2" /></svg>"#;
+pub const ANCHOR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v16" /><path d="m19 13 2-1a9 9 0 0 1-18 0l2 1" /><path d="M9 11h6" /><circle cx="12" cy="4" r="2" /></svg>"#;
 
 /// Ferry / passenger liner (side-view, use with CHEVRON for direction)
 /// Source: Custom hand-drawn
@@ -70,4 +70,28 @@ pub const ANCHOR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" h
 ///
 /// Design: Side-view passenger ship — hull, deck superstructure, funnel
 /// Stroke-based outline. Use with CHEVRON for heading direction.
-pub const FERRY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 17 L4 14 L20 14 L22 17 L21 18 L3 18 Z"/><rect x="6" y="10" width="12" height="4" rx="0.5"/><rect x="10" y="6" width="3" height="4"/></svg>"#;
+pub const FERRY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M2 17 L4 14 L20 14 L22 17 L21 18 L3 18 Z"/><rect x="6" y="10" width="12" height="4" rx="0.5"/><rect x="10" y="6" width="3" height="4"/></svg>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::assets::icons::test_support::assert_root_stroke_width_is_thin;
+
+    #[test]
+    fn root_stroke_width_stays_thin() {
+        let icons: &[(&str, &str)] = &[
+            ("CARGO", CARGO),
+            ("SAILBOAT", SAILBOAT),
+            ("BOAT_GENERIC", BOAT_GENERIC),
+            ("SUBMARINE", SUBMARINE),
+            ("BULK_CARRIER", BULK_CARRIER),
+            ("TANKER", TANKER),
+            ("CHEVRON", CHEVRON),
+            ("ANCHOR", ANCHOR),
+            ("FERRY", FERRY),
+        ];
+        for (name, svg) in icons {
+            assert_root_stroke_width_is_thin(name, svg);
+        }
+    }
+}

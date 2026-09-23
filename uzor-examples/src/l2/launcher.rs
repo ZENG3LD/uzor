@@ -110,10 +110,10 @@ use uzor_render_vello_gpu::VelloGpuRenderContext;
 // Fix 6: Inline SVG strings for icon grid (Tab 1) and sub-tab icons (Tab 2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SVG_CIRCLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>"#;
-const SVG_SQUARE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/></svg>"#;
-const SVG_TRIANGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,3 22,21 2,21 12,3" stroke-width="2"/></svg>"#;
-const SVG_DIAMOND: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,2 22,12 12,22 2,12 12,2" stroke-width="2"/></svg>"#;
+const SVG_CIRCLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="1.5"/></svg>"#;
+const SVG_SQUARE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="1.5"/></svg>"#;
+const SVG_TRIANGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,3 22,21 2,21 12,3" stroke-width="1.5"/></svg>"#;
+const SVG_DIAMOND: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,2 22,12 12,22 2,12 12,2" stroke-width="1.5"/></svg>"#;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fix 5: Per-group row font styles

@@ -18,7 +18,7 @@ pub const AIRPORT: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// License: MIT (ISC)
 ///
 /// Design: Traditional ship anchor symbol
-pub const PORT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v16" /><path d="m19 13 2-1a9 9 0 0 1-18 0l2 1" /><path d="M9 11h6" /><circle cx="12" cy="4" r="2" /></svg>"#;
+pub const PORT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v16" /><path d="m19 13 2-1a9 9 0 0 1-18 0l2 1" /><path d="M9 11h6" /><circle cx="12" cy="4" r="2" /></svg>"#;
 
 /// Heliport
 /// Source: Mapbox Maki
@@ -58,35 +58,35 @@ pub const HOSPITAL: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// License: MIT (ISC)
 ///
 /// Design: Factory building with smokestack
-pub const FACTORY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16h.01" /><path d="M16 16h.01" /><path d="M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z" /><path d="M8 16h.01" /></svg>"#;
+pub const FACTORY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16h.01" /><path d="M16 16h.01" /><path d="M3 19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5a.5.5 0 0 0-.769-.422l-4.462 2.844A.5.5 0 0 1 15 10.5v-2a.5.5 0 0 0-.769-.422L9.77 10.922A.5.5 0 0 1 9 10.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2z" /><path d="M8 16h.01" /></svg>"#;
 
 /// Satellite
 /// Source: Lucide Icons
 /// License: MIT (ISC)
 ///
 /// Design: Communications satellite
-pub const SATELLITE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5" /><path d="M16.5 7.5 19 5" /><path d="m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5" /><path d="M9 21a6 6 0 0 0-6-6" /><path d="M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296 2.296a1.205 1.205 0 0 0 1.704 0l4.296-4.296a1.205 1.205 0 0 0 0-1.704l-2.296-2.296a1.205 1.205 0 0 0-1.704 0z" /></svg>"#;
+pub const SATELLITE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5" /><path d="M16.5 7.5 19 5" /><path d="m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5" /><path d="M9 21a6 6 0 0 0-6-6" /><path d="M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296 2.296a1.205 1.205 0 0 0 1.704 0l4.296-4.296a1.205 1.205 0 0 0 0-1.704l-2.296-2.296a1.205 1.205 0 0 0-1.704 0z" /></svg>"#;
 
 /// Radio tower / broadcast tower
 /// Source: Lucide Icons
 /// License: MIT (ISC)
 ///
 /// Design: Antenna tower with radio waves
-pub const RADIO_TOWER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9" /><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" /><circle cx="12" cy="9" r="2" /><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47" /><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1" /><path d="M9.5 18h5" /><path d="m8 22 4-11 4 11" /></svg>"#;
+pub const RADIO_TOWER: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 16.1C1 12.2 1 5.8 4.9 1.9" /><path d="M7.8 4.7a6.14 6.14 0 0 0-.8 7.5" /><circle cx="12" cy="9" r="2" /><path d="M16.2 4.8c2 2 2.26 5.11.8 7.47" /><path d="M19.1 1.9a9.96 9.96 0 0 1 0 14.1" /><path d="M9.5 18h5" /><path d="m8 22 4-11 4 11" /></svg>"#;
 
 /// Offshore oil platform (side-view)
 /// Source: Custom hand-drawn
 /// License: Public domain
 ///
 /// Design: Side-view oil rig — support legs, platform deck, drilling derrick, flare
-pub const OIL_PLATFORM: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="22" x2="22" y2="22"/><line x1="5" y1="22" x2="8" y2="14"/><line x1="19" y1="22" x2="16" y2="14"/><line x1="9" y1="22" x2="10" y2="14"/><line x1="15" y1="22" x2="14" y2="14"/><rect x="4" y="12" width="16" height="2"/><path d="M10 12 L10 6 L14 6 L14 12"/><path d="M11 6 L11 3 L13 3 L13 6"/><path d="M12 3 L12 1"/><circle cx="12" cy="1" r="0.8" fill="currentColor"/></svg>"#;
+pub const OIL_PLATFORM: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="22" x2="22" y2="22"/><line x1="5" y1="22" x2="8" y2="14"/><line x1="19" y1="22" x2="16" y2="14"/><line x1="9" y1="22" x2="10" y2="14"/><line x1="15" y1="22" x2="14" y2="14"/><rect x="4" y="12" width="16" height="2"/><path d="M10 12 L10 6 L14 6 L14 12"/><path d="M11 6 L11 3 L13 3 L13 6"/><path d="M12 3 L12 1"/><circle cx="12" cy="1" r="0.8" fill="currentColor"/></svg>"#;
 
 /// Offshore gas platform (side-view)
 /// Source: Custom hand-drawn
 /// License: Public domain
 ///
 /// Design: Side-view gas platform — support legs, deck, processing towers, LNG sphere
-pub const GAS_PLATFORM: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="22" x2="22" y2="22"/><line x1="5" y1="22" x2="7" y2="14"/><line x1="19" y1="22" x2="17" y2="14"/><line x1="10" y1="22" x2="10" y2="14"/><line x1="14" y1="22" x2="14" y2="14"/><rect x="4" y="12" width="16" height="2"/><rect x="5" y="7" width="2" height="5"/><rect x="9" y="5" width="2" height="7"/><rect x="13" y="7" width="2" height="5"/><circle cx="18" cy="9" r="3"/></svg>"#;
+pub const GAS_PLATFORM: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"><line x1="2" y1="22" x2="22" y2="22"/><line x1="5" y1="22" x2="7" y2="14"/><line x1="19" y1="22" x2="17" y2="14"/><line x1="10" y1="22" x2="10" y2="14"/><line x1="14" y1="22" x2="14" y2="14"/><rect x="4" y="12" width="16" height="2"/><rect x="5" y="7" width="2" height="5"/><rect x="9" y="5" width="2" height="7"/><rect x="13" y="7" width="2" height="5"/><circle cx="18" cy="9" r="3"/></svg>"#;
 
 /// Oil/gas refinery or processing facility
 /// Source: Custom hand-drawn
@@ -94,3 +94,29 @@ pub const GAS_PLATFORM: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width=
 ///
 /// Design: Industrial facility with tanks and chimney/flare stack
 pub const REFINERY: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="8" cy="16" r="5"/><circle cx="16" cy="16" r="4"/><rect x="11" y="2" width="2" height="12"/><path d="M10 2 L14 2 L13 5 L11 5 Z"/></svg>"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::assets::icons::test_support::assert_root_stroke_width_is_thin;
+
+    #[test]
+    fn root_stroke_width_stays_thin() {
+        let icons: &[(&str, &str)] = &[
+            ("AIRPORT", AIRPORT),
+            ("PORT", PORT),
+            ("HELIPORT", HELIPORT),
+            ("FUEL", FUEL),
+            ("HOSPITAL", HOSPITAL),
+            ("FACTORY", FACTORY),
+            ("SATELLITE", SATELLITE),
+            ("RADIO_TOWER", RADIO_TOWER),
+            ("OIL_PLATFORM", OIL_PLATFORM),
+            ("GAS_PLATFORM", GAS_PLATFORM),
+            ("REFINERY", REFINERY),
+        ];
+        for (name, svg) in icons {
+            assert_root_stroke_width_is_thin(name, svg);
+        }
+    }
+}
