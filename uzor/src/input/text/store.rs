@@ -249,6 +249,15 @@ pub struct TextFieldStore {
 }
 
 impl TextFieldStore {
+    /// Frame-staleness tolerance for [`Self::focused_is_stale`], in
+    /// frame-counter ticks. A host's `prepare_frame`/`render_to_scene` pair
+    /// can advance the frame counter twice per real rendered frame (calling
+    /// `begin_frame()` once each, so their own `update_field` calls land on
+    /// the second of the two) — this tolerates one full extra tick of lag
+    /// on top of that before a non-updating field counts as gone, so an
+    /// ordinary render-to-render gap is never mistaken for staleness.
+    const FOCUS_STALE_FRAME_LAG: u64 = 3;
+
     // =========================================================================
     // Lifecycle
     // =========================================================================
@@ -350,6 +359,32 @@ impl TextFieldStore {
     /// Currently focused field id.
     pub fn focused(&self) -> Option<&WidgetId> {
         self.focused.as_ref()
+    }
+
+    /// Whether the currently focused field's screen geometry has gone
+    /// stale: `update_field` refreshed it at least once (so its host DOES
+    /// report geometry on every frame it actually draws) but has not been
+    /// called again for more than [`Self::FOCUS_STALE_FRAME_LAG`]
+    /// frame-counter ticks. This is the shape a modal or inline editor
+    /// leaves behind when it stops being drawn without first calling
+    /// [`Self::blur`] on its own field — a caller can use this to detect
+    /// and clear that leftover focus instead of trusting it forever.
+    ///
+    /// Fields whose host never wires `update_field` at all stay at
+    /// `last_frame == 0` for their entire lifetime (registration does not
+    /// set it) — there is no per-frame signal to judge those by, so they
+    /// are never flagged here. Treating "never observed" as "stale" would
+    /// blur every keystroke into an un-instrumented field on the very
+    /// first press, which is worse than not checking at all. `false` (not
+    /// stale) is always the safe default, including when nothing is
+    /// focused.
+    pub fn focused_is_stale(&self) -> bool {
+        let Some(id) = self.focused.as_ref() else { return false };
+        let Some(state) = self.fields.get(id) else { return false };
+        if state.last_frame == 0 {
+            return false;
+        }
+        self.current_frame.wrapping_sub(state.last_frame) > Self::FOCUS_STALE_FRAME_LAG
     }
 
     /// Whether the cursor should be visible right now (500 ms blink).
@@ -997,6 +1032,50 @@ mod tests {
         let action = s.on_key(KeyPress::SelectAll);
         assert_eq!(action, TextAction::None);
         assert_eq!(s.selection_range(&id("ro")), Some((0, 5)));
+    }
+
+    #[test]
+    fn focused_is_stale_ignores_unobserved_fields() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        // last_frame stays 0 forever if update_field is never called — not
+        // stale, no matter how many frames pass, because there is no
+        // signal to judge it by.
+        for _ in 0..10 {
+            s.begin_frame();
+        }
+        assert!(!s.focused_is_stale());
+    }
+
+    #[test]
+    fn focused_is_stale_false_when_nothing_focused() {
+        let s = store();
+        assert!(!s.focused_is_stale());
+    }
+
+    #[test]
+    fn focused_is_stale_detects_field_that_stopped_rendering() {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        s.begin_frame();
+        s.update_field(&id("f"), (0.0, 0.0, 10.0, 10.0), vec![0.0, 10.0]);
+        // Freshly drawn — not stale.
+        assert!(!s.focused_is_stale());
+
+        // A couple of frames within the tolerance (the double begin_frame
+        // per render pass a real host does) — still not stale.
+        s.begin_frame();
+        s.begin_frame();
+        assert!(!s.focused_is_stale());
+
+        // The field's owner stops being drawn (e.g. its modal closed)
+        // while focus lingers — eventually detected as stale.
+        for _ in 0..5 {
+            s.begin_frame();
+        }
+        assert!(s.focused_is_stale());
     }
 
     #[test]
