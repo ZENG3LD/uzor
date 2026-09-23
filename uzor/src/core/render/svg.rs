@@ -1,4 +1,5 @@
 use super::context::RenderContext;
+use super::parse_color;
 
 /// Draw an SVG icon scaled to fit within the given rectangle.
 ///
@@ -28,6 +29,10 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     let has_fill_none = svg_root_has_fill_none(svg);
     let default_filled = !has_fill_none;
 
+    // Ancestor opacity from the root <svg>/<g>, multiplied onto every element's own
+    // opacity/fill-opacity/stroke-opacity below (SVG's cascading opacity model).
+    let root_opacity = parse_root_opacity(svg);
+
     // Fixed stroke width for crisp rendering — round to nearest 0.5 for pixel-aligned strokes
     let stroke_width = (1.5 * scale * 2.0).round() / 2.0;
 
@@ -51,7 +56,8 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
         // Fill first, then stroke (so stroke is on top)
         if path_info.filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = path_info.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         }
         if path_info.stroked {
@@ -60,15 +66,16 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
-            // Apply dash array if present (scaled)
-            if let Some(ref dash) = path_info.dash_array {
-                let scaled_dash: Vec<f64> = dash.iter().map(|d| d * scale).collect();
-                ctx.set_line_dash(&scaled_dash);
+            // Per-element stroke opacity — only touch stroke color when it actually
+            // differs from the up-front default, and restore it afterward so nothing
+            // leaks into the next (unmodified) stroked element.
+            let stroke_alpha = (path_info.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
             }
-            ctx.stroke();
-            // Reset dash after stroke
-            if path_info.dash_array.is_some() {
-                ctx.set_line_dash(&[]);
+            stroke_with_dash(ctx, &path_info.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
             }
             if override_width.is_some() {
                 ctx.set_stroke_width(stroke_width);
@@ -77,7 +84,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     }
 
     // Parse and render all circle elements
-    for (cx, cy, r, filled, elem_stroke_width) in parse_svg_circles(svg, default_filled) {
+    for (cx, cy, r, filled, style) in parse_svg_circles(svg, default_filled) {
         let tx = snap_half(eff_offset_x + cx * eff_scale_x);
         let ty = snap_half(eff_offset_y + cy * eff_scale_y);
         let tr = r * scale;
@@ -85,18 +92,28 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         ctx.begin_path();
         draw_circle_bezier(ctx, tx, ty, tr);
         if filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         } else if tr < 3.0 {
-            // Too small for stroke to be visible — fill it as a dot
-            ctx.set_fill_color(color);
+            // Too small for stroke to be visible — fill it as a dot. It stands in for
+            // the stroke visually, so it takes the stroke's opacity, not the fill's.
+            let stroke_alpha = style.opacity.stroke * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, stroke_alpha));
             ctx.fill();
         } else {
-            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
-            ctx.stroke();
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
+            }
             if override_width.is_some() {
                 ctx.set_stroke_width(stroke_width);
             }
@@ -104,7 +121,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     }
 
     // Parse and render all rect elements
-    for (rx, ry, rw, rh, rounding, filled, elem_stroke_width) in parse_svg_rects(svg, default_filled) {
+    for (rx, ry, rw, rh, rounding, filled, style) in parse_svg_rects(svg, default_filled) {
         let tx = snap_half(eff_offset_x + rx * eff_scale_x);
         let ty = snap_half(eff_offset_y + ry * eff_scale_y);
         let tw = rw * eff_scale_x;
@@ -112,21 +129,31 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         let tr = rounding * scale;
 
         if filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             if tr > 0.0 {
                 ctx.fill_rounded_rect(tx, ty, tw, th, tr);
             } else {
                 ctx.fill_rect(tx, ty, tw, th);
             }
         } else {
-            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
-            if tr > 0.0 {
-                ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
-            } else {
-                ctx.stroke_rect(tx, ty, tw, th);
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| {
+                if tr > 0.0 {
+                    ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
+                } else {
+                    ctx.stroke_rect(tx, ty, tw, th);
+                }
+            });
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
             }
             if override_width.is_some() {
                 ctx.set_stroke_width(stroke_width);
@@ -135,7 +162,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     }
 
     // Parse and render all line elements
-    for (x1, y1, x2, y2, elem_stroke_width) in parse_svg_lines(svg) {
+    for (x1, y1, x2, y2, style) in parse_svg_lines(svg) {
         let tx1 = eff_offset_x + x1 * eff_scale_x;
         let ty1 = eff_offset_y + y1 * eff_scale_y;
         let tx2 = eff_offset_x + x2 * eff_scale_x;
@@ -144,18 +171,25 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         ctx.begin_path();
         ctx.move_to(tx1, ty1);
         ctx.line_to(tx2, ty2);
-        let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+        let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
         if let Some(w) = override_width {
             ctx.set_stroke_width(w);
         }
-        ctx.stroke();
+        let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+        if stroke_alpha < 1.0 {
+            ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+        }
+        stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+        if stroke_alpha < 1.0 {
+            ctx.set_stroke_color(color);
+        }
         if override_width.is_some() {
             ctx.set_stroke_width(stroke_width);
         }
     }
 
     // Parse and render all polyline elements
-    for (points, closed, elem_stroke_width) in parse_svg_polylines(svg) {
+    for (points, closed, style) in parse_svg_polylines(svg) {
         if points.len() >= 2 {
             ctx.begin_path();
             let (px, py) = points[0];
@@ -166,11 +200,18 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             if closed {
                 ctx.close_path();
             }
-            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            let override_width = style.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
             if let Some(w) = override_width {
                 ctx.set_stroke_width(w);
             }
-            ctx.stroke();
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
+            }
             if override_width.is_some() {
                 ctx.set_stroke_width(stroke_width);
             }
@@ -201,6 +242,111 @@ fn parse_viewbox(svg: &str) -> Option<(f64, f64)> {
     }
 }
 
+// =============================================================================
+// Opacity & Dash Parsing (shared by path/circle/rect/line/polyline/polygon)
+// =============================================================================
+
+/// Find the value of a quoted XML/SVG attribute, requiring a non-identifier character
+/// (or start of string) immediately before the match.
+///
+/// Without this guard, a plain `content.find("opacity=\"")` would also match inside
+/// `fill-opacity="..."` or `stroke-opacity="..."` — `"fill-opacity=\""` literally ends
+/// with the substring `"opacity=\""` — misreading a channel-specific attribute as the
+/// generic `opacity` one.
+fn find_attr_value<'a>(content: &'a str, attr: &str) -> Option<&'a str> {
+    let pattern = format!("{attr}=\"");
+    let mut search_from = 0usize;
+    while let Some(rel) = content[search_from..].find(pattern.as_str()) {
+        let abs = search_from + rel;
+        let is_boundary = abs == 0
+            || !matches!(
+                content.as_bytes()[abs - 1],
+                b'-' | b'_' | b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+            );
+        if is_boundary {
+            let value_start = abs + pattern.len();
+            return content[value_start..].find('"').map(|end| &content[value_start..value_start + end]);
+        }
+        search_from = abs + pattern.len();
+    }
+    None
+}
+
+/// Parse an SVG opacity value: a bare number (SVG allows any float; we clamp to the
+/// valid `0.0..=1.0` range) or a percentage like `"50%"`. Returns `None` when the value
+/// can't be parsed, so callers fall back to fully opaque.
+fn parse_opacity_value(raw: &str) -> Option<f64> {
+    let raw = raw.trim();
+    if let Some(pct) = raw.strip_suffix('%') {
+        return pct.trim().parse::<f64>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0));
+    }
+    raw.parse::<f64>().ok().map(|v| v.clamp(0.0, 1.0))
+}
+
+/// Multiplicative opacity for an element's fill and stroke, combining the generic
+/// `opacity` attribute with the channel-specific `fill-opacity`/`stroke-opacity`.
+/// Defaults to fully opaque (`1.0`) when none of the three are present.
+#[derive(Clone, Copy)]
+struct ElementOpacity {
+    fill: f64,
+    stroke: f64,
+}
+
+impl ElementOpacity {
+    fn parse(content: &str) -> Self {
+        let base = find_attr_value(content, "opacity").and_then(parse_opacity_value).unwrap_or(1.0);
+        let fill_opacity = find_attr_value(content, "fill-opacity").and_then(parse_opacity_value).unwrap_or(1.0);
+        let stroke_opacity = find_attr_value(content, "stroke-opacity").and_then(parse_opacity_value).unwrap_or(1.0);
+        Self { fill: base * fill_opacity, stroke: base * stroke_opacity }
+    }
+}
+
+/// Parse `stroke-dasharray="4 2"` or `"4,2"` into per-segment dash lengths.
+/// Returns `None` when absent or empty (solid stroke).
+fn parse_dash_array(content: &str) -> Option<Vec<f64>> {
+    let raw = find_attr_value(content, "stroke-dasharray")?;
+    let values: Vec<f64> = raw.split([' ', ',']).filter_map(|s| s.trim().parse::<f64>().ok()).collect();
+    if values.is_empty() { None } else { Some(values) }
+}
+
+/// Ancestor opacity carried by the root `<svg>` and the first `<g>` (if any), multiplied
+/// together per SVG's cascading opacity model. Applied on top of each element's own
+/// `opacity`/`fill-opacity`/`stroke-opacity` at the point of use.
+fn parse_root_opacity(svg: &str) -> f64 {
+    let mut factor = 1.0;
+    if let Some(start) = svg.find("<svg") {
+        if let Some(end) = svg[start..].find('>') {
+            let tag = &svg[start..start + end + 1];
+            factor *= find_attr_value(tag, "opacity").and_then(parse_opacity_value).unwrap_or(1.0);
+        }
+    }
+    if let Some(start) = svg.find("<g ") {
+        if let Some(end) = svg[start..].find('>') {
+            let tag = &svg[start..start + end + 1];
+            factor *= find_attr_value(tag, "opacity").and_then(parse_opacity_value).unwrap_or(1.0);
+        }
+    }
+    factor
+}
+
+/// Style attributes shared by circle/rect/line/polyline/polygon: an optional per-element
+/// `stroke-width` override, an optional `stroke-dasharray`, and the element's opacity.
+struct ElementStyle {
+    stroke_width: Option<f64>,
+    dash_array: Option<Vec<f64>>,
+    opacity: ElementOpacity,
+}
+
+impl ElementStyle {
+    fn parse(content: &str) -> Self {
+        Self {
+            stroke_width: extract_svg_attr(content, "stroke-width"),
+            dash_array: parse_dash_array(content),
+            opacity: ElementOpacity::parse(content),
+        }
+    }
+}
+
 /// Path rendering info
 struct PathInfo {
     d: String,
@@ -210,6 +356,7 @@ struct PathInfo {
     fill_color: Option<String>,    // Actual fill color from attribute (for multicolor SVGs)
     stroke_color: Option<String>,  // Actual stroke color from attribute (for multicolor SVGs)
     stroke_width: Option<f64>,     // Stroke width from attribute
+    opacity: ElementOpacity,       // opacity / fill-opacity / stroke-opacity from attributes
 }
 
 /// Extract all path elements from SVG with fill/stroke info
@@ -284,28 +431,12 @@ fn parse_svg_paths(svg: &str, default_filled: bool) -> Vec<PathInfo> {
                 };
 
                 // Check stroke-dasharray attribute (e.g., "4 2" for dashed lines)
-                let dash_array = if let Some(dash_start) = tag_content.find("stroke-dasharray=\"") {
-                    let dash_content_start = dash_start + 18;
-                    if let Some(dash_end) = tag_content[dash_content_start..].find('"') {
-                        let dash_value = &tag_content[dash_content_start..dash_content_start + dash_end];
-                        // Parse "4 2" or "4,2" format
-                        let values: Vec<f64> = dash_value
-                            .split([' ', ','])
-                            .filter_map(|s| s.trim().parse::<f64>().ok())
-                            .collect();
-                        if !values.is_empty() {
-                            Some(values)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
+                let dash_array = parse_dash_array(tag_content);
 
-                paths.push(PathInfo { d, filled, stroked, dash_array, fill_color, stroke_color, stroke_width });
+                // Check opacity / fill-opacity / stroke-opacity attributes
+                let opacity = ElementOpacity::parse(tag_content);
+
+                paths.push(PathInfo { d, filled, stroked, dash_array, fill_color, stroke_color, stroke_width, opacity });
             }
         }
 
@@ -450,6 +581,44 @@ fn snap_half(v: f64) -> f64 {
 #[inline]
 fn scaled_stroke_width_override(w: f64, scale: f64) -> f64 {
     (((0.75 * w * scale) * 2.0).round() / 2.0).max(0.5)
+}
+
+/// Compose an alpha factor (`0.0..=1.0`) onto a color string by scaling its existing alpha
+/// channel, using uzor's shared CSS color parser (`crate::render::parse_color`) so hex,
+/// `rgba()`, and named colors all compose identically — never hand-rolled.
+///
+/// Returns the input unchanged when `alpha` is fully opaque: a fast path that also keeps
+/// output byte-identical to the pre-opacity behaviour for elements without any opacity
+/// attribute (regression guard).
+fn color_with_alpha(color: &str, alpha: f64) -> String {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha >= 1.0 {
+        return color.to_string();
+    }
+    let (r, g, b, a) = parse_color(color);
+    let composed = ((a as f64 / 255.0) * alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    format!("#{r:02x}{g:02x}{b:02x}{composed:02x}")
+}
+
+/// Run `paint` (a stroke call, or a shape helper like `stroke_rect` that strokes
+/// internally) with a scaled `stroke-dasharray` pattern applied, resetting to solid
+/// afterward. Shared by every `draw_svg_icon*` entry point and every element kind
+/// (path/rect/circle/line/polyline/polygon) so dasharray handling lives in one place.
+fn stroke_with_dash(ctx: &mut dyn RenderContext, dash_array: &Option<Vec<f64>>, scale: f64, paint: impl FnOnce(&mut dyn RenderContext)) {
+    match dash_array {
+        Some(dash) => {
+            let scaled: Vec<f64> = dash.iter().map(|d| d * scale).collect();
+            ctx.set_line_dash(&scaled);
+            paint(ctx);
+            ctx.set_line_dash(&[]);
+        }
+        None => {
+            // Explicit solid reset (not just a no-op skip) so a dash pattern from
+            // outside this loop — or from another element — never leaks in.
+            ctx.set_line_dash(&[]);
+            paint(ctx);
+        }
+    }
 }
 
 /// Draw a circle using 4 cubic Bézier curves (backend-agnostic).
@@ -900,9 +1069,9 @@ fn svg_root_has_fill_none(svg: &str) -> bool {
 }
 
 /// Parse all <circle> elements from SVG
-/// Returns Vec of (cx, cy, r, filled, stroke_width)
+/// Returns Vec of (cx, cy, r, filled, style)
 /// `default_filled` is inherited from parent SVG element
-fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, bool, Option<f64>)> {
+fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, bool, ElementStyle)> {
     let mut circles = Vec::new();
     let mut search_from = 0;
 
@@ -915,10 +1084,10 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
             let cy = extract_svg_attr(tag_content, "cy").unwrap_or(0.0);
             let r = extract_svg_attr(tag_content, "r").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
             if r > 0.0 {
-                circles.push((cx, cy, r, filled, stroke_width));
+                circles.push((cx, cy, r, filled, style));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
@@ -927,10 +1096,10 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
             let cy = extract_svg_attr(tag_content, "cy").unwrap_or(0.0);
             let r = extract_svg_attr(tag_content, "r").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
             if r > 0.0 {
-                circles.push((cx, cy, r, filled, stroke_width));
+                circles.push((cx, cy, r, filled, style));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -942,9 +1111,9 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
 }
 
 /// Parse all <rect> elements from SVG
-/// Returns Vec of (x, y, width, height, rx/rounding, filled, stroke_width)
+/// Returns Vec of (x, y, width, height, rx/rounding, filled, style)
 /// `default_filled` is inherited from parent SVG element
-fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, f64, bool, Option<f64>)> {
+fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, f64, bool, ElementStyle)> {
     let mut rects = Vec::new();
     let mut search_from = 0;
 
@@ -959,10 +1128,10 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
             let h = extract_svg_attr(tag_content, "height").unwrap_or(0.0);
             let rx = extract_svg_attr(tag_content, "rx").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
             if w > 0.0 && h > 0.0 {
-                rects.push((x, y, w, h, rx, filled, stroke_width));
+                rects.push((x, y, w, h, rx, filled, style));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
@@ -973,10 +1142,10 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
             let h = extract_svg_attr(tag_content, "height").unwrap_or(0.0);
             let rx = extract_svg_attr(tag_content, "rx").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
             if w > 0.0 && h > 0.0 {
-                rects.push((x, y, w, h, rx, filled, stroke_width));
+                rects.push((x, y, w, h, rx, filled, style));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -988,8 +1157,8 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
 }
 
 /// Parse all <line> elements from SVG
-/// Returns Vec of (x1, y1, x2, y2, stroke_width)
-fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64, Option<f64>)> {
+/// Returns Vec of (x1, y1, x2, y2, style)
+fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64, ElementStyle)> {
     let mut lines = Vec::new();
     let mut search_from = 0;
 
@@ -1002,9 +1171,9 @@ fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64, Option<f64>)> {
             let y1 = extract_svg_attr(tag_content, "y1").unwrap_or(0.0);
             let x2 = extract_svg_attr(tag_content, "x2").unwrap_or(0.0);
             let y2 = extract_svg_attr(tag_content, "y2").unwrap_or(0.0);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
-            lines.push((x1, y1, x2, y2, stroke_width));
+            lines.push((x1, y1, x2, y2, style));
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
@@ -1012,9 +1181,9 @@ fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64, Option<f64>)> {
             let y1 = extract_svg_attr(tag_content, "y1").unwrap_or(0.0);
             let x2 = extract_svg_attr(tag_content, "x2").unwrap_or(0.0);
             let y2 = extract_svg_attr(tag_content, "y2").unwrap_or(0.0);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
 
-            lines.push((x1, y1, x2, y2, stroke_width));
+            lines.push((x1, y1, x2, y2, style));
             search_from = abs_start + end + 1;
         } else {
             break;
@@ -1090,8 +1259,8 @@ fn extract_svg_points(content: &str) -> Vec<(f64, f64)> {
 }
 
 /// Parse all <polyline> and <polygon> elements from SVG
-/// Returns Vec of (points, closed, stroke_width)
-fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool, Option<f64>)> {
+/// Returns Vec of (points, closed, style)
+fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool, ElementStyle)> {
     let mut polylines = Vec::new();
 
     // Parse polylines (not closed)
@@ -1101,17 +1270,17 @@ fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool, Option<f64>)> {
         if let Some(end) = svg[abs_start..].find("/>") {
             let tag_content = &svg[abs_start..abs_start + end + 2];
             let points = extract_svg_points(tag_content);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
             if !points.is_empty() {
-                polylines.push((points, false, stroke_width));
+                polylines.push((points, false, style));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
             let points = extract_svg_points(tag_content);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
             if !points.is_empty() {
-                polylines.push((points, false, stroke_width));
+                polylines.push((points, false, style));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -1126,17 +1295,17 @@ fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool, Option<f64>)> {
         if let Some(end) = svg[abs_start..].find("/>") {
             let tag_content = &svg[abs_start..abs_start + end + 2];
             let points = extract_svg_points(tag_content);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
             if !points.is_empty() {
-                polylines.push((points, true, stroke_width));
+                polylines.push((points, true, style));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
             let points = extract_svg_points(tag_content);
-            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
+            let style = ElementStyle::parse(tag_content);
             if !points.is_empty() {
-                polylines.push((points, true, stroke_width));
+                polylines.push((points, true, style));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -1458,6 +1627,10 @@ pub fn draw_svg_icon_rotated(
     let default_filled = !has_fill_none;
     let stroke_width = 1.5 * scale;
 
+    // Ancestor opacity from the root <svg>/<g>, multiplied onto every element's own
+    // opacity/fill-opacity/stroke-opacity below — same model as draw_svg_icon.
+    let root_opacity = parse_root_opacity(svg);
+
     ctx.set_stroke_color(color);
     ctx.set_stroke_width(stroke_width);
     ctx.set_line_cap("round");
@@ -1469,23 +1642,24 @@ pub fn draw_svg_icon_rotated(
         ctx.begin_path();
         render_path_data_rotated(ctx, &path_info.d, offset_x, offset_y, scale, cx, cy, sin_a, cos_a);
         if path_info.filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = path_info.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         }
         if path_info.stroked {
-            if let Some(ref dash) = path_info.dash_array {
-                let scaled_dash: Vec<f64> = dash.iter().map(|d| d * scale).collect();
-                ctx.set_line_dash(&scaled_dash);
+            let stroke_alpha = (path_info.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
             }
-            ctx.stroke();
-            if path_info.dash_array.is_some() {
-                ctx.set_line_dash(&[]);
+            stroke_with_dash(ctx, &path_info.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
             }
         }
     }
 
     // Circles - rotate center point
-    for (ccx, ccy, r, filled, _stroke_width) in parse_svg_circles(svg, default_filled) {
+    for (ccx, ccy, r, filled, style) in parse_svg_circles(svg, default_filled) {
         let tx = offset_x + ccx * scale;
         let ty = offset_y + ccy * scale;
         let (rtx, rty) = rotate_pt(tx, ty, cx, cy, sin_a, cos_a);
@@ -1493,15 +1667,23 @@ pub fn draw_svg_icon_rotated(
         ctx.begin_path();
         draw_circle_bezier(ctx, rtx, rty, tr);
         if filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         } else {
-            ctx.stroke();
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
+            }
         }
     }
 
     // Rects - convert to 4 rotated corner points
-    for (rect_x, rect_y, rw, rh, _rounding, filled, _stroke_width) in parse_svg_rects(svg, default_filled) {
+    for (rect_x, rect_y, rw, rh, _rounding, filled, style) in parse_svg_rects(svg, default_filled) {
         let tx = offset_x + rect_x * scale;
         let ty = offset_y + rect_y * scale;
         let tw = rw * scale;
@@ -1526,15 +1708,23 @@ pub fn draw_svg_icon_rotated(
         ctx.close_path();
 
         if filled {
-            ctx.set_fill_color(color);
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
             ctx.fill();
         } else {
-            ctx.stroke();
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
+            }
         }
     }
 
     // Lines - rotate both endpoints
-    for (x1, y1, x2, y2, _stroke_width) in parse_svg_lines(svg) {
+    for (x1, y1, x2, y2, style) in parse_svg_lines(svg) {
         let tx1 = offset_x + x1 * scale;
         let ty1 = offset_y + y1 * scale;
         let tx2 = offset_x + x2 * scale;
@@ -1544,11 +1734,18 @@ pub fn draw_svg_icon_rotated(
         ctx.begin_path();
         ctx.move_to(rtx1, rty1);
         ctx.line_to(rtx2, rty2);
-        ctx.stroke();
+        let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+        if stroke_alpha < 1.0 {
+            ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+        }
+        stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+        if stroke_alpha < 1.0 {
+            ctx.set_stroke_color(color);
+        }
     }
 
     // Polylines - rotate each point
-    for (points, closed, _stroke_width) in parse_svg_polylines(svg) {
+    for (points, closed, style) in parse_svg_polylines(svg) {
         if points.len() >= 2 {
             ctx.begin_path();
             let (px, py) = points[0];
@@ -1565,7 +1762,14 @@ pub fn draw_svg_icon_rotated(
             if closed {
                 ctx.close_path();
             }
-            ctx.stroke();
+            let stroke_alpha = (style.opacity.stroke * root_opacity).clamp(0.0, 1.0);
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(&color_with_alpha(color, stroke_alpha));
+            }
+            stroke_with_dash(ctx, &style.dash_array, scale, |ctx| ctx.stroke());
+            if stroke_alpha < 1.0 {
+                ctx.set_stroke_color(color);
+            }
         }
     }
 }
@@ -1776,6 +1980,10 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     let has_fill_none = svg_root_has_fill_none(svg);
     let default_filled = !has_fill_none;
 
+    // Ancestor opacity from the root <svg>/<g>, multiplied onto every element's own
+    // opacity/fill-opacity/stroke-opacity below — same model as draw_svg_icon.
+    let root_opacity = parse_root_opacity(svg);
+
     let gt = parse_g_transform(svg);
     let eff_offset_x = offset_x + gt.tx * scale;
     let eff_offset_y = offset_y + gt.ty * scale;
@@ -1792,6 +2000,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
             ctx.begin_path();
             render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
 
+            let fill_alpha = path_info.opacity.fill * root_opacity;
             if let Some(ref color) = path_info.fill_color {
                 if color.starts_with("url(#") {
                     let grad_id = color.strip_prefix("url(#").and_then(|s| s.strip_suffix(')'));
@@ -1810,19 +2019,19 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
                                 .collect();
                             ctx.fill_linear_gradient(&stops_refs, gx1, gy1, gx2, gy2);
                         } else {
-                            ctx.set_fill_color("black");
+                            ctx.set_fill_color(&color_with_alpha("black", fill_alpha));
                             ctx.fill();
                         }
                     } else {
-                        ctx.set_fill_color("black");
+                        ctx.set_fill_color(&color_with_alpha("black", fill_alpha));
                         ctx.fill();
                     }
                 } else {
-                    ctx.set_fill_color(color);
+                    ctx.set_fill_color(&color_with_alpha(color, fill_alpha));
                     ctx.fill();
                 }
             } else {
-                ctx.set_fill_color("black");
+                ctx.set_fill_color(&color_with_alpha("black", fill_alpha));
                 ctx.fill();
             }
         }
@@ -1834,25 +2043,17 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
 
             let sc = path_info.stroke_color.as_deref().unwrap_or("black");
             let sw = path_info.stroke_width.unwrap_or(1.0) * scale;
-            ctx.set_stroke_color(sc);
+            let stroke_alpha = path_info.opacity.stroke * root_opacity;
+            ctx.set_stroke_color(&color_with_alpha(sc, stroke_alpha));
             ctx.set_stroke_width(sw);
             ctx.set_line_cap("round");
             ctx.set_line_join("round");
-            if let Some(ref dash) = path_info.dash_array {
-                let scaled_dash: Vec<f64> = dash.iter().map(|d| d * scale).collect();
-                ctx.set_line_dash(&scaled_dash);
-            } else {
-                ctx.set_line_dash(&[]);
-            }
-            ctx.stroke();
-            if path_info.dash_array.is_some() {
-                ctx.set_line_dash(&[]);
-            }
+            stroke_with_dash(ctx, &path_info.dash_array, scale, |ctx| ctx.stroke());
         }
     }
 
     // Render rect elements (skip full-size background rects)
-    for (rx, ry, rw, rh, rounding, filled, _stroke_width) in parse_svg_rects(svg, default_filled) {
+    for (rx, ry, rw, rh, rounding, filled, style) in parse_svg_rects(svg, default_filled) {
         if filled {
             // Skip full-size background rects that cover the entire viewbox
             if rw >= vb_width * 0.95 && rh >= vb_height * 0.95 {
@@ -1862,7 +2063,8 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
             let ty = eff_offset_y + ry * eff_scale_y;
             let tw = rw * eff_scale_x;
             let th = rh * eff_scale_y;
-            ctx.set_fill_color("black");
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha("black", fill_alpha));
             if rounding > 0.0 {
                 ctx.fill_rounded_rect(tx, ty, tw, th, rounding * scale);
             } else {
@@ -1872,14 +2074,15 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     }
 
     // Render circle elements
-    for (cx_val, cy_val, r, filled, _stroke_width) in parse_svg_circles(svg, default_filled) {
+    for (cx_val, cy_val, r, filled, style) in parse_svg_circles(svg, default_filled) {
         if filled {
             let tx = eff_offset_x + cx_val * eff_scale_x;
             let ty = eff_offset_y + cy_val * eff_scale_y;
             let tr = r * scale;
             ctx.begin_path();
             draw_circle_bezier(ctx, tx, ty, tr);
-            ctx.set_fill_color("black");
+            let fill_alpha = style.opacity.fill * root_opacity;
+            ctx.set_fill_color(&color_with_alpha("black", fill_alpha));
             ctx.fill();
         }
     }
@@ -2038,14 +2241,20 @@ mod tests {
     // Mock RenderContext for Unit Testing
     // =============================================================================
 
-    /// Mock RenderContext that tracks path operations
+    /// Mock RenderContext that tracks path operations, plus the actual color/dash
+    /// values passed to `set_fill_color`/`set_stroke_color`/`set_line_dash` (the
+    /// `ops` log only records call *names*, which can't tell an opacity-composed
+    /// color apart from the plain input color).
     struct MockContext {
         ops: Vec<String>,
+        fill_colors: Vec<String>,
+        stroke_colors: Vec<String>,
+        dash_calls: Vec<Vec<f64>>,
     }
 
     impl MockContext {
         fn new() -> Self {
-            Self { ops: Vec::new() }
+            Self { ops: Vec::new(), fill_colors: Vec::new(), stroke_colors: Vec::new(), dash_calls: Vec::new() }
         }
     }
 
@@ -2055,13 +2264,13 @@ mod tests {
         fn translate(&mut self, _x: f64, _y: f64) { self.ops.push("translate".to_string()); }
         fn rotate(&mut self, _angle: f64) { self.ops.push("rotate".to_string()); }
         fn scale(&mut self, _x: f64, _y: f64) { self.ops.push("scale".to_string()); }
-        fn set_fill_color(&mut self, _color: &str) { self.ops.push("set_fill_color".to_string()); }
+        fn set_fill_color(&mut self, color: &str) { self.ops.push("set_fill_color".to_string()); self.fill_colors.push(color.to_string()); }
         fn set_global_alpha(&mut self, _alpha: f64) { self.ops.push("set_global_alpha".to_string()); }
-        fn set_stroke_color(&mut self, _color: &str) { self.ops.push("set_stroke_color".to_string()); }
+        fn set_stroke_color(&mut self, color: &str) { self.ops.push("set_stroke_color".to_string()); self.stroke_colors.push(color.to_string()); }
         fn set_stroke_width(&mut self, w: f64) { self.ops.push(format!("set_stroke_width({:.2})", w)); }
         fn set_line_cap(&mut self, _cap: &str) { self.ops.push("set_line_cap".to_string()); }
         fn set_line_join(&mut self, _join: &str) { self.ops.push("set_line_join".to_string()); }
-        fn set_line_dash(&mut self, _pattern: &[f64]) { self.ops.push("set_line_dash".to_string()); }
+        fn set_line_dash(&mut self, pattern: &[f64]) { self.ops.push("set_line_dash".to_string()); self.dash_calls.push(pattern.to_vec()); }
         fn begin_path(&mut self) { self.ops.push("begin_path".to_string()); }
         fn move_to(&mut self, x: f64, y: f64) { self.ops.push(format!("move_to({:.1},{:.1})", x, y)); }
         fn line_to(&mut self, x: f64, y: f64) { self.ops.push(format!("line_to({:.1},{:.1})", x, y)); }
@@ -2263,5 +2472,111 @@ mod tests {
         let width_calls: Vec<&String> = ctx.ops.iter().filter(|op| op.starts_with("set_stroke_width")).collect();
         println!("CLOUD set_stroke_width calls: {:?}", width_calls);
         assert_eq!(width_calls.len(), 1, "Icon without per-element stroke-width overrides should call set_stroke_width exactly once (the default)");
+    }
+
+    // =============================================================================
+    // Opacity / fill-opacity / stroke-opacity / stroke-dasharray tests
+    // =============================================================================
+
+    #[test]
+    fn test_opacity_composes_alpha_onto_fill_color() {
+        // Lucide zone-icon idiom: a tint rect with opacity="0.25" over a full-strength
+        // stroke outline (order block / FVG / dealing range / imbalance icons).
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="currentColor" opacity="0.25"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#112233");
+
+        // alpha channel of "#112233" (0xff) scaled by 0.25 -> round(0.25 * 255) = 64 = 0x40.
+        assert_eq!(
+            ctx.fill_colors,
+            vec!["#11223340".to_string()],
+            "opacity=\"0.25\" should compose a fill color whose alpha is 25% of the input"
+        );
+    }
+
+    #[test]
+    fn test_nested_root_opacity_multiplies() {
+        // Root <svg opacity="0.5"> combined with an element's own fill-opacity="0.5"
+        // must multiply (0.5 * 0.5 = 0.25), not just take one of the two factors.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" opacity="0.5"><rect x="4" y="4" width="16" height="16" fill="currentColor" fill-opacity="0.5"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#112233");
+
+        assert_eq!(
+            ctx.fill_colors,
+            vec!["#11223340".to_string()],
+            "root opacity and element fill-opacity should multiply (0.5 * 0.5 = 0.25 -> alpha 0x40), not override each other"
+        );
+    }
+
+    #[test]
+    fn test_dasharray_applied_and_reset_on_rect_and_line() {
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="2" y="2" width="10" height="10" stroke-dasharray="4 2"/><line x1="1" y1="1" x2="20" y2="20" stroke-dasharray="3 1"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        let rect_dash_idx = ctx.dash_calls.iter().position(|d| d == &vec![4.0, 2.0]);
+        assert!(rect_dash_idx.is_some(), "Rect stroke-dasharray should be applied (scaled by the icon's uniform scale)");
+        assert_eq!(
+            ctx.dash_calls[rect_dash_idx.unwrap() + 1],
+            Vec::<f64>::new(),
+            "Dash must be reset to solid right after the rect stroke, so it doesn't leak into the next element"
+        );
+
+        let line_dash_idx = ctx.dash_calls.iter().position(|d| d == &vec![3.0, 1.0]);
+        assert!(line_dash_idx.is_some(), "Line stroke-dasharray should be applied (scaled)");
+        assert_eq!(
+            ctx.dash_calls[line_dash_idx.unwrap() + 1],
+            Vec::<f64>::new(),
+            "Dash must be reset to solid right after the line stroke"
+        );
+    }
+
+    #[test]
+    fn test_element_without_opacity_paints_original_color_unchanged() {
+        // Regression guard: an icon with no opacity/fill-opacity/stroke-opacity
+        // attributes anywhere must still be painted with the exact input color.
+        let mut ctx = MockContext::new();
+        let jet_svg = crate::render::icons::aviation::JET;
+        draw_svg_icon(&mut ctx, jet_svg, 100.0, 100.0, 22.0, 22.0, "#4fc3f7");
+
+        assert_eq!(
+            ctx.fill_colors,
+            vec!["#4fc3f7".to_string()],
+            "Element without opacity should be painted with the exact input color, unchanged"
+        );
+    }
+
+    #[test]
+    fn test_element_without_opacity_stroke_color_set_once_up_front() {
+        // Regression guard: without any stroke-opacity, the per-element loop must not
+        // add extra set_stroke_color calls beyond the single up-front default.
+        let mut ctx = MockContext::new();
+        let cloud_svg = crate::render::icons::weather::CLOUD;
+        draw_svg_icon(&mut ctx, cloud_svg, 100.0, 100.0, 22.0, 22.0, "#ffa726");
+
+        assert_eq!(
+            ctx.stroke_colors,
+            vec!["#ffa726".to_string()],
+            "Without any stroke-opacity, stroke color should be set exactly once (up-front), with no per-element overrides"
+        );
+    }
+
+    #[test]
+    fn test_rotated_icon_composes_opacity_too() {
+        // draw_svg_icon_rotated shares the same opacity/dash helpers as draw_svg_icon.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" fill="currentColor" opacity="0.25"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon_rotated(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#112233", 0.0);
+
+        assert_eq!(
+            ctx.fill_colors,
+            vec!["#11223340".to_string()],
+            "draw_svg_icon_rotated must compose opacity the same way as draw_svg_icon (shared helper)"
+        );
     }
 }
