@@ -17,6 +17,11 @@ pub mod app_context;
 /// Accessibility node types (AccessKit-shaped, no `accesskit` dependency).
 /// Always-on — see the module's own doc comment.
 pub mod a11y;
+/// The one token contract: semantic colour/geometry roles, colour math, and
+/// (from a later brief) the DTCG loader. Always-on, same tier as `a11y` —
+/// see the module's own doc comment and
+/// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md`.
+pub mod tokens;
 
 // Compat shims — core internals at crate root
 pub use ui::animation;
