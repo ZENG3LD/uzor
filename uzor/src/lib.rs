@@ -14,6 +14,9 @@ pub mod l0;
 pub use input as input_coordinator;
 pub mod ui;
 pub mod app_context;
+/// Accessibility node types (AccessKit-shaped, no `accesskit` dependency).
+/// Always-on — see the module's own doc comment.
+pub mod a11y;
 
 // Compat shims — core internals at crate root
 pub use ui::animation;
