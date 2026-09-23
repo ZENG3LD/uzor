@@ -54,6 +54,12 @@ pub use framework::render_control::RenderControl;
 #[cfg(feature = "shaper")]
 pub mod shaper;
 
+/// Headless event-synthesis + a11y-tree query test harness. Enable only in
+/// a test crate's `[dev-dependencies]` (feature-unified automatically for
+/// `cargo test`) — never in a shipped app's `[dependencies]`.
+#[cfg(feature = "testing")]
+pub mod testing;
+
 // Re-export key types
 pub use app_context::ContextManager;
 pub use i18n::{Translate, current_lang_index, set_lang_index, t};

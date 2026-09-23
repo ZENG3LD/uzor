@@ -38,6 +38,11 @@ framework-png = ["dep:image"]
 # `measure_text_glyphs`/`measure_text_wrapped`/`text_to_path` all
 # delegate through.
 shaper = ["dep:cosmic-text"]
+# Headless event-synthesis + a11y-tree query test harness (`uzor::testing`).
+# Zero new dependencies — pure Rust over existing InputCoordinator /
+# EventProcessor / a11y types. Enable only in a test crate's
+# `[dev-dependencies]`, never in a shipped app's `[dependencies]`.
+testing = []
 
 [dev-dependencies]
 env_logger = "0.10"
