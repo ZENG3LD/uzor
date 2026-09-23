@@ -81,17 +81,18 @@ impl CounterState {
 /// # Example
 ///
 /// ```
-/// use uzor_numbers::Counter;
+/// use uzor::ui::effects::numbers::Counter;
 ///
 /// let counter = Counter::new(1234.56);
 /// let state = counter.evaluate(0.1); // Get state at t=0.1s
+/// assert!(!state.is_empty());
 ///
 /// // Render each digit using state.digits
 /// for (place, digit_state) in &state.digits {
 ///     if place.is_dot() {
 ///         // Render decimal point
-///     } else if let Some(ds) = digit_state {
-///         // Render column of digits with Y offsets: ds.digit_offsets
+///     } else if let Some(_ds) = digit_state {
+///         // Render column of digits with Y offsets: _ds.digit_offsets
 ///     }
 /// }
 /// ```

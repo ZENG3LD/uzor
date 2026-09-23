@@ -18,8 +18,7 @@ use super::super::themes::tabs::TabTheme;
 ///
 /// # Usage
 /// ```
-/// use uzor_macos::presets::ventura::VenturaPreset;
-/// use uzor_macos::colors::AppearanceMode;
+/// use uzor::ui::themes::{VenturaPreset, AppearanceMode};
 ///
 /// let preset = VenturaPreset::new(AppearanceMode::Dark);
 /// let button_theme = preset.button_theme();

@@ -18,7 +18,7 @@
 //!
 //! # Архитектура / Architecture
 //!
-//! ```
+//! ```text
 //! Enum (types.rs) → Defaults (THIS FILE) → Render (render.rs) → Production (custom)
 //!     ↑ WHAT            ↑ Fallback params    ↑ Quick proto      ↑ Full control
 //! ```

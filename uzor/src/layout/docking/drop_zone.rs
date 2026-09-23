@@ -13,7 +13,7 @@
 //! # Example
 //!
 //! ```
-//! use uzor_panels::{DropZoneDetector, DropZone, PanelRect};
+//! use uzor::panels::{DropZoneDetector, DropZone, PanelRect};
 //!
 //! let detector = DropZoneDetector::new();
 //! let rect = PanelRect::new(0.0, 0.0, 100.0, 100.0);

@@ -38,14 +38,17 @@ pub struct CountUpState {
 /// # Example
 ///
 /// ```
-/// use uzor_numbers::{CountUp, Direction};
+/// use uzor::ui::effects::numbers::{CountUp, Direction};
 ///
 /// let count_up = CountUp::new(0.0, 100.0)
 ///     .with_duration(2.0)
 ///     .with_direction(Direction::Up);
 ///
-/// let state = count_up.evaluate(1.0); // Halfway through
-/// println!("Value: {}", state.value); // ~50
+/// // Without the `animation` feature, `evaluate` skips the spring and
+/// // jumps straight to the resting value once `t` clears the delay.
+/// let state = count_up.evaluate(1.0);
+/// assert_eq!(state.value, 100.0);
+/// assert!(state.is_complete);
 /// ```
 #[derive(Debug, Clone)]
 pub struct CountUp {

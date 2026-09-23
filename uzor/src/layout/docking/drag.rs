@@ -16,7 +16,7 @@
 //! # Example
 //!
 //! ```
-//! use uzor_panels::{DragDropState, LeafId, PanelRect, DropZone};
+//! use uzor::panels::{DragDropState, LeafId, PanelRect, DropZone};
 //!
 //! let mut state = DragDropState::new();
 //!
