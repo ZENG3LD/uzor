@@ -11,16 +11,12 @@ pub trait ClockTheme {
     fn clock_bg_hover(&self) -> &str;
 }
 
-/// Default clock theme.
-pub struct DefaultClockTheme;
-
-impl Default for DefaultClockTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl ClockTheme for DefaultClockTheme {
-    fn clock_text(&self) -> &str    { "#d1d4dc" }
-    fn clock_bg_hover(&self) -> &str { "#2a2e39" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultClockTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 5 — `crate::tokens::theme::TokenTheme` is now the one `ClockTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::clock::tokens::ClockTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

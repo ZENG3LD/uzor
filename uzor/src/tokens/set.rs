@@ -103,6 +103,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let clock = crate::ui::widgets::atomic::clock::tokens::ClockTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -113,6 +117,7 @@ impl TokenSet {
             button,
             checkbox,
             chevron,
+            clock,
         })
     }
 }
@@ -134,6 +139,7 @@ pub struct Tokens {
     button: crate::ui::widgets::atomic::button::tokens::ButtonTokens,
     checkbox: crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens,
     chevron: crate::ui::widgets::atomic::chevron::tokens::ChevronTokens,
+    clock: crate::ui::widgets::atomic::clock::tokens::ClockTokens,
 }
 
 impl Tokens {
@@ -156,6 +162,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn chevron(&self) -> &crate::ui::widgets::atomic::chevron::tokens::ChevronTokens {
         &self.chevron
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ClockTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn clock(&self) -> &crate::ui::widgets::atomic::clock::tokens::ClockTokens {
+        &self.clock
     }
 }
 

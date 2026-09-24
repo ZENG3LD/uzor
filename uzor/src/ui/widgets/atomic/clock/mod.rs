@@ -10,7 +10,13 @@
 //! Self-contained:
 //! - `types`    — `ClockRenderKind`.
 //! - `state`    — `ClockState` placeholder.
-//! - `theme`    — `ClockTheme` trait + `DefaultClockTheme`.
+//! - `theme`    — `ClockTheme` trait.
+//! - `tokens`   — `ClockTokens`: the token-contract implementation of
+//!                `ClockTheme`, one pre-rendered value per method, built
+//!                from `SemanticRoles` + optional `component.clock.*`
+//!                overrides (H1 token contract design §3). `TokenTheme`
+//!                (`crate::tokens::theme`) implements `ClockTheme` by
+//!                reading these fields.
 //! - `style`    — `ClockStyle` trait + `DefaultClockStyle`.
 //! - `settings` — `ClockSettings` bundle.
 //! - `render`   — `draw_clock` dispatcher + `ClockView`.
@@ -19,6 +25,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -26,7 +33,7 @@ pub mod input;
 
 pub use types::ClockRenderKind;
 pub use state::ClockState;
-pub use theme::{ClockTheme, DefaultClockTheme};
+pub use theme::ClockTheme;
 pub use style::{ClockStyle, DefaultClockStyle};
 pub use settings::ClockSettings;
 pub use render::{ClockView, draw_clock};

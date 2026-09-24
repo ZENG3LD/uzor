@@ -144,7 +144,7 @@ pub use super::scroll_chevron::{
 };
 pub use super::clock::{
     ClockView, ClockRenderKind,
-    ClockTheme, DefaultClockTheme,
+    ClockTheme,
     draw_clock,
 };
 pub use super::item::{

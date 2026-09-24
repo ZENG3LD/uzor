@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the clock widget.
 
 use super::style::{ClockStyle, DefaultClockStyle};
-use super::theme::{ClockTheme, DefaultClockTheme};
+use super::theme::ClockTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a clock instance.
 pub struct ClockSettings {
@@ -14,7 +15,7 @@ pub struct ClockSettings {
 impl Default for ClockSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultClockTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultClockStyle),
         }
     }
