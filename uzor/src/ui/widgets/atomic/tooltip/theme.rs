@@ -5,8 +5,10 @@ pub trait TooltipTheme {
     fn border(&self) -> &str;
     fn text(&self)   -> &str;
     /// Drop-shadow colour.  Only used when `TooltipStyle::has_shadow()` returns `true`.
-    /// Matches mlc hardcoded `"#00000060"`.
-    fn shadow(&self) -> &str { "#00000060" }
+    /// Required (no default body, H1 §A6): a literal trait-default body is
+    /// reachable from any third-party `TooltipTheme` impl that does not
+    /// override it, defeating the literal-enforcement contract.
+    fn shadow(&self) -> &str;
 }
 
 // =============================================================================

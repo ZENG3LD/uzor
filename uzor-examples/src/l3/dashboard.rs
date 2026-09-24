@@ -291,6 +291,8 @@ impl ButtonTheme for VisibleButtonTheme {
     fn button_ghost_idle_bg(&self) -> &str { "#1e222d" }
     fn button_utility_bg(&self) -> &str { "#2a2e39" }
     fn button_utility_bg_hover(&self) -> &str { "#363a45" }
+    fn transparency_checker_a(&self) -> &str { "#ffffff" }
+    fn transparency_checker_b(&self) -> &str { "#cccccc" }
 }
 
 // Sidebar style: same as default but without the header divider line.

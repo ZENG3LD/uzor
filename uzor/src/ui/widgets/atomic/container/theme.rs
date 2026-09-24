@@ -26,46 +26,34 @@ pub trait ContainerTheme {
     /// Shadow color specifically for Card containers.
     ///
     /// Separated from generic `shadow` so Card and other future
-    /// shadow-bearing types can differ. mlc default: `rgba(0,0,0,0.4)`.
-    fn card_shadow_color(&self) -> &str {
-        "rgba(0,0,0,0.4)"
-    }
+    /// shadow-bearing types can differ. Required (no default body, H1 §A6):
+    /// a literal trait-default body is reachable from any third-party
+    /// `ContainerTheme` impl that does not override it.
+    fn card_shadow_color(&self) -> &str;
 
     // -------------------------------------------------------------------------
     // Section (header strip)
     // -------------------------------------------------------------------------
 
-    /// Header strip background.
-    ///
-    /// mlc `PanelTheme::header_bg` default: `#161b22ff`.
-    fn section_header_bg(&self) -> &str {
-        "#161b22ff"
-    }
+    /// Header strip background. Required for the same reason as
+    /// `card_shadow_color`.
+    fn section_header_bg(&self) -> &str;
 
-    /// Header strip text color (for callers that render a label).
-    ///
-    /// mlc `ModalTheme::header_text` default: `#ffffff`.
-    fn section_header_text(&self) -> &str {
-        "#ffffff"
-    }
+    /// Header strip text color (for callers that render a label). Required
+    /// for the same reason as `card_shadow_color`.
+    fn section_header_text(&self) -> &str;
 
     // -------------------------------------------------------------------------
     // Panel (PanelTheme bridge)
     // -------------------------------------------------------------------------
 
-    /// Panel body background.
-    ///
-    /// mlc `PanelTheme::panel_bg` (bridged from `RuntimeTheme::toolbar_bg`): `#0d1117ff`.
-    fn panel_bg(&self) -> &str {
-        "#0d1117ff"
-    }
+    /// Panel body background. Required for the same reason as
+    /// `card_shadow_color`.
+    fn panel_bg(&self) -> &str;
 
-    /// Panel border / separator.
-    ///
-    /// mlc `PanelTheme::separator`: `#30363dff`.
-    fn panel_border(&self) -> &str {
-        "#30363dff"
-    }
+    /// Panel border / separator. Required for the same reason as
+    /// `card_shadow_color`.
+    fn panel_border(&self) -> &str;
 }
 
 // =============================================================================
@@ -77,8 +65,8 @@ pub trait ContainerTheme {
 // `ContainerTheme` implementation ships, backed by
 // `crate::ui::widgets::atomic::container::tokens::ContainerTokens` (see
 // `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3). `TokenTheme`
-// overrides all 8 methods explicitly, including the 5 with a default body
-// above that returns its own literal (`card_shadow_color`,
-// `section_header_bg`, `section_header_text`, `panel_bg`, `panel_border`) —
-// each is reachable from render code like any other, per H1's scope note on
-// trait-default methods.
+// implements all 8 methods explicitly; `card_shadow_color`,
+// `section_header_bg`, `section_header_text`, `panel_bg`, `panel_border` were
+// literal trait-default bodies until H1 §A6 made them required methods —
+// each is reachable from render code like any other, so a literal default
+// would defeat the literal-enforcement contract.

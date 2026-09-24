@@ -262,16 +262,14 @@ pub trait ButtonTheme: Send + Sync {
     }
 
     /// Light tile color for the transparency checkerboard background.
-    /// mlc appearance tab: "#ffffff"
-    fn transparency_checker_a(&self) -> &str {
-        "#ffffff"
-    }
+    /// Required (no default body, H1 §A6): a literal trait-default body is
+    /// reachable from any third-party `ButtonTheme` impl that does not
+    /// override it, defeating the literal-enforcement contract.
+    fn transparency_checker_a(&self) -> &str;
 
     /// Dark tile color for the transparency checkerboard background.
-    /// mlc appearance tab: "#cccccc"
-    fn transparency_checker_b(&self) -> &str {
-        "#cccccc"
-    }
+    /// Required for the same reason as `transparency_checker_a`.
+    fn transparency_checker_b(&self) -> &str;
 
     // =========================================================================
     // Fill toggle slots (section 31)

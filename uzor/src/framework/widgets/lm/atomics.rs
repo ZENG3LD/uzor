@@ -147,6 +147,9 @@ impl ButtonTheme for StyledButtonTheme {
     fn button_ghost_idle_bg(&self)        -> &str { self.fallback.button_ghost_idle_bg() }
     fn button_utility_bg(&self)           -> &str { self.fallback.button_utility_bg() }
     fn button_utility_bg_hover(&self)     -> &str { self.fallback.button_utility_bg_hover() }
+
+    fn transparency_checker_a(&self) -> &str { self.fallback.transparency_checker_a() }
+    fn transparency_checker_b(&self) -> &str { self.fallback.transparency_checker_b() }
 }
 
 struct StyledButtonStyle {
