@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the radio widget.
 
-use super::theme::{DefaultRadioTheme, RadioTheme};
+use super::theme::RadioTheme;
 use super::style::{DefaultRadioPairStyle, DefaultRadioStyle, RadioPairStyle, RadioStyle};
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a radio widget.
 pub struct RadioSettings {
@@ -16,7 +17,7 @@ pub struct RadioSettings {
 impl Default for RadioSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultRadioTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             group_style: Box::new(DefaultRadioStyle),
             pair_style: Box::new(DefaultRadioPairStyle),
         }

@@ -4,7 +4,13 @@
 //! - `types`    — `RadioOption`, `RadioGroupView`, `RadioPairView`, `RadioDotView`,
 //!                `DotShape`, `RadioConfig`, `RadioRenderKind`.
 //! - `state`    — `RadioState` (selected_idx).
-//! - `theme`    — `RadioTheme` trait + `DefaultRadioTheme`.
+//! - `theme`    — `RadioTheme` trait.
+//! - `tokens`   — `RadioTokens`: the token-contract implementation of
+//!                `RadioTheme`, one pre-rendered value per method, built
+//!                from `SemanticRoles` + optional `component.radio.*`
+//!                overrides (H1 token contract design §3). `TokenTheme`
+//!                (`crate::tokens::theme`) implements `RadioTheme` by
+//!                reading these fields.
 //! - `style`    — `RadioStyle` / `DefaultRadioStyle` + `RadioPairStyle` / `DefaultRadioPairStyle`.
 //! - `settings` — `RadioSettings` bundle.
 //! - `render`   — `draw_radio` dispatcher.
@@ -13,6 +19,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -23,7 +30,7 @@ pub use types::{
     RadioRenderKind,
 };
 pub use state::RadioState;
-pub use theme::{DefaultRadioTheme, RadioTheme};
+pub use theme::RadioTheme;
 pub use style::{DefaultRadioPairStyle, DefaultRadioStyle, RadioPairStyle, RadioStyle};
 pub use settings::RadioSettings;
 pub use render::draw_radio;

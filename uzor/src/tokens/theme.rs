@@ -20,6 +20,7 @@ use crate::ui::widgets::atomic::color_swatch::theme::ColorSwatchTheme;
 use crate::ui::widgets::atomic::drag_handle::theme::DragHandleTheme;
 use crate::ui::widgets::atomic::dropdown_trigger::theme::DropdownTriggerTheme;
 use crate::ui::widgets::atomic::item::theme::ItemTheme;
+use crate::ui::widgets::atomic::radio::theme::RadioTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -148,6 +149,17 @@ impl DropdownTriggerTheme for TokenTheme {
 
 impl ItemTheme for TokenTheme {
     fn item_text(&self) -> &str { &self.0.item().item_text }
+}
+
+impl RadioTheme for TokenTheme {
+    fn radio_outer_border(&self) -> &str { &self.0.radio().radio_outer_border }
+    fn radio_outer_border_selected(&self) -> &str { &self.0.radio().radio_outer_border_selected }
+    fn radio_inner_dot(&self) -> &str { &self.0.radio().radio_inner_dot }
+    fn radio_disabled_overlay(&self) -> &str { &self.0.radio().radio_disabled_overlay }
+    fn radio_row_bg_hover(&self) -> &str { &self.0.radio().radio_row_bg_hover }
+    fn radio_label_text(&self) -> &str { &self.0.radio().radio_label_text }
+    fn radio_label_text_selected(&self) -> &str { &self.0.radio().radio_label_text_selected }
+    fn radio_description_text(&self) -> &str { &self.0.radio().radio_description_text }
 }
 
 #[cfg(test)]
