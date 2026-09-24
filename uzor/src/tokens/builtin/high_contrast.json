@@ -71,5 +71,10 @@
       "md": { "$type": "dimension", "$value": 4.0 },
       "lg": { "$type": "dimension", "$value": 8.0 }
     }
+  },
+  "component": {
+    "container": {
+      "section_border": { "$type": "color", "$value": "{color.border.default}" }
+    }
   }
 }

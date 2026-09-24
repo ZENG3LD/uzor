@@ -199,6 +199,7 @@ impl ContainerTheme for TokenTheme {
     fn section_header_text(&self) -> &str { &self.0.container().section_header_text }
     fn panel_bg(&self) -> &str { &self.0.container().panel_bg }
     fn panel_border(&self) -> &str { &self.0.container().panel_border }
+    fn section_border(&self) -> &str { &self.0.container().section_border }
 }
 
 impl ScrollChevronTheme for TokenTheme {

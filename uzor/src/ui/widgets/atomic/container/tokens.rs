@@ -11,13 +11,14 @@
 //! `panel_bg`, `panel_border` all qualify, bridging the two mlc families
 //! this trait covers — `ToolbarTheme` slots (`bg`/`border`/`shadow`) and
 //! `PanelTheme` slots (`panel_bg`/`panel_border`) — per this trait's own
-//! module doc).
+//! module doc), plus `section_border` (H1 Brief 10a-3 item 0a — a required
+//! method added directly, not a trait-default body).
 //!
 //! Built once per [`crate::tokens::set::Tokens`]
 //! ([`crate::tokens::set::TokenSet::resolve`]), never recomputed per paint
 //! call.
 
-use crate::tokens::{component_tokens, ColorSpec, Role};
+use crate::tokens::{component_tokens, ColorSpec, ColorValue, Role};
 
 component_tokens! {
     widget = "container",
@@ -37,6 +38,12 @@ component_tokens! {
     // `panel` composite widget uses, main design doc §1).
     panel_bg     => ColorSpec::Alias(Role::SurfacePanel, None),
     panel_border => ColorSpec::Alias(Role::BorderDefault, None),
+
+    // No stroke by default (`draw_section_container` skips it when
+    // "transparent") — `high_contrast`/`high_contrast_mono` override this to
+    // `{color.border.default}` (H1 Brief 10a-3 item 0a; `theme.rs`'s own doc
+    // comment on this method has the full rationale).
+    section_border => ColorSpec::Literal(ColorValue::Transparent),
 }
 
 #[cfg(test)]
@@ -49,9 +56,10 @@ mod tests {
         let keys =
             crate::tokens::component_keys("container").expect("container must be registered");
         assert_eq!(keys, CONTAINER_KEYS);
-        assert_eq!(keys.len(), 8, "one entry per ContainerTokens field");
+        assert_eq!(keys.len(), 9, "one entry per ContainerTokens field");
         assert!(keys.contains(&"bg"));
         assert!(keys.contains(&"panel_border"));
+        assert!(keys.contains(&"section_border"));
     }
 
     #[test]
@@ -66,5 +74,24 @@ mod tests {
         assert_eq!(c.section_header_text, "#d1d4dc");
         assert_eq!(c.panel_bg, "#1e222d");
         assert_eq!(c.panel_border, "#363a45");
+        assert_eq!(c.section_border, "transparent");
+    }
+
+    /// `high_contrast`/`high_contrast_mono` override `section_border` to
+    /// `{color.border.default}` (H1 Brief 10a-3 item 0a); `dark`/`light` keep
+    /// the "no stroke" default.
+    #[test]
+    fn only_high_contrast_sets_override_section_border() {
+        let dark = Tokens::builtin(BuiltinSet::Dark);
+        let light = Tokens::builtin(BuiltinSet::Light);
+        let hc = Tokens::builtin(BuiltinSet::HighContrast);
+        let hc_mono = Tokens::builtin(BuiltinSet::HighContrastMono);
+
+        assert_eq!(dark.container().section_border, "transparent");
+        assert_eq!(light.container().section_border, "transparent");
+        assert_eq!(hc.container().section_border, hc.container().border);
+        assert_eq!(hc_mono.container().section_border, hc_mono.container().border);
+        assert_ne!(hc.container().section_border, "transparent");
+        assert_ne!(hc_mono.container().section_border, "transparent");
     }
 }

@@ -54,6 +54,20 @@ pub trait ContainerTheme {
     /// Panel border / separator. Required for the same reason as
     /// `card_shadow_color`.
     fn panel_border(&self) -> &str;
+
+    // -------------------------------------------------------------------------
+    // Section (outline)
+    // -------------------------------------------------------------------------
+
+    /// Section outline stroke, drawn around the full container rect by
+    /// `draw_section_container`. Default resolves to `"transparent"` (no
+    /// stroke drawn) in every built-in set except `high_contrast` and
+    /// `high_contrast_mono` (H1 Brief 10a-3 item 0a) — those two sets alias
+    /// `surface.app_chrome`/`surface.floating`/`surface.header` onto the same
+    /// `#000000`, which otherwise makes a `Section` container's body and
+    /// header strip invisible against its own background. Required for the
+    /// same reason as `card_shadow_color`.
+    fn section_border(&self) -> &str;
 }
 
 // =============================================================================
@@ -65,8 +79,10 @@ pub trait ContainerTheme {
 // `ContainerTheme` implementation ships, backed by
 // `crate::ui::widgets::atomic::container::tokens::ContainerTokens` (see
 // `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3). `TokenTheme`
-// implements all 8 methods explicitly; `card_shadow_color`,
+// implements all 9 methods explicitly; `card_shadow_color`,
 // `section_header_bg`, `section_header_text`, `panel_bg`, `panel_border` were
 // literal trait-default bodies until H1 §A6 made them required methods —
 // each is reachable from render code like any other, so a literal default
-// would defeat the literal-enforcement contract.
+// would defeat the literal-enforcement contract. `section_border` (H1 Brief
+// 10a-3 item 0a) was added directly as a required method for the same
+// reason.

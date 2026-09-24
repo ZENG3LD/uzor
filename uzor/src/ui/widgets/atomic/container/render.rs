@@ -135,11 +135,17 @@ pub fn end_clipping_container(ctx: &mut dyn RenderContext, style: &ClippingConta
 // 5. Section — header strip + body bg + optional border
 // ---------------------------------------------------------------------------
 
-/// Draw a section container: body background, then header strip on top.
+/// Draw a section container: body background, then header strip on top,
+/// then an optional outline.
 ///
 /// mlc equivalent: trading panels with a column/title header strip
 /// (dom.rs, order_entry.rs, position_manager.rs, trade_log.rs, etc.).
 /// Drawing order matches mlc: `panel_bg` first, then `header_bg` on top.
+///
+/// The outline (`theme.section_border()`) is skipped when it resolves to
+/// `"transparent"` — the default in every built-in set except
+/// `high_contrast`/`high_contrast_mono` (H1 Brief 10a-3 item 0a; see
+/// `ContainerTheme::section_border`'s own doc comment).
 pub fn draw_section_container(
     ctx: &mut dyn RenderContext,
     rect: Rect,
@@ -154,6 +160,14 @@ pub fn draw_section_container(
     let header_h = style.header_height.min(rect.height);
     ctx.set_fill_color(theme.section_header_bg());
     ctx.fill_rect(rect.x, rect.y, rect.width, header_h);
+
+    // Outline.
+    let border = theme.section_border();
+    if border != "transparent" {
+        ctx.set_stroke_color(border);
+        ctx.set_stroke_width(style.border_width());
+        ctx.stroke_rect(rect.x, rect.y, rect.width, rect.height);
+    }
 }
 
 // ---------------------------------------------------------------------------
