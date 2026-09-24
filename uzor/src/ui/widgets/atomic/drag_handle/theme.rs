@@ -6,17 +6,12 @@ pub trait DragHandleTheme {
     fn grip_dots_color(&self) -> &str;
 }
 
-/// Default drag handle theme.
-pub struct DefaultDragHandleTheme;
-
-impl Default for DefaultDragHandleTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl DragHandleTheme for DefaultDragHandleTheme {
-    fn grip_dots_color(&self) -> &str {
-        "#4a4e5a"
-    }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultDragHandleTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 6 — `crate::tokens::theme::TokenTheme` is now the one
+// `DragHandleTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::drag_handle::tokens::DragHandleTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

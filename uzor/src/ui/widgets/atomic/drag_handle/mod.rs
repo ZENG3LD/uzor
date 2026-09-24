@@ -6,7 +6,13 @@
 //! Self-contained:
 //! - `types`    — `DragHandleView`, `DragHandleRenderKind`.
 //! - `state`    — `DragHandleState` with `start`, `update`, `end`, `is_active`.
-//! - `theme`    — `DragHandleTheme` trait + `DefaultDragHandleTheme`.
+//! - `theme`    — `DragHandleTheme` trait.
+//! - `tokens`   — `DragHandleTokens`: the token-contract implementation of
+//!                `DragHandleTheme`, one pre-rendered value per method,
+//!                built from `SemanticRoles` + optional
+//!                `component.drag_handle.*` overrides (H1 token contract
+//!                design §3). `TokenTheme` (`crate::tokens::theme`)
+//!                implements `DragHandleTheme` by reading these fields.
 //! - `style`    — `DragHandleStyle` trait + `DefaultDragHandleStyle`.
 //! - `settings` — `DragHandleSettings` bundle.
 //! - `render`   — `draw_drag_handle` dispatcher.
@@ -18,6 +24,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 pub use input::{
@@ -30,5 +37,5 @@ pub use render::draw_drag_handle;
 pub use settings::DragHandleSettings;
 pub use state::DragHandleState;
 pub use style::{DefaultDragHandleStyle, DragHandleStyle};
-pub use theme::{DefaultDragHandleTheme, DragHandleTheme};
+pub use theme::DragHandleTheme;
 pub use types::{DragHandleRenderKind, DragHandleView};

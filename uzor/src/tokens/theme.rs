@@ -17,6 +17,7 @@ use crate::ui::widgets::atomic::chevron::theme::ChevronTheme;
 use crate::ui::widgets::atomic::clock::theme::ClockTheme;
 use crate::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 use crate::ui::widgets::atomic::color_swatch::theme::ColorSwatchTheme;
+use crate::ui::widgets::atomic::drag_handle::theme::DragHandleTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -129,6 +130,10 @@ impl ColorSwatchTheme for TokenTheme {
     fn fill_toggle_off_pattern_color(&self) -> &str { &self.0.color_swatch().fill_toggle_off_pattern_color }
     fn fill_toggle_background(&self) -> &str { &self.0.color_swatch().fill_toggle_background }
     fn fill_toggle_disabled_overlay(&self) -> &str { &self.0.color_swatch().fill_toggle_disabled_overlay }
+}
+
+impl DragHandleTheme for TokenTheme {
+    fn grip_dots_color(&self) -> &str { &self.0.drag_handle().grip_dots_color }
 }
 
 #[cfg(test)]

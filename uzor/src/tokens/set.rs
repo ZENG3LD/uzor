@@ -115,6 +115,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let drag_handle = crate::ui::widgets::atomic::drag_handle::tokens::DragHandleTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -128,6 +132,7 @@ impl TokenSet {
             clock,
             close_button,
             color_swatch,
+            drag_handle,
         })
     }
 }
@@ -152,6 +157,7 @@ pub struct Tokens {
     clock: crate::ui::widgets::atomic::clock::tokens::ClockTokens,
     close_button: crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens,
     color_swatch: crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens,
+    drag_handle: crate::ui::widgets::atomic::drag_handle::tokens::DragHandleTokens,
 }
 
 impl Tokens {
@@ -195,6 +201,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn color_swatch(&self) -> &crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens {
         &self.color_swatch
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `DragHandleTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn drag_handle(&self) -> &crate::ui::widgets::atomic::drag_handle::tokens::DragHandleTokens {
+        &self.drag_handle
     }
 }
 

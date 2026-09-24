@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the drag handle widget.
 
 use super::style::{DefaultDragHandleStyle, DragHandleStyle};
-use super::theme::{DefaultDragHandleTheme, DragHandleTheme};
+use super::theme::DragHandleTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a drag handle instance.
 pub struct DragHandleSettings {
@@ -14,7 +15,7 @@ pub struct DragHandleSettings {
 impl Default for DragHandleSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultDragHandleTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultDragHandleStyle),
         }
     }

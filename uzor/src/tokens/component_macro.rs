@@ -34,6 +34,19 @@
 //!    accessor.
 //! 3. Add `impl CheckboxTheme for TokenTheme` in `tokens/theme.rs`, one line
 //!    per owned method reading `&self.0.checkbox().<field>`.
+//!
+//! **Ambiguity trap.** Several widgets share a trait method name (`bg`,
+//! `border`, `text`, `transparency_checker_a`, …) — once `TokenTheme`
+//! implements two traits that both declare the same method name, calling it
+//! through plain inference (`theme.bg()`) is ambiguous and fails to compile
+//! the moment the second trait lands. This is invisible in each widget's own
+//! `tokens.rs` unit tests (they call through the concrete `Tokens` accessor,
+//! never the trait), so it only bites in `tokens/theme.rs`'s own cross-widget
+//! tests and any other call site reachable from more than one implemented
+//! trait. Fix at the call site with fully-qualified syntax,
+//! `<Trait>::<method>(&theme)` (see `tokens/theme.rs`'s
+//! `token_theme_reads_through_to_resolved_button_tokens` test) — never by
+//! renaming the shared method on either trait.
 macro_rules! component_tokens {
     (
         widget = $widget:literal,
