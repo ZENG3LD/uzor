@@ -52,10 +52,10 @@ component_tokens! {
     chrome_tab_text_active   => ColorSpec::Alias(Role::TextOnAccent, None),
     chrome_tab_text_inactive => ColorSpec::Alias(Role::TextDisabled, None),
     chrome_ctrl_hover        => ColorSpec::Alias(Role::SurfaceControlHover, None),
-    // Windows native close-red convention — kept literal (H1 token contract
-    // design §1's "non-semantic literals" scope note; same convention as
-    // the `chrome` composite's own `close_hover`).
-    chrome_close_hover => ColorSpec::Literal(ColorValue::Solid(crate::tokens::Rgba::new(0xe8, 0x11, 0x23, 0xff))),
+    // Was the literal Windows close-red `#e81123` — broke the
+    // high_contrast_mono set's grayscale contract (H1 Brief 9 item b); same
+    // fix as the `chrome` composite's own `close_hover`.
+    chrome_close_hover => ColorSpec::Alias(Role::StatusDanger, None),
     chrome_ctrl_icon    => ColorSpec::Alias(Role::TextPrimary, None),
 
     color_swatch_border => ColorSpec::Alias(Role::BorderDefault, None),
@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(t.chrome_tab_text_active, "#d1d4dc");
         assert_eq!(t.chrome_tab_text_inactive, "#6a6d78");
         assert_eq!(t.chrome_ctrl_hover, "#2a2e39");
-        assert_eq!(t.chrome_close_hover, "#e81123");
+        assert_eq!(t.chrome_close_hover, "#f23645");
         assert_eq!(t.chrome_ctrl_icon, "#d1d4dc");
         assert_eq!(t.color_swatch_border, "#363a45");
         assert_eq!(t.split_chevron, "#6a6d78");

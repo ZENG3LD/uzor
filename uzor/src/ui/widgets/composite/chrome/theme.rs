@@ -32,8 +32,9 @@ pub trait ChromeTheme: Send + Sync {
     fn button_hover(&self) -> &str;
 
     /// Hover background fill for the close-app button (red).
-    /// Default: `"#e81123"` (Windows close-red convention, not a themeable
-    /// role).
+    /// Default alias: `status.danger` (was the literal Windows close-red
+    /// `"#e81123"` until H1 §A6 — that broke the high_contrast_mono set's
+    /// grayscale contract, one meaning per role).
     fn close_hover(&self) -> &str;
 
     // --- Structural ---

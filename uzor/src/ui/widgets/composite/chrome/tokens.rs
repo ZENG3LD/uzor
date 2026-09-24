@@ -23,8 +23,11 @@ component_tokens! {
     icon_hover   => ColorSpec::Alias(Role::TextPrimary, None),
 
     button_hover => ColorSpec::Alias(Role::SurfaceControlHover, None),
-    // Windows close-app hover convention — not a themeable role.
-    close_hover  => ColorSpec::Literal(ColorValue::Solid(crate::tokens::Rgba::new(0xe8, 0x11, 0x23, 0xff))),
+    // Was the literal Windows close-app hover-red `#e81123` — broke the
+    // high_contrast_mono set's grayscale contract (one meaning per role, H1
+    // Brief 9 item b). Aliased onto `status.danger`, which is `#ffffff` in
+    // high_contrast_mono and `#f23645` everywhere else.
+    close_hover  => ColorSpec::Alias(Role::StatusDanger, None),
 
     separator    => ColorSpec::Alias(Role::BorderDefault, None),
 
@@ -63,7 +66,7 @@ mod tests {
         assert_eq!(c.icon_normal, "#b2b5be");
         assert_eq!(c.icon_hover, "#d1d4dc");
         assert_eq!(c.button_hover, "#2a2e39");
-        assert_eq!(c.close_hover, "#e81123");
+        assert_eq!(c.close_hover, "#f23645");
         assert_eq!(c.separator, "#363a45");
         assert_eq!(c.tab_bg_normal, "transparent");
         assert_eq!(c.tab_bg_hover, "#2a2e39");

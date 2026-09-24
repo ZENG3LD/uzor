@@ -90,7 +90,9 @@ pub trait ToolbarTheme {
     /// Chrome window-control button hover background.  Default: `rgba(255,255,255,0.1)`.
     fn chrome_ctrl_hover(&self) -> &str;
 
-    /// Chrome close-button hover background (red).  Default: `#e81123`.
+    /// Chrome close-button hover background (red).  Default alias:
+    /// `status.danger` (was the literal `#e81123` until H1 §A6 — see
+    /// `chrome::ChromeTheme::close_hover`'s doc for why).
     fn chrome_close_hover(&self) -> &str;
 
     /// Chrome close / minimize / maximize icon colour.  Default: `#d1d4dc`.
