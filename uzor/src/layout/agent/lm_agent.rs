@@ -13,7 +13,8 @@
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
 use crate::layout::sync::{SyncGroupId, SyncMode};
-use crate::layout::{LayoutManager, LayoutNode as TreeNode, MirageDarkPreset, MirageLightPreset};
+use crate::layout::{LayoutManager, LayoutNode as TreeNode};
+use crate::tokens::{BuiltinSet, Tokens};
 use crate::types::WidgetId;
 
 use super::command::{Command, CommandReply};
@@ -91,7 +92,7 @@ impl<P: DockPanel> LmAgent<P> {
             root: RootSnapshot {
                 current_window,
                 window_count,
-                style_preset: layout.styles().active_preset().map(|s| s.to_owned()),
+                style_preset: layout.tokens().name.clone(),
             },
             windows,
             sync_nodes,
@@ -402,14 +403,19 @@ impl<P: DockPanel> LmAgent<P> {
                 Some(CommandReply::ok())
             }
             Command::ApplyStylePreset { name } => {
-                let ok = match name.as_str() {
-                    "mirage_dark"  => { layout.apply_style_preset(&MirageDarkPreset,  "mirage_dark");  true }
-                    "mirage_light" => { layout.apply_style_preset(&MirageLightPreset, "mirage_light"); true }
-                    _ => false,
+                // Preset names are the 4 generic built-in token sets (H1
+                // token contract) — replaces the pre-H1 Mirage-brand
+                // "mirage_dark"/"mirage_light" pair (H1 Brief 9, §3
+                // "StyleManager — removed": that palette had zero relation
+                // to any of the 4 generic sets).
+                let set = match name.as_str() {
+                    "dark" => BuiltinSet::Dark,
+                    "light" => BuiltinSet::Light,
+                    "high_contrast" => BuiltinSet::HighContrast,
+                    "high_contrast_mono" => BuiltinSet::HighContrastMono,
+                    _ => return Some(CommandReply::err(format!("unknown preset {:?}", name))),
                 };
-                if !ok {
-                    return Some(CommandReply::err(format!("unknown preset {:?}", name)));
-                }
+                layout.apply_token_set(Tokens::builtin(set));
                 Some(CommandReply::ok())
             }
 

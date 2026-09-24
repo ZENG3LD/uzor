@@ -15,7 +15,7 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, PanelNode, StyleManager};
+use crate::layout::{LayoutManager, LayoutNodeId, PanelNode};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::panel::input::register_layout_manager_panel;
 use crate::ui::widgets::composite::panel::settings::PanelSettings;
@@ -23,61 +23,18 @@ use crate::ui::widgets::composite::panel::state::PanelState;
 use crate::ui::widgets::composite::panel::style::{
     BackgroundFill, BorderConfig, DefaultPanelStyle, EdgeHandlesConfig, PanelStyle,
 };
-use crate::ui::widgets::composite::panel::theme::PanelTheme;
 use crate::ui::widgets::composite::panel::types::{
     ColumnDef, HeaderAction, PanelHeader, PanelRenderKind, PanelView,
 };
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledPanelTheme
-// =============================================================================
-
-struct StyledPanelTheme {
-    bg:          String,
-    border:      String,
-    header_bg:   String,
-    header_text: String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:    TokenTheme,
-}
-
-impl StyledPanelTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        Self {
-            bg:          s.color_or_owned("surface_0",  "#0d1117"),
-            border:      s.color_or_owned("border",     "#30363d"),
-            header_bg:   s.color_or_owned("surface",    "#161b22"),
-            header_text: s.color_or_owned("fg_2",       "#8091a5"),
-            fallback:    TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl PanelTheme for StyledPanelTheme {
-    fn bg(&self)                      -> &str { &self.bg }
-    fn border(&self)                  -> &str { &self.border }
-    fn header_bg(&self)               -> &str { &self.header_bg }
-    fn header_text(&self)             -> &str { &self.header_text }
-    fn column_header_bg(&self)        -> &str { &self.header_bg }
-    fn column_header_text(&self)      -> &str { self.fallback.column_header_text() }
-    fn row_bg_normal(&self)           -> &str { &self.bg }
-    fn row_bg_hover(&self)            -> &str { self.fallback.row_bg_hover() }
-    fn row_bg_selected(&self)         -> &str { self.fallback.row_bg_selected() }
-    fn footer_bg(&self)               -> &str { &self.header_bg }
-    fn footer_text(&self)             -> &str { self.fallback.footer_text() }
-    fn divider(&self)                 -> &str { &self.border }
-    fn action_icon_normal(&self)      -> &str { self.fallback.action_icon_normal() }
-    fn action_icon_hover(&self)       -> &str { self.fallback.action_icon_hover() }
-    fn sort_arrow_color(&self)        -> &str { self.fallback.sort_arrow_color() }
-    fn action_bg_hover(&self)         -> &str { self.fallback.action_bg_hover() }
-}
-
-fn panel_settings_from_styles(s: &StyleManager) -> PanelSettings {
+/// Builds `PanelSettings` from the layout's live token set (H1 Brief 9, §3
+/// "StyleManager — removed") — replaces the pre-H1 `StyledPanelTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn panel_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> PanelSettings {
     PanelSettings {
-        theme: Box::new(StyledPanelTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultPanelStyle>::default(),
     }
 }
@@ -126,7 +83,7 @@ pub struct PanelBuilder<'a> {
     overflow:       crate::types::OverflowMode,
     settings:       Option<PanelSettings>,
     /// Override just the colour-token bundle.  Wins over the
-    /// `StyleManager`-derived default but loses to a full
+    /// token-set-derived default but loses to a full
     /// `.settings(...)` call.
     theme_override: Option<Box<dyn crate::ui::widgets::composite::panel::theme::PanelTheme>>,
     /// Override just the geometry bundle.  Same precedence rules as
@@ -279,9 +236,9 @@ impl<'a> PanelBuilder<'a> {
         };
 
         // Resolve settings: explicit `.settings(...)` wins outright,
-        // otherwise build from StyleManager and then patch in any
-        // `.theme(...)` / `.style(...)` overrides.
-        let mut settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));
+        // otherwise build from the layout's live token set and then patch
+        // in any `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| panel_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
         // Wrap the resolved style with `borders()` / `edge_handles()`

@@ -113,17 +113,26 @@ pub struct PanelTheme {
 }
 
 impl Default for PanelTheme {
+    /// Reads the dark built-in token set (H1 token contract) instead of a
+    /// hand-picked literal palette — same role mapping the real `toolbar`
+    /// composite's `ToolbarTokens` uses (`bg` → `surface.floating`,
+    /// `separator` → `border.default`, `item_bg_hover` →
+    /// `surface.control.hover`, `item_text_hover`/`item_text_active` →
+    /// `text.on_accent`/`accent.default`) so an external `PanelApp` plugin
+    /// gets the same palette a native uzor toolbar paints with.
     fn default() -> Self {
+        let tokens = crate::tokens::Tokens::builtin(crate::tokens::BuiltinSet::Dark);
+        let s = &tokens.semantic;
         Self {
-            toolbar_bg: "#1e1e2e".to_string(),
-            toolbar_separator: "#333346".to_string(),
-            item_bg_hover: "#2a2a3e".to_string(),
-            item_bg_active: "#3b82f6".to_string(),
-            item_text: "#cdd6f4".to_string(),
-            item_text_muted: "#6c7086".to_string(),
-            item_text_hover: "#ffffff".to_string(),
-            item_text_active: "#ffffff".to_string(),
-            accent: "#3b82f6".to_string(),
+            toolbar_bg: s.surface_floating.to_css().into_owned(),
+            toolbar_separator: s.border_default.to_css().into_owned(),
+            item_bg_hover: s.surface_control_hover.to_css().into_owned(),
+            item_bg_active: s.accent_default.to_css().into_owned(),
+            item_text: s.text_primary.to_css().into_owned(),
+            item_text_muted: s.text_muted.to_css().into_owned(),
+            item_text_hover: s.text_on_accent.to_css().into_owned(),
+            item_text_active: s.accent_default.to_css().into_owned(),
+            accent: s.accent_default.to_css().into_owned(),
             sidebar_style: false,
         }
     }

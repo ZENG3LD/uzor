@@ -14,7 +14,7 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, StyleManager};
+use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
@@ -24,72 +24,15 @@ use crate::ui::widgets::composite::sidebar::theme::SidebarTheme;
 use crate::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarHeaderMode, SidebarRenderKind, SidebarTab, SidebarView,
 };
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledSidebarTheme
-// =============================================================================
-
-struct StyledSidebarTheme {
-    bg:          String,
-    border:      String,
-    header_text: String,
-    tab_accent:  String,
-    tab_bg_active: String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:    TokenTheme,
-}
-
-impl StyledSidebarTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent     = s.color_or_owned("accent",    "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim","rgba(41,98,255,0.12)");
-        Self {
-            bg:            s.color_or_owned("surface",      "#1e222d"),
-            border:        s.color_or_owned("border_strong","#363a45"),
-            header_text:   s.color_or_owned("fg_0",         "#ffffff"),
-            tab_accent:    accent,
-            tab_bg_active: accent_dim,
-            fallback:      TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl SidebarTheme for StyledSidebarTheme {
-    fn bg(&self)                      -> &str { &self.bg }
-    fn border(&self)                  -> &str { &self.border }
-    fn header_bg(&self)               -> &str { &self.bg }
-    fn header_text(&self)             -> &str { &self.header_text }
-    fn header_icon(&self)             -> &str { self.fallback.header_icon() }
-    fn divider(&self)                 -> &str { &self.border }
-    fn action_icon_normal(&self)      -> &str { self.fallback.action_icon_normal() }
-    fn action_icon_hover(&self)       -> &str { self.fallback.action_icon_hover() }
-    fn scrollbar_thumb(&self)         -> &str { self.fallback.scrollbar_thumb() }
-    fn scrollbar_thumb_active(&self)  -> &str { self.fallback.scrollbar_thumb_active() }
-    fn tab_text_active(&self)         -> &str { &self.header_text }
-    fn tab_text_inactive(&self)       -> &str { self.fallback.tab_text_inactive() }
-    fn tab_accent(&self)              -> &str { &self.tab_accent }
-    fn tab_bg_active(&self)           -> &str { &self.tab_bg_active }
-    fn tab_bg_hover(&self)            -> &str { self.fallback.tab_bg_hover() }
-    fn action_bg_hover(&self)         -> &str { self.fallback.action_bg_hover() }
-    fn chevron_strip_bg(&self)        -> &str { self.fallback.chevron_strip_bg() }
-    fn accent(&self)                  -> &str { &self.tab_accent }
-    fn on_accent_text(&self)          -> &str { self.fallback.on_accent_text() }
-    fn content_text(&self)            -> &str { self.fallback.content_text() }
-    fn content_muted_text(&self)      -> &str { self.fallback.content_muted_text() }
-    fn section_header_text(&self)     -> &str { self.fallback.section_header_text() }
-    fn sub_label_text(&self)          -> &str { self.fallback.sub_label_text() }
-    fn radio_dot_inactive(&self)      -> &str { self.fallback.radio_dot_inactive() }
-    fn panel_row_bg_active(&self)     -> &str { self.fallback.panel_row_bg_active() }
-    fn panel_row_bg_inactive(&self)   -> &str { self.fallback.panel_row_bg_inactive() }
-    fn panel_close_icon(&self)        -> &str { self.fallback.panel_close_icon() }
-}
-
-fn sidebar_settings_from_styles(s: &StyleManager) -> SidebarSettings {
+/// Builds `SidebarSettings` from the layout's live token set (H1 Brief 9,
+/// §3 "StyleManager — removed") — replaces the pre-H1 `StyledSidebarTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn sidebar_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> SidebarSettings {
     SidebarSettings {
-        theme: Box::new(StyledSidebarTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultSidebarStyle>::default(),
     }
 }
@@ -110,7 +53,7 @@ pub struct SidebarBuilder<'a> {
     overflow:       OverflowMode,
     settings:       Option<SidebarSettings>,
     /// Override only the colour-token bundle.  Wins over the
-    /// `StyleManager`-derived default but loses to a full
+    /// token-set-derived default but loses to a full
     /// `.settings(...)` call.
     theme_override: Option<Box<dyn SidebarTheme>>,
     /// Override only the geometry bundle.  Same precedence rules as
@@ -231,9 +174,9 @@ impl<'a> SidebarBuilder<'a> {
         };
 
         // Resolve settings: explicit `.settings(...)` wins outright,
-        // otherwise build from StyleManager and then patch in any
-        // `.theme(...)` / `.style(...)` overrides.
-        let mut settings = self.settings.unwrap_or_else(|| sidebar_settings_from_styles(layout.styles()));
+        // otherwise build from the layout's live token set and then patch
+        // in any `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| sidebar_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

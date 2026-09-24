@@ -18,7 +18,7 @@
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
-use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, StyleManager};
+use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 use crate::ui::widgets::composite::blackbox_panel::input::{
@@ -29,40 +29,15 @@ use crate::ui::widgets::composite::blackbox_panel::state::BlackboxState;
 use crate::ui::widgets::composite::blackbox_panel::style::{BlackboxStyle, DefaultBlackboxStyle};
 use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::blackbox_panel::types::{BlackboxRenderKind, BlackboxView};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledBlackboxTheme
-// =============================================================================
-
-struct StyledBlackboxTheme {
-    bg:          String,
-    border:      String,
-    header_bg:   String,
-    header_text: String,
-}
-
-impl StyledBlackboxTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        Self {
-            bg:          s.color_or_owned("surface_0",  "#1a1d28"),
-            border:      s.color_or_owned("border",     "#363a45"),
-            header_bg:   s.color_or_owned("surface",    "#1e222d"),
-            header_text: s.color_or_owned("fg_0",       "#ffffff"),
-        }
-    }
-}
-
-impl BlackboxTheme for StyledBlackboxTheme {
-    fn bg(&self)          -> &str { &self.bg }
-    fn border(&self)      -> &str { &self.border }
-    fn header_bg(&self)   -> &str { &self.header_bg }
-    fn header_text(&self) -> &str { &self.header_text }
-    fn divider(&self)     -> &str { &self.border }
-}
-
-fn blackbox_settings_from_styles(s: &StyleManager) -> BlackboxPanelSettings {
+/// Builds `BlackboxPanelSettings` from the layout's live token set (H1
+/// Brief 9, §3 "StyleManager — removed") — replaces the pre-H1
+/// `StyledBlackboxTheme` bridge, which hand-copied a handful of
+/// `StyleManager` keys with no fallback for `divider`.
+fn blackbox_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> BlackboxPanelSettings {
     BlackboxPanelSettings {
-        theme: Box::new(StyledBlackboxTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultBlackboxStyle>::default(),
     }
 }
@@ -132,7 +107,7 @@ impl<'a> BlackboxBuilder<'a> {
     ) -> Option<BlackboxPanelNode> {
         let state    = self.state.expect("BlackboxBuilder: .state(...) is required");
         let view     = self.view.expect("BlackboxBuilder: .view(...) is required");
-        let mut settings = self.settings.unwrap_or_else(|| blackbox_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| blackbox_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

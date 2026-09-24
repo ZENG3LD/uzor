@@ -12,85 +12,25 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{DropdownHandle, DropdownNode, LayoutManager, LayoutNodeId, StyleManager};
+use crate::layout::{DropdownHandle, DropdownNode, LayoutManager, LayoutNodeId};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::dropdown::input::register_layout_manager_dropdown;
 use crate::ui::widgets::composite::dropdown::settings::DropdownSettings;
 use crate::ui::widgets::composite::dropdown::style::{DefaultDropdownStyle, DropdownStyle};
 use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 use crate::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownRenderKind, DropdownView, DropdownViewKind, SubmenuWidth,
 };
 
-// =============================================================================
-// StyledDropdownTheme
-// =============================================================================
-
-struct StyledDropdownTheme {
-    bg:               String,
-    border:           String,
-    item_bg_hover:    String,
-    item_bg_selected: String,
-    item_text:        String,
-    accent:           String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:         TokenTheme,
-}
-
-impl StyledDropdownTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent     = s.color_or_owned("accent",    "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim","rgba(41,98,255,0.15)");
-        Self {
-            bg:               s.color_or_owned("surface",       "#1e222d"),
-            border:           s.color_or_owned("border_strong", "#363a45"),
-            item_bg_hover:    s.color_or_owned("surface_raised","#2a2e39"),
-            item_bg_selected: accent_dim,
-            item_text:        s.color_or_owned("fg_1",          "#d1d4dc"),
-            accent,
-            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl DropdownTheme for StyledDropdownTheme {
-    fn bg(&self)                    -> &str { &self.bg }
-    fn border(&self)                -> &str { &self.border }
-    fn shadow(&self)                -> &str { self.fallback.shadow() }
-    fn item_bg_normal(&self)        -> &str { &self.bg }
-    fn item_bg_hover(&self)         -> &str { &self.item_bg_hover }
-    fn item_bg_selected(&self)      -> &str { &self.item_bg_selected }
-    fn item_bg_danger_hover(&self)  -> &str { self.fallback.item_bg_danger_hover() }
-    fn item_text(&self)             -> &str { &self.item_text }
-    fn item_text_hover(&self)       -> &str { self.fallback.item_text_hover() }
-    fn item_text_disabled(&self)    -> &str { self.fallback.item_text_disabled() }
-    fn item_text_danger(&self)      -> &str { self.fallback.item_text_danger() }
-    fn header_text(&self)           -> &str { self.fallback.header_text() }
-    fn header_border(&self)         -> &str { &self.border }
-    fn separator(&self)             -> &str { &self.border }
-    fn shortcut_text(&self)         -> &str { self.fallback.shortcut_text() }
-    fn caret_color(&self)           -> &str { self.fallback.caret_color() }
-    fn toggle_on(&self)             -> &str { &self.accent }
-    fn toggle_off(&self)            -> &str { self.fallback.toggle_off() }
-    fn toggle_thumb(&self)          -> &str { self.fallback.toggle_thumb() }
-    fn trigger_bg(&self)            -> &str { &self.bg }
-    fn trigger_bg_hover(&self)      -> &str { &self.item_bg_hover }
-    fn trigger_border(&self)        -> &str { &self.border }
-    fn trigger_text(&self)          -> &str { &self.item_text }
-    fn trigger_arrow(&self)         -> &str { self.fallback.trigger_arrow() }
-    fn checkbox_border(&self)       -> &str { self.fallback.checkbox_border() }
-    fn checkbox_checked(&self)      -> &str { &self.accent }
-    fn cell_bg_hover(&self)         -> &str { &self.item_bg_hover }
-    fn cell_border(&self)           -> &str { &self.border }
-}
-
-fn dropdown_settings_from_styles(s: &StyleManager) -> DropdownSettings {
+/// Builds `DropdownSettings` from the layout's live token set (H1 Brief 9,
+/// §3 "StyleManager — removed") — replaces the pre-H1 `StyledDropdownTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn dropdown_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> DropdownSettings {
     DropdownSettings {
-        theme: Box::new(StyledDropdownTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultDropdownStyle>::default(),
     }
 }
@@ -115,7 +55,7 @@ pub struct DropdownBuilder<'a> {
     overflow:         OverflowMode,
     settings:         Option<DropdownSettings>,
     /// Override only the colour-token bundle.  Wins over the
-    /// `StyleManager`-derived default but loses to a full
+    /// token-set-derived default but loses to a full
     /// `.settings(...)` call.
     theme_override:   Option<Box<dyn DropdownTheme>>,
     /// Override only the geometry bundle.
@@ -268,7 +208,7 @@ impl<'a> DropdownBuilder<'a> {
             submenu_width:self.submenu_width,
         };
 
-        let mut settings = self.settings.unwrap_or_else(|| dropdown_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| dropdown_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

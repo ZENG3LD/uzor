@@ -15,7 +15,7 @@
 //! ```
 
 use crate::layout::docking::DockPanel;
-use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, StyleManager};
+use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::chrome::input::register_layout_manager_chrome;
 use crate::ui::widgets::composite::chrome::settings::ChromeSettings;
@@ -24,59 +24,17 @@ use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 use crate::ui::widgets::composite::chrome::types::{
     ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledChromeTheme — reads accent/fg from StyleManager, delegates rest
-// =============================================================================
-
-struct StyledChromeTheme {
-    background:  String,
-    icon_normal: String,
-    icon_hover:  String,
-    button_hover:String,
-    tab_accent:  String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:    TokenTheme,
-}
-
-impl StyledChromeTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        Self {
-            background:   s.color_or_owned("surface",  "#131722"),
-            icon_normal:  s.color_or_owned("fg_2",     "#a6adc8"),
-            icon_hover:   s.color_or_owned("fg_0",     "#cdd6f4"),
-            button_hover: s.color_or_owned("surface_raised", "#1f2937"),
-            tab_accent:   s.color_or_owned("accent",   "#3b82f6"),
-            fallback:     TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl ChromeTheme for StyledChromeTheme {
-    fn background(&self)      -> &str { &self.background }
-    fn icon_normal(&self)     -> &str { &self.icon_normal }
-    fn icon_hover(&self)      -> &str { &self.icon_hover }
-    fn button_hover(&self)    -> &str { &self.button_hover }
-    fn close_hover(&self)     -> &str { self.fallback.close_hover() }
-    fn separator(&self)       -> &str { self.fallback.separator() }
-    fn tab_bg_normal(&self)   -> &str { self.fallback.tab_bg_normal() }
-    fn tab_bg_hover(&self)    -> &str { &self.button_hover }
-    fn tab_bg_active(&self)   -> &str { self.fallback.tab_bg_active() }
-    fn tab_text_normal(&self) -> &str { &self.icon_normal }
-    fn tab_text_hover(&self)  -> &str { &self.icon_hover }
-    fn tab_text_active(&self) -> &str { self.fallback.tab_text_active() }
-    fn tab_accent(&self)      -> &str { &self.tab_accent }
-    fn drag_zone_bg(&self)    -> &str { self.fallback.drag_zone_bg() }
-    fn tooltip_bg(&self)      -> &str { self.fallback.tooltip_bg() }
-    fn tooltip_text(&self)    -> &str { self.fallback.tooltip_text() }
-}
-
-fn chrome_settings_from_styles(s: &StyleManager) -> ChromeSettings {
+/// Builds `ChromeSettings` from the layout's live token set (H1 Brief 9, §3
+/// "StyleManager — removed") — replaces the pre-H1 `StyledChromeTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest. `TokenTheme` covers every
+/// `ChromeTheme` method uniformly from whatever token set is currently
+/// active.
+fn chrome_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> ChromeSettings {
     ChromeSettings {
-        theme: Box::new(StyledChromeTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultChromeStyle>::default(),
     }
 }
@@ -212,7 +170,7 @@ impl<'a> ChromeBuilder<'a> {
             time_ms,
         };
 
-        let mut settings = self.settings.unwrap_or_else(|| chrome_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| chrome_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

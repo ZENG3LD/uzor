@@ -15,7 +15,7 @@
 //! ```
 
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, ResizeEdge, StyleManager, ToolbarHandle, ToolbarNode};
+use crate::layout::{LayoutManager, LayoutNodeId, ResizeEdge, ToolbarHandle, ToolbarNode};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
@@ -25,73 +25,15 @@ use crate::ui::widgets::composite::toolbar::theme::ToolbarTheme;
 use crate::ui::widgets::composite::toolbar::types::{
     ChromeStripView, ToolbarItem, ToolbarRenderKind, ToolbarSection, ToolbarView,
 };
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledToolbarTheme — reads bg/fg/accent from StyleManager, delegates rest
-// =============================================================================
-
-struct StyledToolbarTheme {
-    bg:               String,
-    item_bg_hover:    String,
-    item_bg_active:   String,
-    item_text_normal: String,
-    item_text_active: String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:         TokenTheme,
-}
-
-impl StyledToolbarTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent     = s.color_or_owned("accent",     "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.15)");
-        Self {
-            bg:               s.color_or_owned("surface",       "#1e222d"),
-            item_bg_hover:    s.color_or_owned("surface_raised","#2a2e39"),
-            item_bg_active:   accent_dim,
-            item_text_normal: s.color_or_owned("fg_1",          "#d1d4dc"),
-            item_text_active: accent,
-            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl ToolbarTheme for StyledToolbarTheme {
-    fn bg(&self)                     -> &str { &self.bg }
-    fn separator(&self)              -> &str { self.fallback.separator() }
-    fn item_bg_normal(&self)         -> &str { self.fallback.item_bg_normal() }
-    fn item_bg_hover(&self)          -> &str { &self.item_bg_hover }
-    fn item_bg_active(&self)         -> &str { &self.item_bg_active }
-    fn item_bg_pressed(&self)        -> &str { self.fallback.item_bg_pressed() }
-    fn item_text_normal(&self)       -> &str { &self.item_text_normal }
-    fn item_text_hover(&self)        -> &str { self.fallback.item_text_hover() }
-    fn item_text_active(&self)       -> &str { &self.item_text_active }
-    fn item_text_disabled(&self)     -> &str { self.fallback.item_text_disabled() }
-    fn icon_normal(&self)            -> &str { &self.item_text_normal }
-    fn icon_hover(&self)             -> &str { self.fallback.icon_hover() }
-    fn icon_active(&self)            -> &str { &self.item_text_active }
-    fn icon_disabled(&self)          -> &str { self.fallback.icon_disabled() }
-    fn scroll_chevron_color(&self)   -> &str { self.fallback.scroll_chevron_color() }
-    fn label_text(&self)             -> &str { self.fallback.label_text() }
-    fn clock_text(&self)             -> &str { &self.item_text_normal }
-    fn chrome_tab_bg_active(&self)   -> &str { self.fallback.chrome_tab_bg_active() }
-    fn chrome_tab_bg_inactive(&self) -> &str { self.fallback.chrome_tab_bg_inactive() }
-    fn chrome_tab_bg_hover(&self)    -> &str { &self.item_bg_hover }
-    fn chrome_tab_text_active(&self) -> &str { self.fallback.chrome_tab_text_active() }
-    fn chrome_tab_text_inactive(&self) -> &str { self.fallback.chrome_tab_text_inactive() }
-    fn chrome_ctrl_hover(&self)      -> &str { self.fallback.chrome_ctrl_hover() }
-    fn chrome_close_hover(&self)     -> &str { self.fallback.chrome_close_hover() }
-    fn chrome_ctrl_icon(&self)       -> &str { &self.item_text_normal }
-    fn color_swatch_border(&self)    -> &str { self.fallback.color_swatch_border() }
-    fn split_chevron(&self)          -> &str { self.fallback.split_chevron() }
-    fn split_divider(&self)          -> &str { self.fallback.split_divider() }
-}
-
-fn toolbar_settings_from_styles(s: &StyleManager) -> ToolbarSettings {
+/// Builds `ToolbarSettings` from the layout's live token set (H1 Brief 9,
+/// §3 "StyleManager — removed") — replaces the pre-H1 `StyledToolbarTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn toolbar_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> ToolbarSettings {
     ToolbarSettings {
-        theme: Box::new(StyledToolbarTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultToolbarStyle>::default(),
     }
 }
@@ -186,7 +128,7 @@ impl<'a> ToolbarBuilder<'a> {
             resize_edge: self.resize_edge,
         };
 
-        let mut settings = self.settings.unwrap_or_else(|| toolbar_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| toolbar_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

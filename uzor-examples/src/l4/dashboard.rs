@@ -6,10 +6,11 @@
 //!
 //! Chrome strip at top with "+" spawns extra windows.
 //!
-//! **StyleManager demo**: two "Mirage Dark" / "Mirage Light" theme buttons in the
-//! Settings panel switch the palette without touching any per-widget settings.
-//! All chrome buttons + panel backgrounds pick up the change automatically
-//! because `lm::*` builders re-read `layout.styles()` every frame.
+//! **Token-set demo**: two "Dark" / "Light" theme buttons in the Settings
+//! panel switch the active built-in token set without touching any
+//! per-widget settings. All chrome buttons + panel backgrounds pick up the
+//! change automatically because `lm::*` builders re-read `layout.tokens()`
+//! every frame.
 //!
 //! Run:
 //!
@@ -23,8 +24,8 @@ use uzor::framework::app::App;
 use uzor::layout::{EdgeSide, EdgeSlot};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
-use uzor::layout::{MirageDarkPreset, MirageLightPreset};
 use uzor::platform::types::CornerStyle;
+use uzor::tokens::{BuiltinSet, Tokens};
 use uzor::types::unsafe_widget_id;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
@@ -157,20 +158,20 @@ impl App<PaintPanel> for DashboardApp {
             if win.layout.was_clicked(&theme_dark_id) && self.current_theme != ThemeMode::Dark {
                 self.current_theme = ThemeMode::Dark;
                 // Use the LM helper so the agent log records both the
-                // preset apply and a complementary `app.theme.changed`
+                // token-set swap and a complementary `app.theme.changed`
                 // breadcrumb the agent can grep on.
-                win.layout.apply_style_preset(&MirageDarkPreset, "mirage_dark");
+                win.layout.apply_token_set(Tokens::builtin(BuiltinSet::Dark));
                 win.layout.agent_log_push(
                     "app.theme.changed",
-                    serde_json::json!({ "theme": "dark", "preset": "mirage_dark" }),
+                    serde_json::json!({ "theme": "dark", "preset": "dark" }),
                 );
             }
             if win.layout.was_clicked(&theme_light_id) && self.current_theme != ThemeMode::Light {
                 self.current_theme = ThemeMode::Light;
-                win.layout.apply_style_preset(&MirageLightPreset, "mirage_light");
+                win.layout.apply_token_set(Tokens::builtin(BuiltinSet::Light));
                 win.layout.agent_log_push(
                     "app.theme.changed",
-                    serde_json::json!({ "theme": "light", "preset": "mirage_light" }),
+                    serde_json::json!({ "theme": "light", "preset": "light" }),
                 );
             }
         }
@@ -281,7 +282,7 @@ impl App<PaintPanel> for DashboardApp {
                         unsafe_widget_id("settings:theme_dark"),
                         Rect { x: body_rect.x + pad, y: cy, width: theme_btn_w, height: row_h },
                     )
-                    .text("Mirage Dark")
+                    .text("Dark")
                     .active(current_theme == ThemeMode::Dark)
                     .build(layout, render);
 
@@ -289,7 +290,7 @@ impl App<PaintPanel> for DashboardApp {
                         unsafe_widget_id("settings:theme_light"),
                         Rect { x: body_rect.x + pad + theme_btn_w + gap, y: cy, width: theme_btn_w, height: row_h },
                     )
-                    .text("Mirage Light")
+                    .text("Light")
                     .active(current_theme == ThemeMode::Light)
                     .build(layout, render);
                     cy += row_h + gap;

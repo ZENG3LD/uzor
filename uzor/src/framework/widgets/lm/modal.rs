@@ -17,76 +17,25 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode, StyleManager};
+use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::modal::input::register_layout_manager_modal;
 use crate::ui::widgets::composite::modal::settings::ModalSettings;
 use crate::ui::widgets::composite::modal::style::{DefaultModalStyle, ModalStyle};
 use crate::ui::widgets::composite::modal::theme::ModalTheme;
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 use crate::ui::widgets::composite::modal::types::{
     BackdropKind, FooterBtn, ModalRenderKind, ModalView, WizardPageInfo,
 };
 use crate::types::OverflowMode;
 
-// =============================================================================
-// StyledModalTheme — reads bg/border from StyleManager, delegates rest
-// =============================================================================
-
-struct StyledModalTheme {
-    bg:          String,
-    border:      String,
-    header_text: String,
-    tab_accent:  String,
-    tab_bg_active: String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:    TokenTheme,
-}
-
-impl StyledModalTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent = s.color_or_owned("accent", "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.12)");
-        Self {
-            bg:            s.color_or_owned("surface",      "#1e222d"),
-            border:        s.color_or_owned("border_strong","#363a45"),
-            header_text:   s.color_or_owned("fg_0",         "#ffffff"),
-            tab_accent:    accent.clone(),
-            tab_bg_active: accent_dim,
-            fallback:      TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl ModalTheme for StyledModalTheme {
-    fn bg(&self)                  -> &str { &self.bg }
-    fn border(&self)              -> &str { &self.border }
-    fn shadow(&self)              -> &str { self.fallback.shadow() }
-    fn header_bg(&self)           -> &str { &self.bg }
-    fn header_text(&self)         -> &str { &self.header_text }
-    fn divider(&self)             -> &str { &self.border }
-    fn footer_bg(&self)           -> &str { &self.bg }
-    fn footer_border(&self)       -> &str { &self.border }
-    fn close_icon(&self)          -> &str { self.fallback.close_icon() }
-    fn close_icon_hover(&self)    -> &str { self.fallback.close_icon_hover() }
-    fn backdrop_dim(&self)        -> &str { self.fallback.backdrop_dim() }
-    fn backdrop_full(&self)       -> &str { self.fallback.backdrop_full() }
-    fn sidebar_bg(&self)          -> &str { &self.bg }
-    fn sidebar_border(&self)      -> &str { &self.border }
-    fn tab_text_active(&self)     -> &str { &self.header_text }
-    fn tab_text_inactive(&self)   -> &str { self.fallback.tab_text_inactive() }
-    fn tab_accent(&self)          -> &str { &self.tab_accent }
-    fn tab_bg_active(&self)       -> &str { &self.tab_bg_active }
-    fn tab_bg_hover(&self)        -> &str { self.fallback.tab_bg_hover() }
-    fn wizard_dot_inactive(&self) -> &str { self.fallback.wizard_dot_inactive() }
-    fn wizard_dot_active(&self)   -> &str { &self.tab_accent }
-}
-
-fn modal_settings_from_styles(s: &StyleManager) -> ModalSettings {
+/// Builds `ModalSettings` from the layout's live token set (H1 Brief 9, §3
+/// "StyleManager — removed") — replaces the pre-H1 `StyledModalTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn modal_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> ModalSettings {
     ModalSettings {
-        theme: Box::new(StyledModalTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultModalStyle>::default(),
     }
 }
@@ -110,7 +59,7 @@ pub struct ModalBuilder<'a> {
     resizable:    bool,
     settings:     Option<ModalSettings>,
     /// Override only the colour-token bundle.  Wins over the
-    /// `StyleManager`-derived default but loses to a full
+    /// token-set-derived default but loses to a full
     /// `.settings(...)` call.
     theme_override: Option<Box<dyn ModalTheme>>,
     /// Override only the geometry bundle.  Same precedence rules as
@@ -257,9 +206,9 @@ impl<'a> ModalBuilder<'a> {
         };
 
         // Resolve settings: explicit `.settings(...)` wins outright,
-        // otherwise build from StyleManager and then patch in any
-        // `.theme(...)` / `.style(...)` overrides.
-        let mut settings = self.settings.unwrap_or_else(|| modal_settings_from_styles(layout.styles()));
+        // otherwise build from the layout's live token set and then patch
+        // in any `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| modal_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

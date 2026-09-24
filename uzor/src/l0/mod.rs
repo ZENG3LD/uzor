@@ -129,19 +129,6 @@ pub mod blackbox_panel {
     };
 }
 
-/// Style manager — pure-stdlib service that maps token names to
-/// colours / sizes / textures, plus the built-in mirage palettes.
-/// No L1 / L2 / L3 / WM dependency — backed by `HashMap<String, _>`.
-pub mod style {
-    pub use crate::layout::styles::{
-        StyleManager,
-        TextureKind,
-        Preset,
-        MirageDarkPreset,
-        MirageLightPreset,
-    };
-}
-
 /// Atomic widget paint surface — pure render functions for the
 /// building blocks of composites.  No event handlers, no L1 / L2 /
 /// L3 dependencies.  Tessera consumes these with its own

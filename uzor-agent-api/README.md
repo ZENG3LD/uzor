@@ -82,7 +82,7 @@ changes.
 POST /lm/click_widget       {window:"main", widget_id:"settings:theme_dark"}
 POST /lm/modal/open         {window:"main", modal_id:"settings"}
 POST /lm/sidebar/toggle     {window:"main", sidebar_id:"left"}
-POST /lm/style_preset       {name:"mirage_dark"}
+POST /lm/style_preset       {name:"dark"}
 POST /window/spawn          {key:"side", title:"...", width:800, height:600}
 POST /blackbox/chart-btc/action {name:"set_symbol", args:{symbol:"ETH"}}
 ```
@@ -109,7 +109,7 @@ Screenshot first call patches the vello surface with `COPY_SRC`
   "root": {
     "current_window": "main",
     "window_count": 1,
-    "style_preset": "mirage_dark"
+    "style_preset": "dark"
   },
   "windows": [
     {
@@ -155,8 +155,8 @@ LM internals (`lm.*`), the app (`app.*`), and blackbox handlers
 seq 2  lm.click            settings:theme_light @ (206.5, 127)
 seq 3  lm.dispatch         Unhandled(theme_light)
 seq 4  lm.agent_command    ClickWidget ok=true
-seq 5  lm.style.preset     mirage_light
-seq 6  app.theme.changed   theme=light, preset=mirage_light
+seq 5  lm.style.preset     light
+seq 6  app.theme.changed   theme=light, preset=light
 seq 7  tree-debug.toggle_synced_root  {show_synced_root:false}
 ```
 

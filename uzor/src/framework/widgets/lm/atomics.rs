@@ -10,181 +10,25 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, StyleManager};
+use crate::layout::{LayoutManager, LayoutNodeId};
 use crate::render::RenderContext;
 use crate::types::{WidgetId, WidgetState};
-
-// =============================================================================
-// StyledButtonTheme — reads from StyleManager, delegates rest to Default
-// =============================================================================
 
 use crate::ui::widgets::atomic::button::theme::ButtonTheme;
 use crate::ui::widgets::atomic::button::style::{ButtonStyle, DefaultButtonStyle};
 use crate::ui::widgets::atomic::button::settings::ButtonSettings;
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-struct StyledButtonTheme {
-    bg_normal:               String,
-    bg_hover:                String,
-    bg_active:               String,
-    bg_pressed:              String,
-    bg_disabled:             String,
-    text_normal:             String,
-    text_hover:              String,
-    text_active:             String,
-    text_disabled:           String,
-    icon_normal:             String,
-    icon_hover:              String,
-    icon_active:             String,
-    icon_disabled:           String,
-    border_normal:           String,
-    border_hover:            String,
-    border_focused:          String,
-    accent:                  String,
-    danger:                  String,
-    success:                 String,
-    warning:                 String,
-    toolbar_item_bg_hover:   String,
-    toolbar_item_bg_active:  String,
-    toolbar_item_text:       String,
-    toolbar_item_text_hover: String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:                TokenTheme,
-}
-
-impl StyledButtonTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent     = s.color_or_owned("accent",         "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim",     "rgba(41,98,255,0.15)");
-        let surface    = s.color_or_owned("surface",        "transparent");
-        let surface_r  = s.color_or_owned("surface_raised", "#2a2e39");
-        let fg_0       = s.color_or_owned("fg_0",           "#ffffff");
-        let fg_1       = s.color_or_owned("fg_1",           "#d1d5db");
-        let fg_2       = s.color_or_owned("fg_2",           "#878B91");
-        let fg_3       = s.color_or_owned("fg_3",           "#555860");
-        let border_c   = s.color_or_owned("border",         "rgba(255,255,255,0.06)");
-        let error_c    = s.color_or_owned("error",          "#ef5350");
-        let ok_c       = s.color_or_owned("ok",             "#10b981");
-        let warn_c     = s.color_or_owned("warn",           "#f59e0b");
-        Self {
-            bg_normal:               "transparent".into(),     // button text-on-surface by default
-            bg_hover:                accent_dim.clone(),
-            bg_active:               accent.clone(),
-            bg_pressed:              accent.clone(),
-            bg_disabled:             surface.clone(),
-            text_normal:             fg_1.clone(),
-            text_hover:              fg_0.clone(),
-            text_active:             fg_0.clone(),
-            text_disabled:           fg_3.clone(),
-            icon_normal:             fg_2.clone(),
-            icon_hover:              fg_0.clone(),
-            icon_active:             fg_0.clone(),
-            icon_disabled:           fg_3.clone(),
-            border_normal:           border_c.clone(),
-            border_hover:            border_c.clone(),
-            border_focused:          accent.clone(),
-            accent:                  accent.clone(),
-            danger:                  error_c,
-            success:                 ok_c,
-            warning:                 warn_c,
-            toolbar_item_bg_hover:   surface_r.clone(),
-            toolbar_item_bg_active:  accent.clone(),
-            toolbar_item_text:       fg_1,
-            toolbar_item_text_hover: fg_0,
-            fallback:                TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl ButtonTheme for StyledButtonTheme {
-    fn button_bg_normal(&self)   -> &str { &self.bg_normal }
-    fn button_bg_hover(&self)    -> &str { &self.bg_hover }
-    fn button_bg_pressed(&self)  -> &str { &self.bg_pressed }
-    fn button_bg_active(&self)   -> &str { &self.bg_active }
-    fn button_bg_disabled(&self) -> &str { &self.bg_disabled }
-
-    fn button_text_normal(&self)   -> &str { &self.text_normal }
-    fn button_text_hover(&self)    -> &str { &self.text_hover }
-    fn button_text_active(&self)   -> &str { &self.text_active }
-    fn button_text_disabled(&self) -> &str { &self.text_disabled }
-
-    fn button_icon_normal(&self)   -> &str { &self.icon_normal }
-    fn button_icon_hover(&self)    -> &str { &self.icon_hover }
-    fn button_icon_active(&self)   -> &str { &self.icon_active }
-    fn button_icon_disabled(&self) -> &str { &self.icon_disabled }
-
-    fn button_border_normal(&self)  -> &str { &self.border_normal }
-    fn button_border_hover(&self)   -> &str { &self.border_hover }
-    fn button_border_focused(&self) -> &str { &self.border_focused }
-
-    fn button_accent(&self)   -> &str { &self.accent }
-    fn button_danger(&self)   -> &str { &self.danger }
-    fn button_success(&self)  -> &str { &self.success }
-    fn button_warning(&self)  -> &str { &self.warning }
-
-    fn toolbar_item_bg_hover(&self)    -> &str { &self.toolbar_item_bg_hover }
-    fn toolbar_item_bg_active(&self)   -> &str { &self.toolbar_item_bg_active }
-    fn toolbar_item_text(&self)        -> &str { &self.toolbar_item_text }
-    fn toolbar_item_text_hover(&self)  -> &str { &self.toolbar_item_text_hover }
-    fn toolbar_item_text_active(&self) -> &str { self.fallback.toolbar_item_text_active() }
-    fn toolbar_separator(&self)        -> &str { self.fallback.toolbar_separator() }
-    fn toolbar_background(&self)       -> &str { self.fallback.toolbar_background() }
-    fn toolbar_accent(&self)           -> &str { &self.accent }
-
-    fn button_primary_bg(&self)           -> &str { &self.accent }
-    fn button_primary_bg_hover(&self)     -> &str { self.fallback.button_primary_bg_hover() }
-    fn button_primary_text(&self)         -> &str { self.fallback.button_primary_text() }
-    fn button_danger_bg(&self)            -> &str { self.fallback.button_danger_bg() }
-    fn button_danger_bg_hover(&self)      -> &str { self.fallback.button_danger_bg_hover() }
-    fn button_danger_border(&self)        -> &str { self.fallback.button_danger_border() }
-    fn button_danger_border_hover(&self)  -> &str { self.fallback.button_danger_border_hover() }
-    fn button_danger_text(&self)          -> &str { &self.danger }
-    fn button_secondary_hover_bg(&self)   -> &str { self.fallback.button_secondary_hover_bg() }
-    fn button_secondary_text_muted(&self) -> &str { self.fallback.button_secondary_text_muted() }
-    fn button_secondary_text(&self)       -> &str { self.fallback.button_secondary_text() }
-    fn button_ghost_idle_bg(&self)        -> &str { self.fallback.button_ghost_idle_bg() }
-    fn button_utility_bg(&self)           -> &str { self.fallback.button_utility_bg() }
-    fn button_utility_bg_hover(&self)     -> &str { self.fallback.button_utility_bg_hover() }
-
-    fn transparency_checker_a(&self) -> &str { self.fallback.transparency_checker_a() }
-    fn transparency_checker_b(&self) -> &str { self.fallback.transparency_checker_b() }
-}
-
-struct StyledButtonStyle {
-    radius:    f64,
-    padding_x: f64,
-    font_size: f64,
-    fallback:  DefaultButtonStyle,
-}
-
-impl StyledButtonStyle {
-    fn from_styles(s: &StyleManager) -> Self {
-        Self {
-            radius:    s.size_or("button_radius",    4.0),
-            padding_x: s.size_or("button_padding",   8.0),
-            font_size: s.size_or("button_font_size", 13.0),
-            fallback:  DefaultButtonStyle,
-        }
-    }
-}
-
-impl ButtonStyle for StyledButtonStyle {
-    fn radius(&self)             -> f64  { self.radius }
-    fn padding_x(&self)          -> f64  { self.padding_x }
-    fn padding_y(&self)          -> f64  { self.fallback.padding_y() }
-    fn icon_size(&self)          -> f64  { self.fallback.icon_size() }
-    fn font_size(&self)          -> f64  { self.font_size }
-    fn gap(&self)                -> f64  { self.fallback.gap() }
-    fn border_width(&self)       -> f64  { self.fallback.border_width() }
-    fn show_active_border(&self) -> bool { self.fallback.show_active_border() }
-}
-
-fn button_settings_from_styles(s: &StyleManager) -> ButtonSettings {
+/// Builds `ButtonSettings` from the layout's live token set (H1 Brief 9,
+/// §3 "StyleManager — removed") — replaces the pre-H1 `StyledButtonTheme`/
+/// `StyledButtonStyle` bridge that hand-copied a handful of `StyleManager`
+/// keys and fell back to a dark `TokenTheme` for the rest. `TokenTheme`
+/// covers every `ButtonTheme` method uniformly from whatever token set is
+/// currently active, so there is no fallback split to maintain any more.
+fn button_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> ButtonSettings {
     ButtonSettings {
-        theme: Box::new(StyledButtonTheme::from_styles(s)),
-        style: Box::new(StyledButtonStyle::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
+        style: Box::new(DefaultButtonStyle),
     }
 }
 
@@ -312,7 +156,7 @@ impl<'a> ButtonBuilder<'a> {
             active_border: self.active_border,
             hover_chevron: self.hover_chevron,
         };
-        let mut settings = self.settings.unwrap_or_else(|| button_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| button_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
         let ws = self.widget_state.unwrap_or_else(|| {
@@ -336,28 +180,9 @@ use crate::ui::widgets::atomic::text::theme::TextTheme;
 use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use crate::render::{TextAlign, TextBaseline};
 
-struct StyledTextTheme {
-    color:       String,
-    color_hover: String,
-}
-
-impl StyledTextTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        Self {
-            color:       s.color_or_owned("fg_1", "#d1d4dc"),
-            color_hover: s.color_or_owned("fg_0", "#ffffff"),
-        }
-    }
-}
-
-impl TextTheme for StyledTextTheme {
-    fn text_color(&self)       -> &str { &self.color }
-    fn text_color_hover(&self) -> &str { &self.color_hover }
-}
-
-fn text_settings_from_styles(s: &StyleManager) -> TextSettings {
+fn text_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> TextSettings {
     TextSettings {
-        theme: Box::new(StyledTextTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::new(DefaultTextStyle),
     }
 }
@@ -440,7 +265,7 @@ impl<'a> TextBuilder<'a> {
             overflow: self.overflow,
             hovered:  self.hovered,
         };
-        let mut settings = self.settings.unwrap_or_else(|| text_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| text_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
         register_layout_manager_text(

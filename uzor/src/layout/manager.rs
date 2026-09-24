@@ -26,7 +26,7 @@ use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
-use super::styles::StyleManager;
+use crate::tokens::{BuiltinSet, Tokens};
 use super::branch::{WindowBranch, WindowSlot};
 use super::registry::{
     CompositeKind, CompositeRegistration, DismissFrame,
@@ -90,9 +90,12 @@ pub struct LayoutManager<P: DockPanel> {
     /// Frame timestamp, set by the runtime once per frame.
     pub(crate) frame_time_ms: f64,
 
-    /// Centralised style/colour/size/texture registry.  Synced root —
-    /// every window reads from the same palette.
-    styles: StyleManager,
+    /// Active token set (H1 token contract). Synced root — every window
+    /// reads from the same palette. Replaces the pre-H1 `StyleManager`
+    /// field (H1 Brief 9, §3 "StyleManager — removed"): live switching is
+    /// swapping this `Arc` wholesale via [`Self::set_tokens`], not editing
+    /// fields in place.
+    tokens: std::sync::Arc<Tokens>,
 
     /// Per-node sync classification.  Tells the visualiser (and future
     /// promote/demote operations) which LM nodes are global, opt-in
@@ -127,7 +130,7 @@ impl<P: DockPanel> LayoutManager<P> {
             current_window: None,
             z_layers: ZLayerTable::default(),
             frame_time_ms: 0.0,
-            styles: StyleManager::default(),
+            tokens: Tokens::builtin(BuiltinSet::Dark),
             sync_registry: super::sync::SyncRegistry::defaults(),
             agent_log: super::agent::AgentLog::default(),
             blackbox_agents: std::collections::HashMap::new(),
@@ -216,20 +219,19 @@ impl<P: DockPanel> LayoutManager<P> {
         self.agent_log_push("note", payload)
     }
 
-    /// Apply a named style preset and write a `lm.style.preset` entry
-    /// to the agent log.  Apps should call this instead of
-    /// `styles_mut().apply(...)` so external agents see the
-    /// transition without polling.
-    pub fn apply_style_preset<Pr: super::styles::Preset + ?Sized>(
-        &mut self,
-        preset: &Pr,
-        name: impl Into<String>,
-    ) {
-        let name_string = name.into();
-        self.styles.apply_named(preset, name_string.clone());
+    /// Swap the active token set and write a `lm.style.preset` entry to the
+    /// agent log.  Apps should call this instead of `set_tokens(...)`
+    /// directly so external agents see the transition without polling.
+    /// Replaces the pre-H1 `apply_style_preset(&dyn Preset, name)` (H1
+    /// Brief 9, §3 "StyleManager — removed") — the preset's own name now
+    /// travels inside [`Tokens::name`] (set by the loader / [`Tokens::builtin`])
+    /// instead of being supplied separately by the caller.
+    pub fn apply_token_set(&mut self, tokens: std::sync::Arc<Tokens>) {
+        let name = tokens.name.clone().unwrap_or_else(|| "unnamed".to_string());
+        self.tokens = tokens;
         self.agent_log_push(
             "lm.style.preset",
-            serde_json::json!({ "name": name_string }),
+            serde_json::json!({ "name": name }),
         );
     }
 
@@ -612,25 +614,28 @@ impl<P: DockPanel> LayoutManager<P> {
         &mut self.cur_branch_mut().chrome_widget_state
     }
 
-    /// Read-only access to the centralised style/colour/size/texture registry.
+    /// Read-only access to the active token set.
     ///
-    /// `lm::*` builders call this to fall back to global palette tokens when no
-    /// per-call `Settings` were supplied via `.settings(...)`.
-    pub fn styles(&self) -> &StyleManager {
-        &self.styles
+    /// `lm::*` builders call this to build a [`crate::tokens::TokenTheme`]
+    /// when no per-call `Settings` were supplied via `.settings(...)`.
+    pub fn tokens(&self) -> &std::sync::Arc<Tokens> {
+        &self.tokens
     }
 
-    /// Mutable access to the style registry.
+    /// Swap the active token set wholesale.
     ///
-    /// Apps call this in `App::init` (or on theme-switch events) to configure
+    /// Apps call this in `App::init` (or on theme-switch events) to change
     /// the global palette:
     ///
     /// ```ignore
-    /// layout.styles_mut().set_color("accent", "#FBB26A");
-    /// layout.styles_mut().apply(&MirageDarkPreset);
+    /// layout.set_tokens(Tokens::builtin(BuiltinSet::Light));
     /// ```
-    pub fn styles_mut(&mut self) -> &mut StyleManager {
-        &mut self.styles
+    ///
+    /// No field-level mutation API — a token set is swapped wholesale, not
+    /// edited in place (H1 D6). Prefer [`Self::apply_token_set`] so the
+    /// switch is also visible in the agent log.
+    pub fn set_tokens(&mut self, tokens: std::sync::Arc<Tokens>) {
+        self.tokens = tokens;
     }
 
     /// Push a composite registration entry so [`Self::consume_event`] can

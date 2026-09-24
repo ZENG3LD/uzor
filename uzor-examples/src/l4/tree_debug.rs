@@ -148,9 +148,10 @@ pub fn render_layout_tree<P: DockPanel>(
     render.save();
     render.clip_rect(rect.x, rect.y, rect.width, rect.height);
 
-    // Background
-    let bg = layout.styles().color_or_owned("surface", "#16171D");
-    render.set_fill_color(bg.as_str());
+    // Background — this debug overlay reads the same chrome-surface role a
+    // real toolbar/status-bar uses (H1 Brief 9, §3 "StyleManager — removed").
+    let bg = layout.tokens().semantic.surface_app_chrome.to_css();
+    render.set_fill_color(&bg);
     render.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
     // Title

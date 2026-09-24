@@ -11,7 +11,7 @@
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, PopupHandle, PopupNode, StyleManager};
+use crate::layout::{LayoutManager, LayoutNodeId, PopupHandle, PopupNode};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::popup::input::register_layout_manager_popup;
@@ -21,67 +21,15 @@ use crate::ui::widgets::composite::popup::theme::PopupTheme;
 use crate::ui::widgets::composite::popup::types::{
     BackdropKind, PopupRenderKind, PopupView, PopupViewKind,
 };
-use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+use crate::tokens::{Tokens, TokenTheme};
 
-// =============================================================================
-// StyledPopupTheme — reads bg/fg/accent from StyleManager, delegates rest
-// =============================================================================
-
-struct StyledPopupTheme {
-    bg:                String,
-    border:            String,
-    item_bg_hover:     String,
-    item_bg_selected:  String,
-    item_text:         String,
-    accent:            String,
-    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
-    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
-    /// until then this is the least-literal fallback available.
-    fallback:          TokenTheme,
-}
-
-impl StyledPopupTheme {
-    fn from_styles(s: &StyleManager) -> Self {
-        let accent     = s.color_or_owned("accent",    "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim","rgba(41,98,255,0.15)");
-        Self {
-            bg:               s.color_or_owned("surface",       "#1e222d"),
-            border:           s.color_or_owned("border_strong", "#363a45"),
-            item_bg_hover:    s.color_or_owned("surface_raised","#2a2e39"),
-            item_bg_selected: accent_dim,
-            item_text:        s.color_or_owned("fg_1",          "#d1d4dc"),
-            accent:           accent,
-            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
-        }
-    }
-}
-
-impl PopupTheme for StyledPopupTheme {
-    fn bg(&self)                     -> &str { &self.bg }
-    fn border(&self)                 -> &str { &self.border }
-    fn shadow(&self)                 -> &str { self.fallback.shadow() }
-    fn item_bg_normal(&self)         -> &str { self.fallback.item_bg_normal() }
-    fn item_bg_hover(&self)          -> &str { &self.item_bg_hover }
-    fn item_bg_selected(&self)       -> &str { &self.item_bg_selected }
-    fn item_text(&self)              -> &str { &self.item_text }
-    fn item_text_hover(&self)        -> &str { self.fallback.item_text_hover() }
-    fn item_text_disabled(&self)     -> &str { self.fallback.item_text_disabled() }
-    fn item_text_danger(&self)       -> &str { self.fallback.item_text_danger() }
-    fn item_bg_danger_hover(&self)   -> &str { self.fallback.item_bg_danger_hover() }
-    fn header_text(&self)            -> &str { self.fallback.header_text() }
-    fn separator(&self)              -> &str { &self.border }
-    fn hex_input_bg(&self)           -> &str { self.fallback.hex_input_bg() }
-    fn hex_input_text(&self)         -> &str { self.fallback.hex_input_text() }
-    fn hex_input_border_focus(&self) -> &str { &self.accent }
-    fn hsv_indicator(&self)          -> &str { self.fallback.hsv_indicator() }
-    fn accent(&self)                 -> &str { &self.accent }
-    fn backdrop_dim(&self)           -> &str { self.fallback.backdrop_dim() }
-    fn grid_hover_halo(&self)        -> &str { self.fallback.grid_hover_halo() }
-}
-
-fn popup_settings_from_styles(s: &StyleManager) -> PopupSettings {
+/// Builds `PopupSettings` from the layout's live token set (H1 Brief 9, §3
+/// "StyleManager — removed") — replaces the pre-H1 `StyledPopupTheme`
+/// bridge, which hand-copied a handful of `StyleManager` keys and fell back
+/// to a dark `TokenTheme` for the rest.
+fn popup_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> PopupSettings {
     PopupSettings {
-        theme: Box::new(StyledPopupTheme::from_styles(s)),
+        theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::<DefaultPopupStyle>::default(),
     }
 }
@@ -101,7 +49,7 @@ pub struct PopupBuilder<'a> {
     overflow:         OverflowMode,
     settings:         Option<PopupSettings>,
     /// Override only the colour-token bundle.  Wins over the
-    /// `StyleManager`-derived default but loses to a full
+    /// token-set-derived default but loses to a full
     /// `.settings(...)` call.
     theme_override:   Option<Box<dyn PopupTheme>>,
     /// Override only the geometry bundle.  Same precedence rules as
@@ -247,7 +195,7 @@ impl<'a> PopupBuilder<'a> {
             overflow:  self.overflow,
         };
 
-        let mut settings = self.settings.unwrap_or_else(|| popup_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| popup_settings_from_tokens(layout.tokens()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
 

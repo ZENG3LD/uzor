@@ -173,15 +173,28 @@ fn scan_file(path: &Path, hits: &mut Vec<String>) {
     }
 }
 
-/// Fails if any `.rs` file under `src/ui/widgets/{atomic,composite}/**`
-/// contains a colour literal outside a comment line and outside a
-/// `tokens.rs` file (module doc's blanket exemption).
+/// Fails if any `.rs` file under `src/ui/widgets/{atomic,composite}/**`,
+/// `src/framework/widgets/lm/**`, or `src/layout/**` contains a colour
+/// literal outside a comment line and outside a `tokens.rs` file (module
+/// doc's blanket exemption). The latter two roots joined the scan in H1
+/// Brief 9 item 2 once `StyleManager`'s removal took every remaining
+/// hand-copied literal fallback out of the `lm::*` bridge files and
+/// `layout::panel_api::types::PanelTheme`'s `Default` impl (now reads the
+/// dark built-in token set instead).
 #[test]
 fn no_literal_colors_reachable_from_widget_render_code() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/widgets");
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let roots = [
+        manifest_dir.join("src/ui/widgets"),
+        manifest_dir.join("src/framework/widgets/lm"),
+        manifest_dir.join("src/layout"),
+    ];
+
     let mut files = Vec::new();
-    collect_rs_files(&root, &mut files);
-    assert!(!files.is_empty(), "expected to find widget source files under {}", root.display());
+    for root in &roots {
+        collect_rs_files(root, &mut files);
+    }
+    assert!(!files.is_empty(), "expected to find source files under {roots:?}");
 
     let mut hits = Vec::new();
     for path in files {
@@ -192,7 +205,7 @@ fn no_literal_colors_reachable_from_widget_render_code() {
     }
     assert!(
         hits.is_empty(),
-        "colour literals reachable from widget render code:\n{}",
+        "colour literals reachable from widget/layout render code:\n{}",
         hits.join("\n")
     );
 }
