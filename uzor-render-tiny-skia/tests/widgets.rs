@@ -23,3 +23,9 @@ mod clock;
 mod close_button;
 #[path = "widgets/color_swatch.rs"]
 mod color_swatch;
+#[path = "widgets/container.rs"]
+mod container;
+#[path = "widgets/drag_handle.rs"]
+mod drag_handle;
+#[path = "widgets/dropdown_trigger.rs"]
+mod dropdown_trigger;
