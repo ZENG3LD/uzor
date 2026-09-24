@@ -3,6 +3,13 @@
 //! scale step off `radius_md` — the one geometry field MLC's `UIColors`
 //! actually ships (`button_rounding`) — not independently-sourced values.
 
+/// The three `geometry.*` sub-paths a token file may define — the DTCG
+/// loader (`tokens::loader`) rejects anything else under `geometry.*` as
+/// [`crate::tokens::TokenLoadError::UnknownPath`], and requires all three
+/// (no optional geometry field, unlike `surface.row_alt` in
+/// [`crate::tokens::SemanticRoles`]).
+pub(crate) const GEOMETRY_KEYS: &[&str] = &["radius.sm", "radius.md", "radius.lg"];
+
 /// The fixed geometry role set. Always fully populated (no `Option`s) —
 /// every built-in set defines a `radius_md`, so the scale steps derived from
 /// it are always well-defined.
