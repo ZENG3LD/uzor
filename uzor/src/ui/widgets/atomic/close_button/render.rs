@@ -8,6 +8,7 @@ use crate::types::{Rect, WidgetState};
 use super::settings::CloseButtonSettings;
 use super::style::{DefaultCloseButtonStyle, LargeCloseButtonStyle};
 use super::types::CloseButtonRenderKind;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Per-instance data for `draw_close_button`.
 pub struct CloseButtonView {
@@ -114,7 +115,7 @@ fn draw_close_button_with_style(
 /// Build default `CloseButtonSettings` using the `Default` preset geometry.
 pub fn default_settings() -> CloseButtonSettings {
     CloseButtonSettings {
-        theme: Box::new(super::theme::DefaultCloseButtonTheme),
+        theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
         style: Box::new(DefaultCloseButtonStyle),
     }
 }

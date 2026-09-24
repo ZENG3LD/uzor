@@ -15,17 +15,12 @@ pub trait CloseButtonTheme {
     fn close_button_bg_hover(&self) -> &str;
 }
 
-/// Default close button theme.
-pub struct DefaultCloseButtonTheme;
-
-impl Default for DefaultCloseButtonTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl CloseButtonTheme for DefaultCloseButtonTheme {
-    fn close_button_x_color(&self) -> &str       { "#787b86" }
-    fn close_button_x_color_hover(&self) -> &str { "#ffffff" }
-    fn close_button_bg_hover(&self) -> &str       { "#2a2e39" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultCloseButtonTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 5 — `crate::tokens::theme::TokenTheme` is now the one
+// `CloseButtonTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

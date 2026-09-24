@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the close button widget.
 
 use super::style::{CloseButtonStyle, DefaultCloseButtonStyle};
-use super::theme::{CloseButtonTheme, DefaultCloseButtonTheme};
+use super::theme::CloseButtonTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a close button instance.
 pub struct CloseButtonSettings {
@@ -14,7 +15,7 @@ pub struct CloseButtonSettings {
 impl Default for CloseButtonSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultCloseButtonTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultCloseButtonStyle),
         }
     }

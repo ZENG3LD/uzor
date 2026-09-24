@@ -15,6 +15,7 @@ use crate::ui::widgets::atomic::button::theme::ButtonTheme;
 use crate::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use crate::ui::widgets::atomic::chevron::theme::ChevronTheme;
 use crate::ui::widgets::atomic::clock::theme::ClockTheme;
+use crate::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -109,6 +110,12 @@ impl ChevronTheme for TokenTheme {
 impl ClockTheme for TokenTheme {
     fn clock_text(&self) -> &str { &self.0.clock().clock_text }
     fn clock_bg_hover(&self) -> &str { &self.0.clock().clock_bg_hover }
+}
+
+impl CloseButtonTheme for TokenTheme {
+    fn close_button_x_color(&self) -> &str { &self.0.close_button().close_button_x_color }
+    fn close_button_x_color_hover(&self) -> &str { &self.0.close_button().close_button_x_color_hover }
+    fn close_button_bg_hover(&self) -> &str { &self.0.close_button().close_button_bg_hover }
 }
 
 #[cfg(test)]

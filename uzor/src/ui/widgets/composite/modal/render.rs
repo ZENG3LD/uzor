@@ -33,7 +33,6 @@ use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::atomic::close_button::render::{draw_close_button, CloseButtonView};
 use crate::ui::widgets::atomic::close_button::settings::CloseButtonSettings;
 use crate::ui::widgets::atomic::close_button::style::DefaultCloseButtonStyle;
-use crate::ui::widgets::atomic::close_button::theme::DefaultCloseButtonTheme;
 use crate::ui::widgets::atomic::close_button::types::CloseButtonRenderKind;
 use crate::ui::widgets::atomic::drag_handle::render::draw_drag_handle;
 use crate::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
@@ -403,7 +402,7 @@ pub fn draw_modal(
         // Close-X button.
         let close_view = CloseButtonView { hovered: state.hovered_close };
         let close_settings = CloseButtonSettings {
-            theme: Box::new(DefaultCloseButtonTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultCloseButtonStyle),
         };
         draw_close_button(

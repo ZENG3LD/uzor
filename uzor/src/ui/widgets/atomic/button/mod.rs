@@ -132,7 +132,7 @@ pub use super::dropdown_trigger::{
 // New code should import directly from atomic::close_button, etc.
 pub use super::close_button::{
     CloseButtonStyle, DefaultCloseButtonStyle, LargeCloseButtonStyle,
-    CloseButtonTheme, DefaultCloseButtonTheme,
+    CloseButtonTheme,
     CloseButtonView, CloseButtonResult,
     draw_close_button,
 };

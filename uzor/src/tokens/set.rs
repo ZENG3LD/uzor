@@ -107,6 +107,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let close_button = crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -118,6 +122,7 @@ impl TokenSet {
             checkbox,
             chevron,
             clock,
+            close_button,
         })
     }
 }
@@ -140,6 +145,7 @@ pub struct Tokens {
     checkbox: crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens,
     chevron: crate::ui::widgets::atomic::chevron::tokens::ChevronTokens,
     clock: crate::ui::widgets::atomic::clock::tokens::ClockTokens,
+    close_button: crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens,
 }
 
 impl Tokens {
@@ -169,6 +175,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn clock(&self) -> &crate::ui::widgets::atomic::clock::tokens::ClockTokens {
         &self.clock
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `CloseButtonTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn close_button(&self) -> &crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens {
+        &self.close_button
     }
 }
 
