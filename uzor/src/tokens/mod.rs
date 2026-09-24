@@ -28,7 +28,7 @@ pub mod semantic;
 pub mod set;
 pub mod theme;
 
-pub(crate) use component_macro::component_tokens;
+pub(crate) use component_macro::{component_tokens, component_tokens_bytes};
 pub use builtin::BuiltinSet;
 pub use color::{ColorParseError, ColorValue, Rgba};
 pub use dtcg::TokenLoadError;
@@ -65,6 +65,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "text" => Some(crate::ui::widgets::atomic::text::tokens::TEXT_KEYS),
         "tab" => Some(crate::ui::widgets::atomic::tab::tokens::TAB_KEYS),
         "slider" => Some(crate::ui::widgets::atomic::slider::tokens::SLIDER_KEYS),
+        "text_input" => Some(crate::ui::widgets::atomic::text_input::tokens::TEXT_INPUT_KEYS),
         _ => None,
     }
 }

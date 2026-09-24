@@ -28,6 +28,7 @@ use crate::ui::widgets::atomic::separator::theme::SeparatorTheme;
 use crate::ui::widgets::atomic::text::theme::TextTheme;
 use crate::ui::widgets::atomic::tab::theme::TabTheme;
 use crate::ui::widgets::atomic::slider::theme::SliderTheme;
+use crate::ui::widgets::atomic::text_input::theme::TextInputTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -241,6 +242,19 @@ impl SliderTheme for TokenTheme {
     fn input_bg_disabled(&self) -> &str { &self.0.slider().input_bg_disabled }
     fn input_placeholder(&self) -> &str { &self.0.slider().input_placeholder }
     fn input_selection(&self) -> &str { &self.0.slider().input_selection }
+}
+
+impl TextInputTheme for TokenTheme {
+    fn bg_normal(&self) -> [u8; 4] { self.0.text_input().bg_normal }
+    fn bg_disabled(&self) -> [u8; 4] { self.0.text_input().bg_disabled }
+    fn border_normal(&self) -> [u8; 4] { self.0.text_input().border_normal }
+    fn border_hover(&self) -> [u8; 4] { self.0.text_input().border_hover }
+    fn border_focused(&self) -> [u8; 4] { self.0.text_input().border_focused }
+    fn text_normal(&self) -> [u8; 4] { self.0.text_input().text_normal }
+    fn text_disabled(&self) -> [u8; 4] { self.0.text_input().text_disabled }
+    fn placeholder(&self) -> [u8; 4] { self.0.text_input().placeholder }
+    fn selection(&self) -> [u8; 4] { self.0.text_input().selection }
+    fn cursor(&self) -> [u8; 4] { self.0.text_input().cursor }
 }
 
 #[cfg(test)]

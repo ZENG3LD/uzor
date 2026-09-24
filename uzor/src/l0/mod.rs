@@ -189,7 +189,7 @@ pub mod atomic {
                 TextAction,
             },
             style::{TextInputStyle, DefaultTextInputStyle},
-            theme::{TextInputTheme, DefaultTextInputTheme},
+            theme::TextInputTheme,
             types::{InputType, TextInputType},
         };
         // The behavior.rs layer is L1/L2-flavoured (event mapping,

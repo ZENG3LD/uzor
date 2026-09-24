@@ -161,6 +161,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let text_input = crate::ui::widgets::atomic::text_input::tokens::TextInputTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -185,6 +189,7 @@ impl TokenSet {
             text,
             tab,
             slider,
+            text_input,
         })
     }
 }
@@ -220,6 +225,7 @@ pub struct Tokens {
     text: crate::ui::widgets::atomic::text::tokens::TextTokens,
     tab: crate::ui::widgets::atomic::tab::tokens::TabTokens,
     slider: crate::ui::widgets::atomic::slider::tokens::SliderTokens,
+    text_input: crate::ui::widgets::atomic::text_input::tokens::TextInputTokens,
 }
 
 impl Tokens {
@@ -344,6 +350,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn slider(&self) -> &crate::ui::widgets::atomic::slider::tokens::SliderTokens {
         &self.slider
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `TextInputTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn text_input(&self) -> &crate::ui::widgets::atomic::text_input::tokens::TextInputTokens {
+        &self.text_input
     }
 }
 

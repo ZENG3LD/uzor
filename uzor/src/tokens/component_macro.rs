@@ -88,4 +88,52 @@ macro_rules! component_tokens {
     };
 }
 
+/// Byte-array variant of [`component_tokens!`] for the one widget whose
+/// trait returns `[u8; 4]` instead of `&str`
+/// (`text_input::TextInputTheme` — H1 Brief 7b, companion doc "text_input"
+/// section: "the only such widget"). Same single-table shape and the same
+/// ambiguity trap applies; the only difference is the resolved value stays a
+/// `[u8; 4]` (via [`crate::tokens::color::ColorValue::to_rgba8`]) instead of
+/// a pre-rendered CSS `String`.
+macro_rules! component_tokens_bytes {
+    (
+        widget = $widget:literal,
+        struct $Tokens:ident, keys = $KEYS:ident;
+        $( $field:ident => $default:expr ),+ $(,)?
+    ) => {
+        #[derive(Clone, Debug)]
+        pub struct $Tokens {
+            $( pub $field: [u8; 4], )+
+        }
+
+        /// The `component.<widget>.*` keys this widget accepts — registered
+        /// with [`crate::tokens::component_keys`] so a token file may
+        /// override any of them.
+        pub(crate) const $KEYS: &[&str] = &[ $( stringify!($field) ),+ ];
+
+        impl $Tokens {
+            /// Resolves every field: an authored `component.<widget>.<field>`
+            /// override wins ([`crate::tokens::set::ComponentOverrides::get`]),
+            /// otherwise the default [`crate::tokens::ColorSpec`] given above
+            /// is resolved against `roles`. Called once per
+            /// [`crate::tokens::set::TokenSet::resolve`], never per paint call.
+            pub fn resolve(
+                roles: &$crate::tokens::semantic::SemanticRoles,
+                overrides: &$crate::tokens::set::ComponentOverrides,
+            ) -> Self {
+                $(
+                    let $field = overrides
+                        .get($widget, stringify!($field))
+                        .cloned()
+                        .unwrap_or_else(|| $default)
+                        .resolve(roles)
+                        .to_rgba8();
+                )+
+                Self { $( $field ),+ }
+            }
+        }
+    };
+}
+
 pub(crate) use component_tokens;
+pub(crate) use component_tokens_bytes;

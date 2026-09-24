@@ -242,6 +242,23 @@ impl ColorValue {
             (this, _) => this.clone(),
         }
     }
+
+    /// Renders this value as raw RGBA bytes — used only by
+    /// [`crate::tokens::component_macro::component_tokens_bytes`], the
+    /// byte-array variant of the component-token macro for the one widget
+    /// whose trait returns `[u8; 4]` instead of a CSS string
+    /// (`text_input::TextInputTheme`, H1 Brief 7b). `Transparent` is
+    /// `[0, 0, 0, 0]` (matches `Rgba::new(0,0,0,0)` — the same "same pixel,
+    /// distinct type" relationship [`Self::to_css`] documents). `Sentinel`
+    /// has no colour to render — none of `text_input`'s fields are ever a
+    /// sentinel today; if one is ever authored here it resolves to fully
+    /// transparent black rather than panicking.
+    pub fn to_rgba8(&self) -> [u8; 4] {
+        match self {
+            ColorValue::Solid(rgba) => [rgba.r, rgba.g, rgba.b, rgba.a],
+            ColorValue::Transparent | ColorValue::Sentinel(_) => [0, 0, 0, 0],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -356,5 +373,13 @@ mod tests {
     fn parse_rejects_unknown_strings_and_names_them() {
         let err = ColorValue::parse("rainbow").unwrap_err();
         assert_eq!(err.input, "rainbow");
+    }
+
+    #[test]
+    fn to_rgba8_matches_the_parsed_channels() {
+        let solid = ColorValue::Solid(Rgba::new(0x2f, 0x62, 0xff, 0x55));
+        assert_eq!(solid.to_rgba8(), [0x2f, 0x62, 0xff, 0x55]);
+        assert_eq!(ColorValue::Transparent.to_rgba8(), [0, 0, 0, 0]);
+        assert_eq!(ColorValue::Sentinel("rainbow").to_rgba8(), [0, 0, 0, 0]);
     }
 }

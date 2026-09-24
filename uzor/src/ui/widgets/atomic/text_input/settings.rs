@@ -5,7 +5,8 @@
 
 use super::state::TextFieldConfig;
 use super::style::{DefaultTextInputStyle, TextInputStyle};
-use super::theme::{DefaultTextInputTheme, TextInputTheme};
+use super::theme::TextInputTheme;
+use crate::tokens::{BuiltinSet, TokenTheme, Tokens};
 
 /// Aggregates everything the renderer + input layer need to know about
 /// a particular text input instance.
@@ -23,7 +24,7 @@ impl TextInputSettings {
     /// dark theme + default style.
     pub fn with_config(config: TextFieldConfig) -> Self {
         Self {
-            theme:  Box::new(DefaultTextInputTheme),
+            theme:  Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style:  Box::new(DefaultTextInputStyle),
             config,
         }

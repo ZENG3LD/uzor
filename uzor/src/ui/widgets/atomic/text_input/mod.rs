@@ -5,6 +5,11 @@
 //! - `behavior`  — validation enum + per-instance config + key/action enums.
 //! - `state`     — `TextFieldStore` / `TextFieldState` (text/cursor/selection).
 //! - `theme`     — colour palette trait.
+//! - `tokens`    — `TextInputTokens`: the token-contract implementation of
+//!                 `TextInputTheme` (the one `[u8; 4]`-returning trait among
+//!                 the 30 widgets), built from `SemanticRoles` + optional
+//!                 `component.text_input.*` overrides (H1 token contract
+//!                 design §3).
 //! - `style`     — geometry trait (radius / padding / font size / cursor blink).
 //! - `settings`  — bundle of theme + style + behavior config.
 //! - `render`    — math: `draw_input`, `draw_input_cursor`,
@@ -15,6 +20,7 @@ pub mod types;
 pub mod behavior;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -28,7 +34,7 @@ pub use behavior::{
 pub use state::{
     InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore,
 };
-pub use theme::{DefaultTextInputTheme, TextInputTheme};
+pub use theme::TextInputTheme;
 pub use style::{DefaultTextInputStyle, TextInputStyle};
 pub use settings::TextInputSettings;
 pub use render::{
