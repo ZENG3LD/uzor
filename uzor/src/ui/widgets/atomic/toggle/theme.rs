@@ -22,23 +22,12 @@ pub trait ToggleTheme {
     fn toggle_icon_active(&self) -> &str;
 }
 
-/// Default toggle theme using uzor prototype colors.
-pub struct DefaultToggleTheme;
-
-impl Default for DefaultToggleTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl ToggleTheme for DefaultToggleTheme {
-    fn toggle_track_off(&self) -> &str          { "#2a2e39" }
-    fn toggle_track_on(&self) -> &str           { "#2962ff" }
-    fn toggle_thumb_off(&self) -> &str          { "#ffffff" }
-    fn toggle_thumb_on(&self) -> &str           { "#ffffff" }
-    fn toggle_disabled_overlay(&self) -> &str   { "rgba(0,0,0,0.35)" }
-    fn toggle_label_text(&self) -> &str         { "#d1d4dc" }
-    fn toggle_label_text_disabled(&self) -> &str{ "#4a4a4a" }
-    fn toggle_icon_normal(&self) -> &str        { "#787b86" }
-    fn toggle_icon_active(&self) -> &str        { "#ffffff" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultToggleTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 7b — `crate::tokens::theme::TokenTheme` is now the one `ToggleTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::toggle::tokens::ToggleTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

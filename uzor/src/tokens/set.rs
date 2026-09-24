@@ -165,6 +165,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let toggle = crate::ui::widgets::atomic::toggle::tokens::ToggleTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -190,6 +194,7 @@ impl TokenSet {
             tab,
             slider,
             text_input,
+            toggle,
         })
     }
 }
@@ -226,6 +231,7 @@ pub struct Tokens {
     tab: crate::ui::widgets::atomic::tab::tokens::TabTokens,
     slider: crate::ui::widgets::atomic::slider::tokens::SliderTokens,
     text_input: crate::ui::widgets::atomic::text_input::tokens::TextInputTokens,
+    toggle: crate::ui::widgets::atomic::toggle::tokens::ToggleTokens,
 }
 
 impl Tokens {
@@ -357,6 +363,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn text_input(&self) -> &crate::ui::widgets::atomic::text_input::tokens::TextInputTokens {
         &self.text_input
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ToggleTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn toggle(&self) -> &crate::ui::widgets::atomic::toggle::tokens::ToggleTokens {
+        &self.toggle
     }
 }
 

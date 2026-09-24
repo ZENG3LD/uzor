@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the toggle widget.
 
-use super::theme::{DefaultToggleTheme, ToggleTheme};
+use super::theme::ToggleTheme;
 use super::style::{DefaultToggleIconStyle, IndicatorToggleStyle, ToggleIconStyle, ToggleSwitchStyle};
+use crate::tokens::{BuiltinSet, TokenTheme, Tokens};
 
 /// Aggregates visual configuration for a toggle instance.
 pub struct ToggleSettings {
@@ -16,7 +17,7 @@ pub struct ToggleSettings {
 impl Default for ToggleSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultToggleTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             switch_style: Box::new(IndicatorToggleStyle),
             icon_style: Box::new(DefaultToggleIconStyle),
         }

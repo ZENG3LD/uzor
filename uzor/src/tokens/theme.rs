@@ -29,6 +29,7 @@ use crate::ui::widgets::atomic::text::theme::TextTheme;
 use crate::ui::widgets::atomic::tab::theme::TabTheme;
 use crate::ui::widgets::atomic::slider::theme::SliderTheme;
 use crate::ui::widgets::atomic::text_input::theme::TextInputTheme;
+use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -255,6 +256,18 @@ impl TextInputTheme for TokenTheme {
     fn placeholder(&self) -> [u8; 4] { self.0.text_input().placeholder }
     fn selection(&self) -> [u8; 4] { self.0.text_input().selection }
     fn cursor(&self) -> [u8; 4] { self.0.text_input().cursor }
+}
+
+impl ToggleTheme for TokenTheme {
+    fn toggle_track_off(&self) -> &str { &self.0.toggle().toggle_track_off }
+    fn toggle_track_on(&self) -> &str { &self.0.toggle().toggle_track_on }
+    fn toggle_thumb_off(&self) -> &str { &self.0.toggle().toggle_thumb_off }
+    fn toggle_thumb_on(&self) -> &str { &self.0.toggle().toggle_thumb_on }
+    fn toggle_disabled_overlay(&self) -> &str { &self.0.toggle().toggle_disabled_overlay }
+    fn toggle_label_text(&self) -> &str { &self.0.toggle().toggle_label_text }
+    fn toggle_label_text_disabled(&self) -> &str { &self.0.toggle().toggle_label_text_disabled }
+    fn toggle_icon_normal(&self) -> &str { &self.0.toggle().toggle_icon_normal }
+    fn toggle_icon_active(&self) -> &str { &self.0.toggle().toggle_icon_active }
 }
 
 #[cfg(test)]

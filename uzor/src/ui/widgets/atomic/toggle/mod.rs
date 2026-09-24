@@ -3,7 +3,10 @@
 //! Self-contained:
 //! - `types`    — `ToggleView`, `ToggleConfig`, `ToggleRenderKind`.
 //! - `state`    — `ToggleState` (toggled flag).
-//! - `theme`    — `ToggleTheme` trait + `DefaultToggleTheme`.
+//! - `theme`    — `ToggleTheme` trait.
+//! - `tokens`   — `ToggleTokens`: the token-contract implementation of
+//!                `ToggleTheme`, built from `SemanticRoles` + optional
+//!                `component.toggle.*` overrides (H1 token contract design §3).
 //! - `style`    — `ToggleSwitchStyle` trait + `IndicatorToggleStyle` / `SignalsToggleStyle`
 //!                + `ToggleIconStyle` trait + `DefaultToggleIconStyle`.
 //! - `settings` — `ToggleSettings` bundle.
@@ -13,6 +16,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -20,7 +24,7 @@ pub mod input;
 
 pub use types::{ToggleConfig, ToggleRenderKind, ToggleView};
 pub use state::ToggleState;
-pub use theme::{DefaultToggleTheme, ToggleTheme};
+pub use theme::ToggleTheme;
 pub use style::{
     DefaultToggleIconStyle, IndicatorToggleStyle, SignalsToggleStyle,
     ToggleIconStyle, ToggleSwitchStyle,
