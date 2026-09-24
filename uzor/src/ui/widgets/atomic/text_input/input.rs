@@ -125,7 +125,7 @@ pub fn register_layout_manager_text_input<P: DockPanel>(
             result.cursor_y,
             result.cursor_height,
             1.5,
-            [220, 220, 220, 255],
+            settings.theme.cursor(),
         );
     }
     result
