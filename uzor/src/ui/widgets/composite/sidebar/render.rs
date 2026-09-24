@@ -422,7 +422,7 @@ pub fn draw_sidebar(
         let hovered = state.header_action_hovered.as_deref() == Some(action.id);
 
         if hovered {
-            ctx.set_fill_color("rgba(255,255,255,0.08)");
+            ctx.set_fill_color(theme.action_bg_hover());
             ctx.fill_rounded_rect(btn_x, btn_y, btn_size, btn_size, 4.0);
         }
 
@@ -518,7 +518,7 @@ pub fn draw_sidebar(
             if cur_offset > 0.0 {
                 let r = Rect::new(layout.body.x, layout.body.y, layout.body.width, strip_h);
                 // Faint backdrop so the strip reads as a control, not a row.
-                ctx.set_fill_color("rgba(20,22,28,0.85)");
+                ctx.set_fill_color(theme.chevron_strip_bg());
                 ctx.fill_rect(r.x, r.y, r.width, r.height);
                 draw_chevron(ctx, r, &ChevronView {
                     direction: ChevronDirection::Up,
@@ -533,7 +533,7 @@ pub fn draw_sidebar(
             // Bottom strip — visible only if there's content below.
             if cur_offset < max_offset {
                 let r = Rect::new(layout.body.x, layout.body.y + layout.body.height - strip_h, layout.body.width, strip_h);
-                ctx.set_fill_color("rgba(20,22,28,0.85)");
+                ctx.set_fill_color(theme.chevron_strip_bg());
                 ctx.fill_rect(r.x, r.y, r.width, r.height);
                 draw_chevron(ctx, r, &ChevronView {
                     direction: ChevronDirection::Down,

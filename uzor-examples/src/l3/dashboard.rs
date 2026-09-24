@@ -1440,6 +1440,15 @@ fn draw_l3_frame(
                 content_height: est_content_h,
             };
             let sidebar_kind_value = sidebar_kind_from_index(state.sidebar_kind);
+            // Shared settings — reused for the composite draw AND the
+            // caller-drawn body (`SidebarBodyBuilder`), so both read the
+            // same colour tokens instead of two independently-defaulted
+            // `SidebarSettings` (H1 Brief 8b).
+            let sidebar_settings = {
+                let mut s = SidebarSettings::default();
+                s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                s
+            };
             let _sidebar_node = register_layout_manager_sidebar(
                 &mut state.layout,
                 render,
@@ -1447,11 +1456,7 @@ fn draw_l3_frame(
                 "sidebar",
                 &state.sidebar_h.clone(),
                 &mut sidebar_view,
-                &{
-                    let mut s = SidebarSettings::default();
-                    s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
-                    s
-                },
+                &sidebar_settings,
                 &sidebar_kind_value,
             );
             // Sidebar body — spawn UI + panel list (via SidebarBodyBuilder).
@@ -1486,11 +1491,7 @@ fn draw_l3_frame(
                     body_rect,
                     &sidebar_state_snap,
                     &sidebar_view,
-                    &{
-                        let mut s = SidebarSettings::default();
-                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
-                        s
-                    },
+                    &sidebar_settings,
                     &sidebar_kind_value,
                 );
 
@@ -1536,6 +1537,7 @@ fn draw_l3_frame(
                     body_rect,
                     body_vp.content_origin_y,
                     LayerId::main(),
+                    sidebar_settings.theme.as_ref(),
                 );
                 builder.add_section_header("NEW PANEL");
                 builder.add_sub_label("Type:");

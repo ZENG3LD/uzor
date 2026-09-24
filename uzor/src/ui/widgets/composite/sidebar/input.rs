@@ -9,6 +9,7 @@ use super::render::register_context_manager_sidebar;
 
 use super::settings::SidebarSettings;
 use super::state::{SidebarState, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
+use super::theme::SidebarTheme;
 use super::types::{SidebarRenderKind, SidebarView};
 use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
@@ -308,6 +309,7 @@ pub struct SidebarPanelEntry<'a> {
 pub struct SidebarBodyBuilder<'a, P: DockPanel> {
     render: &'a mut dyn RenderContext,
     layout: &'a mut LayoutManager<P>,
+    theme:  &'a dyn SidebarTheme,
     layer:  LayerId,
     bx:     f64,
     bw:     f64,
@@ -324,16 +326,20 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
     ///                    applied; from `SidebarBodyViewport::content_origin_y`).
     /// `layer`          — render layer to register atomics on (typically
     ///                    `LayerId::main()`).
+    /// `theme`          — colour tokens read by every `add_*` method below
+    ///                    (H1 Brief 8b — this builder used to paint bare
+    ///                    literals with no theme parameter to read at all).
     pub fn new(
         render:          &'a mut dyn RenderContext,
         layout:          &'a mut LayoutManager<P>,
         body_rect:        Rect,
         content_origin_y: f64,
         layer:            LayerId,
+        theme:            &'a dyn SidebarTheme,
     ) -> Self {
         let bx = body_rect.x + 8.0;
         let bw = body_rect.width - 16.0;
-        Self { render, layout, layer, bx, bw, y: content_origin_y + 8.0 }
+        Self { render, layout, theme, layer, bx, bw, y: content_origin_y + 8.0 }
     }
 
     /// Draw a section header label (e.g. `"NEW PANEL"`, `"PANELS"`).
@@ -344,7 +350,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             self.render,
             Rect::new(self.bx, self.y, self.bw, 22.0),
             &TextView { text, align: TextAlign::Left, baseline: TextBaseline::Middle,
-                color: Some("rgba(255,255,255,0.4)"), font: None, overflow: TextOverflow::Clip, hovered: false },
+                color: Some(self.theme.section_header_text()), font: None, overflow: TextOverflow::Clip, hovered: false },
             &TextSettings::default(),
         );
         self.y += 22.0;
@@ -358,7 +364,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             self.render,
             Rect::new(self.bx, self.y, self.bw, 20.0),
             &TextView { text, align: TextAlign::Left, baseline: TextBaseline::Middle,
-                color: Some("rgba(255,255,255,0.55)"), font: None, overflow: TextOverflow::Clip, hovered: false },
+                color: Some(self.theme.sub_label_text()), font: None, overflow: TextOverflow::Clip, hovered: false },
             &TextSettings::default(),
         );
         self.y += 20.0;
@@ -373,7 +379,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
 
     /// Draw a horizontal divider line and advance y by 10 px.
     pub fn add_divider(&mut self) {
-        self.render.set_fill_color("rgba(255,255,255,0.08)");
+        self.render.set_fill_color(self.theme.divider());
         self.render.fill_rect(self.bx, self.y, self.bw, 1.0);
         self.y += 10.0;
     }
@@ -391,9 +397,9 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             let ry = self.y;
             // Radio dot
             if item.selected {
-                self.render.set_fill_color("#2962ff");
+                self.render.set_fill_color(self.theme.accent());
             } else {
-                self.render.set_fill_color("rgba(255,255,255,0.18)");
+                self.render.set_fill_color(self.theme.radio_dot_inactive());
             }
             self.render.fill_rounded_rect(rx, ry + 3.0, 10.0, 10.0, 5.0);
             // Label
@@ -404,7 +410,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
                     text: item.label,
                     align: TextAlign::Left,
                     baseline: TextBaseline::Middle,
-                    color: Some(if item.selected { "#ffffff" } else { "#a0a0b0" }),
+                    color: Some(if item.selected { self.theme.on_accent_text() } else { self.theme.content_muted_text() }),
                     font: None, overflow: TextOverflow::Clip, hovered: false,
                 },
                 &TextSettings::default(),
@@ -432,13 +438,13 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
         let bx = self.bx;
         let bw = self.bw;
         let y = self.y;
-        self.render.set_fill_color("#2962ff");
+        self.render.set_fill_color(self.theme.accent());
         self.render.fill_rounded_rect(bx, y, bw, 28.0, 4.0);
         draw_text(
             self.render,
             Rect::new(bx, y, bw, 28.0),
             &TextView { text: label, align: TextAlign::Center, baseline: TextBaseline::Middle,
-                color: Some("#ffffff"), font: None, overflow: TextOverflow::Clip, hovered: false },
+                color: Some(self.theme.on_accent_text()), font: None, overflow: TextOverflow::Clip, hovered: false },
             &TextSettings::default(),
         );
         let layer = self.layer.clone();
@@ -472,9 +478,9 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             let y = self.y;
             // Row background
             self.render.set_fill_color(if entry.active {
-                "rgba(41,98,255,0.18)"
+                self.theme.panel_row_bg_active()
             } else {
-                "rgba(255,255,255,0.05)"
+                self.theme.panel_row_bg_inactive()
             });
             self.render.fill_rounded_rect(bx, y, bw, 26.0, 3.0);
             // Title
@@ -485,7 +491,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
                     text: entry.title,
                     align: TextAlign::Left,
                     baseline: TextBaseline::Middle,
-                    color: Some(if entry.active { "#4d90fe" } else { "#d1d4dc" }),
+                    color: Some(if entry.active { self.theme.accent() } else { self.theme.content_text() }),
                     font: None, overflow: TextOverflow::Clip, hovered: false,
                 },
                 &TextSettings::default(),
@@ -496,7 +502,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
                 self.render,
                 Rect::new(close_x, y + 5.0, 16.0, 16.0),
                 &TextView { text: close_label, align: TextAlign::Center,
-                    baseline: TextBaseline::Middle, color: Some("rgba(255,80,80,0.5)"),
+                    baseline: TextBaseline::Middle, color: Some(self.theme.panel_close_icon()),
                     font: None, overflow: TextOverflow::Clip, hovered: false },
                 &TextSettings::default(),
             );

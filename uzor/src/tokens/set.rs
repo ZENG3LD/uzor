@@ -207,6 +207,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let sidebar = crate::ui::widgets::composite::sidebar::tokens::SidebarTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -242,6 +246,7 @@ impl TokenSet {
             modal,
             panel,
             popup,
+            sidebar,
         })
     }
 }
@@ -288,6 +293,7 @@ pub struct Tokens {
     modal: crate::ui::widgets::composite::modal::tokens::ModalTokens,
     panel: crate::ui::widgets::composite::panel::tokens::PanelTokens,
     popup: crate::ui::widgets::composite::popup::tokens::PopupTokens,
+    sidebar: crate::ui::widgets::composite::sidebar::tokens::SidebarTokens,
 }
 
 impl Tokens {
@@ -493,6 +499,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn popup(&self) -> &crate::ui::widgets::composite::popup::tokens::PopupTokens {
         &self.popup
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `SidebarTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn sidebar(&self) -> &crate::ui::widgets::composite::sidebar::tokens::SidebarTokens {
+        &self.sidebar
     }
 }
 

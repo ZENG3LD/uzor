@@ -1,7 +1,8 @@
 //! Sidebar settings bundle — `SidebarTheme` + `SidebarStyle` in one box.
 
 use super::style::{DefaultSidebarStyle, SidebarStyle};
-use super::theme::{DefaultSidebarTheme, SidebarTheme};
+use super::theme::SidebarTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the sidebar composite.
 pub struct SidebarSettings {
@@ -14,7 +15,7 @@ pub struct SidebarSettings {
 impl Default for SidebarSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultSidebarTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultSidebarStyle>::default(),
         }
     }

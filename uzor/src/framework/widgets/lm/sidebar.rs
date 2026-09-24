@@ -20,10 +20,11 @@ use crate::types::OverflowMode;
 use crate::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
 use crate::ui::widgets::composite::sidebar::settings::SidebarSettings;
 use crate::ui::widgets::composite::sidebar::style::{DefaultSidebarStyle, SidebarStyle};
-use crate::ui::widgets::composite::sidebar::theme::{DefaultSidebarTheme, SidebarTheme};
+use crate::ui::widgets::composite::sidebar::theme::SidebarTheme;
 use crate::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarHeaderMode, SidebarRenderKind, SidebarTab, SidebarView,
 };
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // =============================================================================
 // StyledSidebarTheme
@@ -35,7 +36,10 @@ struct StyledSidebarTheme {
     header_text: String,
     tab_accent:  String,
     tab_bg_active: String,
-    fallback:    DefaultSidebarTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:    TokenTheme,
 }
 
 impl StyledSidebarTheme {
@@ -48,7 +52,7 @@ impl StyledSidebarTheme {
             header_text:   s.color_or_owned("fg_0",         "#ffffff"),
             tab_accent:    accent,
             tab_bg_active: accent_dim,
-            fallback:      DefaultSidebarTheme,
+            fallback:      TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }
@@ -69,6 +73,18 @@ impl SidebarTheme for StyledSidebarTheme {
     fn tab_accent(&self)              -> &str { &self.tab_accent }
     fn tab_bg_active(&self)           -> &str { &self.tab_bg_active }
     fn tab_bg_hover(&self)            -> &str { self.fallback.tab_bg_hover() }
+    fn action_bg_hover(&self)         -> &str { self.fallback.action_bg_hover() }
+    fn chevron_strip_bg(&self)        -> &str { self.fallback.chevron_strip_bg() }
+    fn accent(&self)                  -> &str { &self.tab_accent }
+    fn on_accent_text(&self)          -> &str { self.fallback.on_accent_text() }
+    fn content_text(&self)            -> &str { self.fallback.content_text() }
+    fn content_muted_text(&self)      -> &str { self.fallback.content_muted_text() }
+    fn section_header_text(&self)     -> &str { self.fallback.section_header_text() }
+    fn sub_label_text(&self)          -> &str { self.fallback.sub_label_text() }
+    fn radio_dot_inactive(&self)      -> &str { self.fallback.radio_dot_inactive() }
+    fn panel_row_bg_active(&self)     -> &str { self.fallback.panel_row_bg_active() }
+    fn panel_row_bg_inactive(&self)   -> &str { self.fallback.panel_row_bg_inactive() }
+    fn panel_close_icon(&self)        -> &str { self.fallback.panel_close_icon() }
 }
 
 fn sidebar_settings_from_styles(s: &StyleManager) -> SidebarSettings {

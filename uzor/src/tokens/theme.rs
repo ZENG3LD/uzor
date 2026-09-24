@@ -39,6 +39,7 @@ use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
 use crate::ui::widgets::composite::modal::theme::ModalTheme;
 use crate::ui::widgets::composite::panel::theme::PanelTheme;
 use crate::ui::widgets::composite::popup::theme::PopupTheme;
+use crate::ui::widgets::composite::sidebar::theme::SidebarTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -433,6 +434,36 @@ impl PopupTheme for TokenTheme {
     fn accent(&self) -> &str { &self.0.popup().accent }
     fn backdrop_dim(&self) -> &str { &self.0.popup().backdrop_dim }
     fn grid_hover_halo(&self) -> &str { &self.0.popup().grid_hover_halo }
+}
+
+impl SidebarTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.sidebar().bg }
+    fn border(&self) -> &str { &self.0.sidebar().border }
+    fn header_bg(&self) -> &str { &self.0.sidebar().header_bg }
+    fn header_text(&self) -> &str { &self.0.sidebar().header_text }
+    fn header_icon(&self) -> &str { &self.0.sidebar().header_icon }
+    fn divider(&self) -> &str { &self.0.sidebar().divider }
+    fn action_icon_normal(&self) -> &str { &self.0.sidebar().action_icon_normal }
+    fn action_icon_hover(&self) -> &str { &self.0.sidebar().action_icon_hover }
+    fn scrollbar_thumb(&self) -> &str { &self.0.sidebar().scrollbar_thumb }
+    fn scrollbar_thumb_active(&self) -> &str { &self.0.sidebar().scrollbar_thumb_active }
+    fn tab_text_active(&self) -> &str { &self.0.sidebar().tab_text_active }
+    fn tab_text_inactive(&self) -> &str { &self.0.sidebar().tab_text_inactive }
+    fn tab_accent(&self) -> &str { &self.0.sidebar().tab_accent }
+    fn tab_bg_active(&self) -> &str { &self.0.sidebar().tab_bg_active }
+    fn tab_bg_hover(&self) -> &str { &self.0.sidebar().tab_bg_hover }
+    fn action_bg_hover(&self) -> &str { &self.0.sidebar().action_bg_hover }
+    fn chevron_strip_bg(&self) -> &str { &self.0.sidebar().chevron_strip_bg }
+    fn accent(&self) -> &str { &self.0.sidebar().accent }
+    fn on_accent_text(&self) -> &str { &self.0.sidebar().on_accent_text }
+    fn content_text(&self) -> &str { &self.0.sidebar().content_text }
+    fn content_muted_text(&self) -> &str { &self.0.sidebar().content_muted_text }
+    fn section_header_text(&self) -> &str { &self.0.sidebar().section_header_text }
+    fn sub_label_text(&self) -> &str { &self.0.sidebar().sub_label_text }
+    fn radio_dot_inactive(&self) -> &str { &self.0.sidebar().radio_dot_inactive }
+    fn panel_row_bg_active(&self) -> &str { &self.0.sidebar().panel_row_bg_active }
+    fn panel_row_bg_inactive(&self) -> &str { &self.0.sidebar().panel_row_bg_inactive }
+    fn panel_close_icon(&self) -> &str { &self.0.sidebar().panel_close_icon }
 }
 
 #[cfg(test)]
