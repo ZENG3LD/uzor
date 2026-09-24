@@ -29,3 +29,9 @@ mod container;
 mod drag_handle;
 #[path = "widgets/dropdown_trigger.rs"]
 mod dropdown_trigger;
+#[path = "widgets/item.rs"]
+mod item;
+#[path = "widgets/radio.rs"]
+mod radio;
+#[path = "widgets/scrollbar.rs"]
+mod scrollbar;
