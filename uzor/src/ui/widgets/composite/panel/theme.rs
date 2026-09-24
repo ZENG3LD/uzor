@@ -1,6 +1,5 @@
-//! Panel colour palette trait and default dark-theme implementation.
-//!
-//! Token values ported from mlc `panel_theme.rs` audit (`panel-deep.md` §6).
+//! Panel colour palette trait; token-contract default implementation lives
+//! in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 
 // ---------------------------------------------------------------------------
 // PanelTheme trait
@@ -70,45 +69,20 @@ pub trait PanelTheme {
 
     /// Sort arrow / indicator colour.  Default: `#58a6ff`.
     fn sort_arrow_color(&self) -> &str;
+
+    // --- Header action-button hover highlight ---
+
+    /// Background highlight painted behind a header action button while
+    /// hovered.  Default alias: `surface.control.hover`.
+    fn action_bg_hover(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation matching mlc panel colours.
-#[derive(Default)]
-pub struct DefaultPanelTheme;
-
-impl PanelTheme for DefaultPanelTheme {
-    // Frame
-    fn bg(&self)     -> &str { "#0d1117" }
-    fn border(&self) -> &str { "#30363d" }
-
-    // Header strip
-    fn header_bg(&self)   -> &str { "#161b22" }
-    fn header_text(&self) -> &str { "#8091a5" }
-
-    // Column-header row
-    fn column_header_bg(&self)   -> &str { "#161b22" }
-    fn column_header_text(&self) -> &str { "#8b949e" }
-
-    // Body rows
-    fn row_bg_normal(&self)   -> &str { "#0d1117" }
-    fn row_bg_hover(&self)    -> &str { "#2a2f40" }
-    fn row_bg_selected(&self) -> &str { "#1e2538" }
-
-    // Footer
-    fn footer_bg(&self)   -> &str { "#161b22" }
-    fn footer_text(&self) -> &str { "#8b949e" }
-
-    // Dividers
-    fn divider(&self) -> &str { "#30363d" }
-
-    // Action buttons
-    fn action_icon_normal(&self) -> &str { "#8b949e" }
-    fn action_icon_hover(&self)  -> &str { "#e0e0e0" }
-
-    // Sort arrow
-    fn sort_arrow_color(&self) -> &str { "#58a6ff" }
-}
+//
+// `DefaultPanelTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8b — `crate::tokens::theme::TokenTheme` is now the one `PanelTheme`
+// implementation this crate ships, backed by
+// `crate::ui::widgets::composite::panel::tokens::PanelTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

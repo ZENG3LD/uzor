@@ -404,7 +404,7 @@ fn draw_panel_with_coord(
                 let is_hovered = state.hovered_action.as_deref() == Some(action.id)
                     || action.hovered;
                 if is_hovered {
-                    ctx.set_fill_color("rgba(255,255,255,0.08)");
+                    ctx.set_fill_color(theme.action_bg_hover());
                     ctx.fill_rounded_rect(btn_x, btn_y, btn_size, btn_size, 3.0);
                 }
 

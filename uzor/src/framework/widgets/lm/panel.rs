@@ -23,10 +23,11 @@ use crate::ui::widgets::composite::panel::state::PanelState;
 use crate::ui::widgets::composite::panel::style::{
     BackgroundFill, BorderConfig, DefaultPanelStyle, EdgeHandlesConfig, PanelStyle,
 };
-use crate::ui::widgets::composite::panel::theme::{DefaultPanelTheme, PanelTheme};
+use crate::ui::widgets::composite::panel::theme::PanelTheme;
 use crate::ui::widgets::composite::panel::types::{
     ColumnDef, HeaderAction, PanelHeader, PanelRenderKind, PanelView,
 };
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // =============================================================================
 // StyledPanelTheme
@@ -37,7 +38,10 @@ struct StyledPanelTheme {
     border:      String,
     header_bg:   String,
     header_text: String,
-    fallback:    DefaultPanelTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:    TokenTheme,
 }
 
 impl StyledPanelTheme {
@@ -47,7 +51,7 @@ impl StyledPanelTheme {
             border:      s.color_or_owned("border",     "#30363d"),
             header_bg:   s.color_or_owned("surface",    "#161b22"),
             header_text: s.color_or_owned("fg_2",       "#8091a5"),
-            fallback:    DefaultPanelTheme,
+            fallback:    TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }
@@ -68,6 +72,7 @@ impl PanelTheme for StyledPanelTheme {
     fn action_icon_normal(&self)      -> &str { self.fallback.action_icon_normal() }
     fn action_icon_hover(&self)       -> &str { self.fallback.action_icon_hover() }
     fn sort_arrow_color(&self)        -> &str { self.fallback.sort_arrow_color() }
+    fn action_bg_hover(&self)         -> &str { self.fallback.action_bg_hover() }
 }
 
 fn panel_settings_from_styles(s: &StyleManager) -> PanelSettings {

@@ -37,6 +37,7 @@ use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
 use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
 use crate::ui::widgets::composite::modal::theme::ModalTheme;
+use crate::ui::widgets::composite::panel::theme::PanelTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -389,6 +390,25 @@ impl ModalTheme for TokenTheme {
     fn tab_bg_hover(&self) -> &str { &self.0.modal().tab_bg_hover }
     fn wizard_dot_inactive(&self) -> &str { &self.0.modal().wizard_dot_inactive }
     fn wizard_dot_active(&self) -> &str { &self.0.modal().wizard_dot_active }
+}
+
+impl PanelTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.panel().bg }
+    fn border(&self) -> &str { &self.0.panel().border }
+    fn header_bg(&self) -> &str { &self.0.panel().header_bg }
+    fn header_text(&self) -> &str { &self.0.panel().header_text }
+    fn column_header_bg(&self) -> &str { &self.0.panel().column_header_bg }
+    fn column_header_text(&self) -> &str { &self.0.panel().column_header_text }
+    fn row_bg_normal(&self) -> &str { &self.0.panel().row_bg_normal }
+    fn row_bg_hover(&self) -> &str { &self.0.panel().row_bg_hover }
+    fn row_bg_selected(&self) -> &str { &self.0.panel().row_bg_selected }
+    fn footer_bg(&self) -> &str { &self.0.panel().footer_bg }
+    fn footer_text(&self) -> &str { &self.0.panel().footer_text }
+    fn divider(&self) -> &str { &self.0.panel().divider }
+    fn action_icon_normal(&self) -> &str { &self.0.panel().action_icon_normal }
+    fn action_icon_hover(&self) -> &str { &self.0.panel().action_icon_hover }
+    fn sort_arrow_color(&self) -> &str { &self.0.panel().sort_arrow_color }
+    fn action_bg_hover(&self) -> &str { &self.0.panel().action_bg_hover }
 }
 
 #[cfg(test)]

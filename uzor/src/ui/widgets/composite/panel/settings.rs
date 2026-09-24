@@ -1,7 +1,8 @@
 //! Panel settings bundle — `PanelTheme` + `PanelStyle` in one box.
 
 use super::style::{DefaultPanelStyle, PanelStyle};
-use super::theme::{DefaultPanelTheme, PanelTheme};
+use super::theme::PanelTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the panel composite.
 pub struct PanelSettings {
@@ -14,7 +15,7 @@ pub struct PanelSettings {
 impl Default for PanelSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultPanelTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultPanelStyle>::default(),
         }
     }
