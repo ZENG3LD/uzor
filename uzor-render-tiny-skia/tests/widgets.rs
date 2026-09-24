@@ -41,3 +41,7 @@ mod scrollbar;
 mod separator;
 #[path = "widgets/slider.rs"]
 mod slider;
+#[path = "widgets/tab.rs"]
+mod tab;
+#[path = "widgets/text.rs"]
+mod text;
