@@ -328,7 +328,7 @@ impl<'a> ButtonBuilder<'a> {
 use crate::ui::widgets::atomic::text::input::register_layout_manager_text;
 use crate::ui::widgets::atomic::text::settings::TextSettings;
 use crate::ui::widgets::atomic::text::style::{DefaultTextStyle, TextStyle};
-use crate::ui::widgets::atomic::text::theme::{DefaultTextTheme, TextTheme};
+use crate::ui::widgets::atomic::text::theme::TextTheme;
 use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use crate::render::{TextAlign, TextBaseline};
 
@@ -357,9 +357,6 @@ fn text_settings_from_styles(s: &StyleManager) -> TextSettings {
         style: Box::new(DefaultTextStyle),
     }
 }
-
-#[allow(dead_code)]
-fn _suppress_default_text_theme_unused(_t: &DefaultTextTheme) {}
 
 /// Chainable builder for a text label.
 pub struct TextBuilder<'a> {

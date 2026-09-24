@@ -25,6 +25,7 @@ use crate::ui::widgets::atomic::scrollbar::theme::ScrollbarTheme;
 use crate::ui::widgets::atomic::container::theme::ContainerTheme;
 use crate::ui::widgets::atomic::scroll_chevron::theme::ScrollChevronTheme;
 use crate::ui::widgets::atomic::separator::theme::SeparatorTheme;
+use crate::ui::widgets::atomic::text::theme::TextTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -199,6 +200,11 @@ impl SeparatorTheme for TokenTheme {
     fn pane_handle_hover(&self) -> &str { &self.0.separator().pane_handle_hover }
     fn sidebar_separator(&self) -> &str { &self.0.separator().sidebar_separator }
     fn modal_divider(&self) -> &str { &self.0.separator().modal_divider }
+}
+
+impl TextTheme for TokenTheme {
+    fn text_color(&self) -> &str { &self.0.text().text_color }
+    fn text_color_hover(&self) -> &str { &self.0.text().text_color_hover }
 }
 
 #[cfg(test)]

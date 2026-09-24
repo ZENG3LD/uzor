@@ -149,6 +149,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let text = crate::ui::widgets::atomic::text::tokens::TextTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -170,6 +174,7 @@ impl TokenSet {
             container,
             scroll_chevron,
             separator,
+            text,
         })
     }
 }
@@ -202,6 +207,7 @@ pub struct Tokens {
     container: crate::ui::widgets::atomic::container::tokens::ContainerTokens,
     scroll_chevron: crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens,
     separator: crate::ui::widgets::atomic::separator::tokens::SeparatorTokens,
+    text: crate::ui::widgets::atomic::text::tokens::TextTokens,
 }
 
 impl Tokens {
@@ -305,6 +311,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn separator(&self) -> &crate::ui::widgets::atomic::separator::tokens::SeparatorTokens {
         &self.separator
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `TextTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn text(&self) -> &crate::ui::widgets::atomic::text::tokens::TextTokens {
+        &self.text
     }
 }
 

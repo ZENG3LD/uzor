@@ -8,6 +8,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 pub use input::{
@@ -19,5 +20,5 @@ pub use render::draw_text;
 pub use settings::TextSettings;
 pub use state::TextState;
 pub use style::{DefaultTextStyle, TextStyle};
-pub use theme::{DefaultTextTheme, TextTheme};
+pub use theme::TextTheme;
 pub use types::{TextOverflow, TextRenderKind, TextView};

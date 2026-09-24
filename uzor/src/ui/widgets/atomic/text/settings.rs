@@ -1,7 +1,8 @@
 //! Text widget settings — bundles theme + style.
 
 use super::style::{DefaultTextStyle, TextStyle};
-use super::theme::{DefaultTextTheme, TextTheme};
+use super::theme::TextTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Bundles theme and style for a Text widget instance.
 pub struct TextSettings {
@@ -12,7 +13,7 @@ pub struct TextSettings {
 impl Default for TextSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultTextTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultTextStyle),
         }
     }
