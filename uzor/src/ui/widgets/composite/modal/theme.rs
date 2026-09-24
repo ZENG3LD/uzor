@@ -1,7 +1,5 @@
-//! Modal colour palette trait and default dark-theme implementation.
-//!
-//! All colour values ported from the mlc audit in `modal-deep.md` §7 and
-//! `render_modal_frame_only` in `mylittlechart/crates/chart/src/layout/modals/`.
+//! Modal colour palette trait; token-contract default implementation lives
+//! in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 
 /// Colour tokens for the modal composite.
 ///
@@ -9,132 +7,94 @@
 pub trait ModalTheme {
     // --- Frame ---
 
-    /// Modal background fill.  Default: `#1e222d`.
+    /// Modal background fill.  Default alias: `surface.floating`.
     fn bg(&self) -> &str;
 
-    /// Frame border (1 px stroke).  Default: `#363a45`.
+    /// Frame border (1 px stroke).  Default alias: `border.default`.
     fn border(&self) -> &str;
 
-    /// Shadow rect fill.  Default: `rgba(0,0,0,0.4)`.
+    /// Shadow rect fill.  Default alias: `shadow.default`.
     fn shadow(&self) -> &str;
 
     // --- Header ---
 
-    /// Header zone background.  Default: same as `bg` (`#1e222d`).
+    /// Header zone background.  Default alias: `surface.header`.
     fn header_bg(&self) -> &str;
 
-    /// Header title text colour.  Default: `#ffffff`.
+    /// Header title text colour.  Default alias: `text.on_accent`.
     fn header_text(&self) -> &str;
 
-    /// Header bottom separator line.  Default: `#363a45`.
+    /// Header bottom separator line.  Default alias: `border.default`.
     fn divider(&self) -> &str;
 
     // --- Footer ---
 
-    /// Footer zone background.  Default: same as `bg`.
+    /// Footer zone background.  Default alias: `surface.floating`.
     fn footer_bg(&self) -> &str;
 
-    /// Footer top separator line.  Default: `#363a45`.
+    /// Footer top separator line.  Default alias: `border.default`.
     fn footer_border(&self) -> &str;
 
     // --- Close button ---
 
-    /// Close-X icon colour in idle state.  Default: `#9598a1`.
+    /// Close-X icon colour in idle state.  Default alias: `text.secondary`.
     fn close_icon(&self) -> &str;
 
-    /// Close-X icon colour on hover.  Default: `#ffffff`.
+    /// Close-X icon colour on hover.  Default alias: `text.on_accent`.
     fn close_icon_hover(&self) -> &str;
 
     // --- Backdrop ---
 
     /// Backdrop dim fill (rgba string) used for `BackdropKind::Dim`.
-    /// Default: `rgba(0,0,0,0.45)`.
+    /// Default alias: `backdrop.dim`.
     fn backdrop_dim(&self) -> &str;
 
     /// Backdrop fill colour for `BackdropKind::FullBlock`.
-    /// Default: `#131722` (near-black, matches mlc WelcomeWizard background).
+    /// Default alias: `backdrop.full` (= `surface.app_chrome`).
     fn backdrop_full(&self) -> &str;
 
     // --- Sidebar (SideTabs) ---
 
-    /// Sidebar strip background.  Default: `#1e222d` (same as frame bg).
+    /// Sidebar strip background.  Default alias: `surface.floating`.
     fn sidebar_bg(&self) -> &str;
 
-    /// Sidebar right-edge separator.  Default: `#363a45`.
+    /// Sidebar right-edge separator.  Default alias: `border.default`.
     fn sidebar_border(&self) -> &str;
 
     // --- Tab strip ---
 
-    /// Active tab text colour.  Default: `#ffffff`.
+    /// Active tab text colour.  Default alias: `text.on_accent`.
     fn tab_text_active(&self) -> &str;
 
-    /// Inactive tab text colour.  Default: `#787b86`.
+    /// Inactive tab text colour.  Default alias: `text.muted`.
     fn tab_text_inactive(&self) -> &str;
 
-    /// Active tab underline / sidebar left-border accent.  Default: `#2962ff`.
+    /// Active tab underline / sidebar left-border accent.  Default alias:
+    /// `accent.default`.
     fn tab_accent(&self) -> &str;
 
-    /// Active tab background highlight.  Default: `rgba(41,98,255,0.12)`.
+    /// Active tab background highlight.  Default alias: `accent.default`
+    /// + alpha(0.12).
     fn tab_bg_active(&self) -> &str;
 
-    /// Hovered tab background.  Default: `rgba(255,255,255,0.06)`.
+    /// Hovered tab background.  Default alias: `surface.control.hover`.
     fn tab_bg_hover(&self) -> &str;
 
     // --- Wizard ---
 
-    /// Inactive page-dot colour.  Default: `#363a45`.
+    /// Inactive page-dot colour.  Default alias: `border.default`.
     fn wizard_dot_inactive(&self) -> &str;
 
-    /// Active page-dot colour.  Default: `#2962ff`.
+    /// Active page-dot colour.  Default alias: `accent.default`.
     fn wizard_dot_active(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation.
-///
-/// Values sourced from the mlc audit (§7, `modal-deep.md`) and
-/// `render_modal_frame_only`.
-#[derive(Default)]
-pub struct DefaultModalTheme;
-
-impl ModalTheme for DefaultModalTheme {
-    // Frame
-    fn bg(&self)     -> &str { "#1e222d" }
-    fn border(&self) -> &str { "#363a45" }
-    fn shadow(&self) -> &str { "rgba(0,0,0,0.4)" }
-
-    // Header
-    fn header_bg(&self)   -> &str { "#1e222d" }
-    fn header_text(&self) -> &str { "#ffffff" }
-    fn divider(&self)     -> &str { "#363a45" }
-
-    // Footer
-    fn footer_bg(&self)     -> &str { "#1e222d" }
-    fn footer_border(&self) -> &str { "#363a45" }
-
-    // Close button
-    fn close_icon(&self)       -> &str { "#9598a1" }
-    fn close_icon_hover(&self) -> &str { "#ffffff" }
-
-    // Backdrop
-    fn backdrop_dim(&self)  -> &str { "rgba(0,0,0,0.45)" }
-    fn backdrop_full(&self) -> &str { "#131722" }
-
-    // Sidebar
-    fn sidebar_bg(&self)     -> &str { "#1e222d" }
-    fn sidebar_border(&self) -> &str { "#363a45" }
-
-    // Tab strip
-    fn tab_text_active(&self)   -> &str { "#ffffff" }
-    fn tab_text_inactive(&self) -> &str { "#787b86" }
-    fn tab_accent(&self)        -> &str { "#2962ff" }
-    fn tab_bg_active(&self)     -> &str { "rgba(41,98,255,0.12)" }
-    fn tab_bg_hover(&self)      -> &str { "rgba(255,255,255,0.06)" }
-
-    // Wizard dots
-    fn wizard_dot_inactive(&self) -> &str { "#363a45" }
-    fn wizard_dot_active(&self)   -> &str { "#2962ff" }
-}
+//
+// `DefaultModalTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8a — `crate::tokens::theme::TokenTheme` is now the one `ModalTheme`
+// implementation this crate ships, backed by
+// `crate::ui::widgets::composite::modal::tokens::ModalTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

@@ -15,7 +15,7 @@
 //!     register_input_coordinator_modal, register_context_manager_modal,
 //!     ModalView, ModalState, ModalSettings, ModalRenderKind,
 //!     BackdropKind, FooterBtn, FooterBtnStyle, WizardPageInfo,
-//!     DefaultModalTheme, DefaultModalStyle, BackgroundFill,
+//!     ModalTheme, DefaultModalStyle, BackgroundFill,
 //! };
 //! ```
 
@@ -25,6 +25,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 #[cfg(test)]
@@ -37,7 +38,7 @@ pub use render::register_context_manager_modal;
 pub use settings::ModalSettings;
 pub use state::ModalState;
 pub use style::{BackgroundFill, DefaultModalStyle, ModalStyle};
-pub use theme::{DefaultModalTheme, ModalTheme};
+pub use theme::ModalTheme;
 pub use types::{
     BackdropKind, FooterBtn, FooterBtnStyle, ModalRenderKind, ModalView, WizardPageInfo,
 };

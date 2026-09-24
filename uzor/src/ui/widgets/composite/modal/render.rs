@@ -33,6 +33,7 @@ use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::atomic::close_button::render::{draw_close_button, CloseButtonView};
 use crate::ui::widgets::atomic::close_button::settings::CloseButtonSettings;
 use crate::ui::widgets::atomic::close_button::style::DefaultCloseButtonStyle;
+use crate::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 use crate::ui::widgets::atomic::close_button::types::CloseButtonRenderKind;
 use crate::ui::widgets::atomic::drag_handle::render::draw_drag_handle;
 use crate::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
@@ -41,6 +42,7 @@ use crate::ui::widgets::atomic::tab::render::{
     draw_modal_horizontal_tab, draw_modal_sidebar_tab, TabView,
 };
 use crate::ui::widgets::atomic::tab::style::{ModalHorizontalTabStyle, ModalSidebarTabStyle};
+use crate::ui::widgets::atomic::tab::theme::TabTheme;
 use crate::ui::widgets::atomic::tab::types::TabConfig;
 use crate::ui::widgets::atomic::text::render::draw_text;
 use crate::ui::widgets::atomic::text::settings::TextSettings;
@@ -49,7 +51,73 @@ use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use super::settings::ModalSettings;
 use super::state::ModalState;
 use super::style::BackgroundFill;
+use super::theme::ModalTheme;
 use super::types::{BackdropKind, FooterBtnStyle, ModalRenderKind, ModalView};
+
+// ---------------------------------------------------------------------------
+// Sub-widget theme adapters
+// ---------------------------------------------------------------------------
+//
+// Both adapters below thread `ModalTheme`'s own colour fields into the
+// generic atomic widgets modal composes (H1 Brief 8a) — before this, the
+// close-X and tab-strip paint each built an independent
+// `TokenTheme::builtin(Dark)` and ignored `ModalTheme::close_icon`/
+// `close_icon_hover`/`tab_*` entirely, even though `settings: &ModalSettings`
+// was already threaded down to `draw_top_tabs`/`draw_side_tabs` (the param
+// sat unused). Same "two parallel colour paths" bug `1a9be71` fixed for
+// `toast`. Fields with no `ModalTheme` equivalent (tabs never close in a
+// modal — `closable: false` below — and the close button's own hover
+// background has no modal-level slot) fall back to the dark built-in set.
+
+/// Adapts [`ModalTheme`]'s 5 tab fields onto [`TabTheme`] for
+/// `draw_modal_horizontal_tab`/`draw_modal_sidebar_tab`.
+struct ModalTabTheme<'a> {
+    modal: &'a dyn ModalTheme,
+    fallback: TokenTheme,
+}
+
+impl<'a> ModalTabTheme<'a> {
+    fn new(modal: &'a dyn ModalTheme) -> Self {
+        Self { modal, fallback: TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)) }
+    }
+}
+
+impl<'a> TabTheme for ModalTabTheme<'a> {
+    fn bg_normal(&self) -> &str { self.fallback.bg_normal() }
+    fn bg_hover(&self) -> &str { self.modal.tab_bg_hover() }
+    fn bg_active(&self) -> &str { self.modal.tab_bg_active() }
+    fn text_normal(&self) -> &str { self.modal.tab_text_inactive() }
+    fn text_active(&self) -> &str { self.modal.tab_text_active() }
+    fn accent(&self) -> &str { self.modal.tab_accent() }
+    fn close_normal(&self) -> &str { self.fallback.close_normal() }
+    fn close_hover(&self) -> &str { self.fallback.close_hover() }
+}
+
+/// Adapts [`ModalTheme`]'s 2 close-icon fields onto [`CloseButtonTheme`] for
+/// `draw_close_button`. Owns the resolved strings (rather than borrowing
+/// `&dyn ModalTheme`) because `CloseButtonSettings::theme` is
+/// `Box<dyn CloseButtonTheme>`, which requires `'static`.
+struct ModalCloseButtonTheme {
+    x_color: String,
+    x_color_hover: String,
+    fallback: TokenTheme,
+}
+
+impl ModalCloseButtonTheme {
+    fn new(modal: &dyn ModalTheme) -> Self {
+        Self {
+            x_color: modal.close_icon().to_string(),
+            x_color_hover: modal.close_icon_hover().to_string(),
+            fallback: TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
+        }
+    }
+}
+
+impl CloseButtonTheme for ModalCloseButtonTheme {
+    fn close_button_x_color(&self) -> &str { &self.x_color }
+    fn close_button_x_color_hover(&self) -> &str { &self.x_color_hover }
+    fn close_button_bg_hover(&self) -> &str { self.fallback.close_button_bg_hover() }
+}
 
 // ---------------------------------------------------------------------------
 // Layout helper struct
@@ -401,7 +469,7 @@ pub fn draw_modal(
         // Close-X button.
         let close_view = CloseButtonView { hovered: state.hovered_close };
         let close_settings = CloseButtonSettings {
-            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
+            theme: Box::new(ModalCloseButtonTheme::new(theme)),
             style: Box::new(DefaultCloseButtonStyle),
         };
         draw_close_button(
@@ -779,9 +847,9 @@ fn draw_top_tabs(
     layout:   &ModalLayout,
     view:     &ModalView<'_>,
     state:    &ModalState,
-    _settings: &ModalSettings,
+    settings: &ModalSettings,
 ) {
-    let tab_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
+    let tab_theme = ModalTabTheme::new(settings.theme.as_ref());
     let tab_style = ModalHorizontalTabStyle::default();
     let tab_count = view.tabs.len();
     if tab_count == 0 {
@@ -822,9 +890,9 @@ fn draw_side_tabs(
     layout:   &ModalLayout,
     view:     &ModalView<'_>,
     state:    &ModalState,
-    _settings: &ModalSettings,
+    settings: &ModalSettings,
 ) {
-    let tab_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
+    let tab_theme = ModalTabTheme::new(settings.theme.as_ref());
     let tab_style = ModalSidebarTabStyle::default();
     let tab_count = view.tabs.len();
     if tab_count == 0 {

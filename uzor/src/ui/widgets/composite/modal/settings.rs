@@ -1,7 +1,8 @@
 //! Modal settings bundle — `ModalTheme` + `ModalStyle` in one box.
 
 use super::style::{DefaultModalStyle, ModalStyle};
-use super::theme::{DefaultModalTheme, ModalTheme};
+use super::theme::ModalTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the modal composite.
 pub struct ModalSettings {
@@ -14,7 +15,7 @@ pub struct ModalSettings {
 impl Default for ModalSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultModalTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultModalStyle>::default(),
         }
     }

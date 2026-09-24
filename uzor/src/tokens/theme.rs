@@ -36,6 +36,7 @@ use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
 use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
+use crate::ui::widgets::composite::modal::theme::ModalTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -364,6 +365,30 @@ impl DropdownTheme for TokenTheme {
     fn checkbox_checked(&self) -> &str { &self.0.dropdown().checkbox_checked }
     fn cell_bg_hover(&self) -> &str { &self.0.dropdown().cell_bg_hover }
     fn cell_border(&self) -> &str { &self.0.dropdown().cell_border }
+}
+
+impl ModalTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.modal().bg }
+    fn border(&self) -> &str { &self.0.modal().border }
+    fn shadow(&self) -> &str { &self.0.modal().shadow }
+    fn header_bg(&self) -> &str { &self.0.modal().header_bg }
+    fn header_text(&self) -> &str { &self.0.modal().header_text }
+    fn divider(&self) -> &str { &self.0.modal().divider }
+    fn footer_bg(&self) -> &str { &self.0.modal().footer_bg }
+    fn footer_border(&self) -> &str { &self.0.modal().footer_border }
+    fn close_icon(&self) -> &str { &self.0.modal().close_icon }
+    fn close_icon_hover(&self) -> &str { &self.0.modal().close_icon_hover }
+    fn backdrop_dim(&self) -> &str { &self.0.modal().backdrop_dim }
+    fn backdrop_full(&self) -> &str { &self.0.modal().backdrop_full }
+    fn sidebar_bg(&self) -> &str { &self.0.modal().sidebar_bg }
+    fn sidebar_border(&self) -> &str { &self.0.modal().sidebar_border }
+    fn tab_text_active(&self) -> &str { &self.0.modal().tab_text_active }
+    fn tab_text_inactive(&self) -> &str { &self.0.modal().tab_text_inactive }
+    fn tab_accent(&self) -> &str { &self.0.modal().tab_accent }
+    fn tab_bg_active(&self) -> &str { &self.0.modal().tab_bg_active }
+    fn tab_bg_hover(&self) -> &str { &self.0.modal().tab_bg_hover }
+    fn wizard_dot_inactive(&self) -> &str { &self.0.modal().wizard_dot_inactive }
+    fn wizard_dot_active(&self) -> &str { &self.0.modal().wizard_dot_active }
 }
 
 #[cfg(test)]

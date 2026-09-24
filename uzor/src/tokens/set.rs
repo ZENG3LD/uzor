@@ -195,6 +195,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let modal = crate::ui::widgets::composite::modal::tokens::ModalTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -227,6 +231,7 @@ impl TokenSet {
             chrome,
             context_menu,
             dropdown,
+            modal,
         })
     }
 }
@@ -270,6 +275,7 @@ pub struct Tokens {
     chrome: crate::ui::widgets::composite::chrome::tokens::ChromeTokens,
     context_menu: crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens,
     dropdown: crate::ui::widgets::composite::dropdown::tokens::DropdownTokens,
+    modal: crate::ui::widgets::composite::modal::tokens::ModalTokens,
 }
 
 impl Tokens {
@@ -454,6 +460,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn dropdown(&self) -> &crate::ui::widgets::composite::dropdown::tokens::DropdownTokens {
         &self.dropdown
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ModalTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn modal(&self) -> &crate::ui::widgets::composite::modal::tokens::ModalTokens {
+        &self.modal
     }
 }
 

@@ -22,7 +22,8 @@ use crate::render::RenderContext;
 use crate::ui::widgets::composite::modal::input::register_layout_manager_modal;
 use crate::ui::widgets::composite::modal::settings::ModalSettings;
 use crate::ui::widgets::composite::modal::style::{DefaultModalStyle, ModalStyle};
-use crate::ui::widgets::composite::modal::theme::{DefaultModalTheme, ModalTheme};
+use crate::ui::widgets::composite::modal::theme::ModalTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::composite::modal::types::{
     BackdropKind, FooterBtn, ModalRenderKind, ModalView, WizardPageInfo,
 };
@@ -38,7 +39,10 @@ struct StyledModalTheme {
     header_text: String,
     tab_accent:  String,
     tab_bg_active: String,
-    fallback:    DefaultModalTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:    TokenTheme,
 }
 
 impl StyledModalTheme {
@@ -51,7 +55,7 @@ impl StyledModalTheme {
             header_text:   s.color_or_owned("fg_0",         "#ffffff"),
             tab_accent:    accent.clone(),
             tab_bg_active: accent_dim,
-            fallback:      DefaultModalTheme,
+            fallback:      TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

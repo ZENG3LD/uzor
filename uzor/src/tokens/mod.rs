@@ -77,6 +77,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
             Some(crate::ui::widgets::composite::context_menu::tokens::CONTEXT_MENU_KEYS)
         }
         "dropdown" => Some(crate::ui::widgets::composite::dropdown::tokens::DROPDOWN_KEYS),
+        "modal" => Some(crate::ui::widgets::composite::modal::tokens::MODAL_KEYS),
         _ => None,
     }
 }
