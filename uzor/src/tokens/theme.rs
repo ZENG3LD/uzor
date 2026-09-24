@@ -19,6 +19,7 @@ use crate::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 use crate::ui::widgets::atomic::color_swatch::theme::ColorSwatchTheme;
 use crate::ui::widgets::atomic::drag_handle::theme::DragHandleTheme;
 use crate::ui::widgets::atomic::dropdown_trigger::theme::DropdownTriggerTheme;
+use crate::ui::widgets::atomic::item::theme::ItemTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -143,6 +144,10 @@ impl DropdownTriggerTheme for TokenTheme {
     fn dropdown_field_border(&self) -> &str { &self.0.dropdown_trigger().dropdown_field_border }
     fn dropdown_field_text(&self) -> &str { &self.0.dropdown_trigger().dropdown_field_text }
     fn dropdown_chevron_color(&self) -> &str { &self.0.dropdown_trigger().dropdown_chevron_color }
+}
+
+impl ItemTheme for TokenTheme {
+    fn item_text(&self) -> &str { &self.0.item().item_text }
 }
 
 #[cfg(test)]

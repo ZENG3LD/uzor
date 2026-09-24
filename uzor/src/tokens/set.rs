@@ -124,6 +124,10 @@ impl TokenSet {
                 &semantic,
                 &self.components,
             );
+        let item = crate::ui::widgets::atomic::item::tokens::ItemTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -139,6 +143,7 @@ impl TokenSet {
             color_swatch,
             drag_handle,
             dropdown_trigger,
+            item,
         })
     }
 }
@@ -165,6 +170,7 @@ pub struct Tokens {
     color_swatch: crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens,
     drag_handle: crate::ui::widgets::atomic::drag_handle::tokens::DragHandleTokens,
     dropdown_trigger: crate::ui::widgets::atomic::dropdown_trigger::tokens::DropdownTriggerTokens,
+    item: crate::ui::widgets::atomic::item::tokens::ItemTokens,
 }
 
 impl Tokens {
@@ -224,6 +230,13 @@ impl Tokens {
         &self,
     ) -> &crate::ui::widgets::atomic::dropdown_trigger::tokens::DropdownTriggerTokens {
         &self.dropdown_trigger
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ItemTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn item(&self) -> &crate::ui::widgets::atomic::item::tokens::ItemTokens {
+        &self.item
     }
 }
 

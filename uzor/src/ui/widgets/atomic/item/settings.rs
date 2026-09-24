@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the item widget.
 
 use super::style::{DefaultItemStyle, ItemStyle};
-use super::theme::{DefaultItemTheme, ItemTheme};
+use super::theme::ItemTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for an item instance.
 pub struct ItemSettings {
@@ -14,7 +15,7 @@ pub struct ItemSettings {
 impl Default for ItemSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultItemTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultItemStyle),
         }
     }

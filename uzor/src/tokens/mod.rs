@@ -54,6 +54,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "color_swatch" => Some(crate::ui::widgets::atomic::color_swatch::tokens::COLOR_SWATCH_KEYS),
         "drag_handle" => Some(crate::ui::widgets::atomic::drag_handle::tokens::DRAG_HANDLE_KEYS),
         "dropdown_trigger" => Some(crate::ui::widgets::atomic::dropdown_trigger::tokens::DROPDOWN_TRIGGER_KEYS),
+        "item" => Some(crate::ui::widgets::atomic::item::tokens::ITEM_KEYS),
         _ => None,
     }
 }

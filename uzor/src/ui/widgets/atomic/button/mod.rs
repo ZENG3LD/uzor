@@ -149,6 +149,6 @@ pub use super::clock::{
 };
 pub use super::item::{
     ItemView, ItemRenderKind,
-    ItemTheme, DefaultItemTheme,
+    ItemTheme,
     draw_item,
 };
