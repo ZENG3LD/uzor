@@ -22,25 +22,12 @@ pub trait DropdownTriggerTheme {
     fn dropdown_chevron_color(&self) -> &str;
 }
 
-/// Default dropdown trigger theme using prototype colors.
-pub struct DefaultDropdownTriggerTheme;
-
-impl DefaultDropdownTriggerTheme {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultDropdownTriggerTheme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DropdownTriggerTheme for DefaultDropdownTriggerTheme {
-    fn dropdown_field_bg(&self)       -> &str { "#1e222d" }
-    fn dropdown_field_bg_hover(&self) -> &str { "#2a2e39" }
-    fn dropdown_field_border(&self)   -> &str { "#2a2e39" }
-    fn dropdown_field_text(&self)     -> &str { "#d1d4dc" }
-    fn dropdown_chevron_color(&self)  -> &str { "#d1d4dc" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultDropdownTriggerTheme` (a literal-colour prototype impl) was
+// deleted in H1 Brief 6 — `crate::tokens::theme::TokenTheme` is now the one
+// `DropdownTriggerTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::dropdown_trigger::tokens::DropdownTriggerTokens`
+// (see `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

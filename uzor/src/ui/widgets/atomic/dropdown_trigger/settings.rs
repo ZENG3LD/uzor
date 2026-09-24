@@ -4,7 +4,8 @@ use super::style::{
     DefaultDropdownFieldStyle, DefaultSplitDropdownStyle,
     DropdownFieldStyle, SplitDropdownStyle,
 };
-use super::theme::{DefaultDropdownTriggerTheme, DropdownTriggerTheme};
+use super::theme::DropdownTriggerTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates the visual configuration for a dropdown trigger instance.
 pub struct DropdownTriggerSettings {
@@ -19,7 +20,7 @@ pub struct DropdownTriggerSettings {
 impl Default for DropdownTriggerSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultDropdownTriggerTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             split_style: Box::new(DefaultSplitDropdownStyle),
             field_style: Box::new(DefaultDropdownFieldStyle),
         }

@@ -8,7 +8,13 @@
 //! Self-contained:
 //! - `types`    — `SplitDropdownView`, `DropdownFieldView`, `DropdownTriggerRenderKind`.
 //! - `state`    — `DropdownTriggerState` placeholder.
-//! - `theme`    — `DropdownTriggerTheme` trait + `DefaultDropdownTriggerTheme`.
+//! - `theme`    — `DropdownTriggerTheme` trait.
+//! - `tokens`   — `DropdownTriggerTokens`: the token-contract implementation
+//!                of `DropdownTriggerTheme`, one pre-rendered value per
+//!                method, built from `SemanticRoles` + optional
+//!                `component.dropdown_trigger.*` overrides (H1 token
+//!                contract design §3). `TokenTheme` (`crate::tokens::theme`)
+//!                implements `DropdownTriggerTheme` by reading these fields.
 //! - `style`    — `SplitDropdownStyle` / `DefaultSplitDropdownStyle`
 //!                + `DropdownFieldStyle` / `DefaultDropdownFieldStyle`.
 //! - `settings` — `DropdownTriggerSettings` bundle.
@@ -18,6 +24,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -25,7 +32,7 @@ pub mod input;
 
 pub use types::{DropdownFieldView, DropdownTriggerRenderKind, SplitDropdownView};
 pub use state::DropdownTriggerState;
-pub use theme::{DefaultDropdownTriggerTheme, DropdownTriggerTheme};
+pub use theme::DropdownTriggerTheme;
 pub use style::{
     DefaultDropdownFieldStyle, DefaultSplitDropdownStyle,
     DropdownFieldStyle, SplitDropdownStyle,
