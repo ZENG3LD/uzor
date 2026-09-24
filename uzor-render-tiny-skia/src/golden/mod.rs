@@ -108,27 +108,37 @@ mod tests {
     /// state — every test that sets it, or relies on it being unset, must
     /// serialize against every other one to avoid a thread-interleaving
     /// race (one test's bless leaking into another's "not blessed" check).
+    /// Every test in this module calls [`lock_env`] once, at the very top,
+    /// and keeps the returned guard alive for its ENTIRE body — not just
+    /// around the bless step. A test that only locked around
+    /// `BlessGuard::enable` (release the lock the instant `UZOR_BLESS` goes
+    /// back to unset) would still race the very next un-blessed
+    /// `compare_or_bless` call in the SAME test against another thread's
+    /// bless step; this was a real, observed intermittent failure before
+    /// this doc comment was written.
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// RAII: sets `UZOR_BLESS=1` for the guarded critical section, always
-    /// clearing it again on drop (including on an assertion panic mid-test,
-    /// so one failing test can't leave bless mode on for the next).
-    struct BlessGuard<'a> {
-        _lock: std::sync::MutexGuard<'a, ()>,
-    }
+    /// RAII: sets `UZOR_BLESS=1`, always clearing it again on drop
+    /// (including on an assertion panic mid-test, so one failing test can't
+    /// leave bless mode on for the next). Does NOT itself hold
+    /// [`ENV_GUARD`] — the caller must already hold `lock_env()`'s guard for
+    /// its whole test body (see that constant's own doc comment); holding
+    /// the lock here too would deadlock a caller that (correctly) already
+    /// holds it.
+    struct BlessGuard;
 
-    impl<'a> BlessGuard<'a> {
-        fn enable(lock: std::sync::MutexGuard<'a, ()>) -> Self {
+    impl BlessGuard {
+        fn enable() -> Self {
             std::env::set_var("UZOR_BLESS", "1");
-            Self { _lock: lock }
+            Self
         }
     }
 
-    impl Drop for BlessGuard<'_> {
+    impl Drop for BlessGuard {
         fn drop(&mut self) {
             std::env::remove_var("UZOR_BLESS");
         }
@@ -175,11 +185,12 @@ mod tests {
 
     #[test]
     fn bless_then_compare_round_trips_to_ok() {
+        let _lock = lock_env();
         let name = unique_name("round-trip");
         let actual = solid_rgba([200, 100, 50, 255], 4, 3);
 
         {
-            let _bless = BlessGuard::enable(lock_env());
+            let _bless = BlessGuard::enable();
             compare_or_bless(&name, &actual, 4, 3, GoldenTolerance::default())
                 .expect("bless must always succeed");
         }
@@ -192,11 +203,12 @@ mod tests {
 
     #[test]
     fn mismatch_writes_failure_pngs_and_reports_mismatch() {
+        let _lock = lock_env();
         let name = unique_name("mismatch");
         let golden_pixels = solid_rgba([0, 0, 0, 255], 3, 3);
 
         {
-            let _bless = BlessGuard::enable(lock_env());
+            let _bless = BlessGuard::enable();
             compare_or_bless(&name, &golden_pixels, 3, 3, GoldenTolerance::default())
                 .expect("bless must always succeed");
         }
@@ -221,11 +233,12 @@ mod tests {
 
     #[test]
     fn size_mismatch_is_reported_before_pixel_diffing() {
+        let _lock = lock_env();
         let name = unique_name("size-mismatch");
         let golden_pixels = solid_rgba([0, 0, 0, 255], 2, 2);
 
         {
-            let _bless = BlessGuard::enable(lock_env());
+            let _bless = BlessGuard::enable();
             compare_or_bless(&name, &golden_pixels, 2, 2, GoldenTolerance::default())
                 .expect("bless must always succeed");
         }
