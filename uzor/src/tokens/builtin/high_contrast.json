@@ -1,0 +1,75 @@
+{
+  "$name": "High Contrast",
+  "color": {
+    "surface": {
+      "app_chrome": { "$type": "color", "$value": "#000000" },
+      "control": {
+        "idle": { "$type": "color", "$value": "#1a1a1a" },
+        "hover": { "$type": "color", "$value": "#333333" },
+        "active": { "$type": "color", "$value": "#0066ff" }
+      },
+      "floating": { "$type": "color", "$value": "#000000" },
+      "header": { "$type": "color", "$value": "{color.surface.floating}" },
+      "panel": { "$type": "color", "$value": "{color.surface.floating}" }
+    },
+    "text": {
+      "primary": { "$type": "color", "$value": "#ffffff" },
+      "secondary": { "$type": "color", "$value": "#cccccc" },
+      "muted": { "$type": "color", "$value": "#999999" },
+      "disabled": { "$type": "color", "$value": "{color.text.muted}" },
+      "on_accent": { "$type": "color", "$value": "{color.text.primary}" }
+    },
+    "border": {
+      "subtle": { "$type": "color", "$value": "#666666" },
+      "default": { "$type": "color", "$value": "#ffffff" },
+      "strong": { "$type": "color", "$value": "{color.border.default}" }
+    },
+    "accent": {
+      "default": { "$type": "color", "$value": "#0066ff" },
+      "hover": { "$type": "color", "$value": "#0055dd" },
+      "pressed": { "$type": "color", "$value": "{color.accent.hover}" }
+    },
+    "status": {
+      "success": { "$type": "color", "$value": "#00ff00" },
+      "success_bg": {
+        "$type": "color",
+        "$value": "{color.status.success}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "danger": { "$type": "color", "$value": "#ff0000" },
+      "danger_bg": {
+        "$type": "color",
+        "$value": "{color.status.danger}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "warning": { "$type": "color", "$value": "#ffff00" },
+      "warning_bg": {
+        "$type": "color",
+        "$value": "{color.status.warning}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "info": { "$type": "color", "$value": "{color.accent.default}" },
+      "info_bg": {
+        "$type": "color",
+        "$value": "{color.status.info}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      }
+    },
+    "selection": { "$type": "color", "$value": "#0066ffaa" },
+    "focus_ring": { "$type": "color", "$value": "{color.accent.default}" },
+    "backdrop": {
+      "dim": { "$type": "color", "$value": "rgba(0,0,0,0.45)" },
+      "full": { "$type": "color", "$value": "{color.surface.app_chrome}" }
+    },
+    "shadow": {
+      "default": { "$type": "color", "$value": "rgba(0,0,0,0.4)" }
+    }
+  },
+  "geometry": {
+    "radius": {
+      "sm": { "$type": "dimension", "$value": 2.0 },
+      "md": { "$type": "dimension", "$value": 4.0 },
+      "lg": { "$type": "dimension", "$value": 8.0 }
+    }
+  }
+}

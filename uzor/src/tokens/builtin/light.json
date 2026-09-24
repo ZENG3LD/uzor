@@ -1,0 +1,75 @@
+{
+  "$name": "Light",
+  "color": {
+    "surface": {
+      "app_chrome": { "$type": "color", "$value": "#f8f9fa" },
+      "control": {
+        "idle": { "$type": "color", "$value": "#e9ecef" },
+        "hover": { "$type": "color", "$value": "#dee2e6" },
+        "active": { "$type": "color", "$value": "#4a90d9" }
+      },
+      "floating": { "$type": "color", "$value": "#ffffff" },
+      "header": { "$type": "color", "$value": "{color.surface.floating}" },
+      "panel": { "$type": "color", "$value": "{color.surface.floating}" }
+    },
+    "text": {
+      "primary": { "$type": "color", "$value": "#131722" },
+      "secondary": { "$type": "color", "$value": "#434651" },
+      "muted": { "$type": "color", "$value": "#787b86" },
+      "disabled": { "$type": "color", "$value": "{color.text.muted}" },
+      "on_accent": { "$type": "color", "$value": "{color.text.primary}" }
+    },
+    "border": {
+      "subtle": { "$type": "color", "$value": "#e9ecef" },
+      "default": { "$type": "color", "$value": "#dee2e6" },
+      "strong": { "$type": "color", "$value": "{color.border.default}" }
+    },
+    "accent": {
+      "default": { "$type": "color", "$value": "#4a90d9" },
+      "hover": { "$type": "color", "$value": "#3a7bc8" },
+      "pressed": { "$type": "color", "$value": "{color.accent.hover}" }
+    },
+    "status": {
+      "success": { "$type": "color", "$value": "#26a69a" },
+      "success_bg": {
+        "$type": "color",
+        "$value": "{color.status.success}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "danger": { "$type": "color", "$value": "#f23645" },
+      "danger_bg": {
+        "$type": "color",
+        "$value": "{color.status.danger}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "warning": { "$type": "color", "$value": "#ff9800" },
+      "warning_bg": {
+        "$type": "color",
+        "$value": "{color.status.warning}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      },
+      "info": { "$type": "color", "$value": "{color.accent.default}" },
+      "info_bg": {
+        "$type": "color",
+        "$value": "{color.status.info}",
+        "$extensions": { "uzor.alpha": 0.15 }
+      }
+    },
+    "selection": { "$type": "color", "$value": "#4a90d940" },
+    "focus_ring": { "$type": "color", "$value": "{color.accent.default}" },
+    "backdrop": {
+      "dim": { "$type": "color", "$value": "rgba(0,0,0,0.45)" },
+      "full": { "$type": "color", "$value": "{color.surface.app_chrome}" }
+    },
+    "shadow": {
+      "default": { "$type": "color", "$value": "rgba(0,0,0,0.4)" }
+    }
+  },
+  "geometry": {
+    "radius": {
+      "sm": { "$type": "dimension", "$value": 2.0 },
+      "md": { "$type": "dimension", "$value": 4.0 },
+      "lg": { "$type": "dimension", "$value": 8.0 }
+    }
+  }
+}

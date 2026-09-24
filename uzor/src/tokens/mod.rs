@@ -7,13 +7,14 @@
 //! widgets).
 //!
 //! H1 Brief 1 landed the colour math and the fixed role types
-//! (`color`/`geometry`/`semantic`). Brief 2 (this) adds the DTCG loader:
-//! `dtcg` (raw parse types, path walking, [`TokenLoadError`]) landed first;
-//! `loader` (`load_token_set`, alias DFS with cycle detection) and `set`
-//! (`TokenSet`/`Tokens`, the `app.*` and `component.*` surfaces) land here.
-//! `builtin`/`theme` (the 4 built-in JSON sets, `TokenTheme`) land in later
-//! briefs (§6).
+//! (`color`/`geometry`/`semantic`). Brief 2 added the DTCG loader: `dtcg`
+//! (raw parse types, path walking, [`TokenLoadError`]), `loader`
+//! (`load_token_set`, alias DFS with cycle detection), and `set`
+//! (`TokenSet`/`Tokens`, the `app.*` and `component.*` surfaces). Brief 3
+//! (this) adds `builtin`: the 4 generic built-in JSON sets and
+//! [`Tokens::builtin`]. `theme` (`TokenTheme`) lands in Brief 4.
 
+pub mod builtin;
 pub mod color;
 pub mod dtcg;
 pub mod geometry;
@@ -21,6 +22,7 @@ pub mod loader;
 pub mod semantic;
 pub mod set;
 
+pub use builtin::BuiltinSet;
 pub use color::{ColorParseError, ColorValue, Rgba};
 pub use dtcg::TokenLoadError;
 pub use geometry::GeometryRoles;
