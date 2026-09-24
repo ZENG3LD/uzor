@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the checkbox widget.
 
-use super::theme::{CheckboxTheme, DefaultCheckboxTheme};
+use super::theme::CheckboxTheme;
 use super::style::{CheckboxStyle, StandardCheckboxStyle};
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a checkbox instance.
 pub struct CheckboxSettings {
@@ -14,7 +15,7 @@ pub struct CheckboxSettings {
 impl Default for CheckboxSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultCheckboxTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(StandardCheckboxStyle),
         }
     }

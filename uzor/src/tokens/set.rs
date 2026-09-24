@@ -95,6 +95,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let checkbox = crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -103,6 +107,7 @@ impl TokenSet {
             app: self.app.clone(),
             components: self.components.clone(),
             button,
+            checkbox,
         })
     }
 }
@@ -122,6 +127,7 @@ pub struct Tokens {
     pub app: AppTokens,
     pub components: ComponentOverrides,
     button: crate::ui::widgets::atomic::button::tokens::ButtonTokens,
+    checkbox: crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens,
 }
 
 impl Tokens {
@@ -130,6 +136,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn button(&self) -> &crate::ui::widgets::atomic::button::tokens::ButtonTokens {
         &self.button
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `CheckboxTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn checkbox(&self) -> &crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens {
+        &self.checkbox
     }
 }
 

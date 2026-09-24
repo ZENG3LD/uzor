@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::tokens::set::Tokens;
 use crate::ui::widgets::atomic::button::theme::ButtonTheme;
+use crate::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -83,6 +84,15 @@ impl ButtonTheme for TokenTheme {
     fn transparency_checker_a(&self) -> &str { &self.0.button().transparency_checker_a }
     fn transparency_checker_b(&self) -> &str { &self.0.button().transparency_checker_b }
     fn dropdown_menu_row_bg_normal(&self) -> &str { &self.0.button().dropdown_menu_row_bg_normal }
+}
+
+impl CheckboxTheme for TokenTheme {
+    fn checkbox_bg_checked(&self) -> &str { &self.0.checkbox().checkbox_bg_checked }
+    fn checkbox_bg_unchecked(&self) -> &str { &self.0.checkbox().checkbox_bg_unchecked }
+    fn checkbox_border(&self) -> &str { &self.0.checkbox().checkbox_border }
+    fn checkbox_checkmark(&self) -> &str { &self.0.checkbox().checkbox_checkmark }
+    fn checkbox_notification_inner(&self) -> &str { &self.0.checkbox().checkbox_notification_inner }
+    fn checkbox_label_text(&self) -> &str { &self.0.checkbox().checkbox_label_text }
 }
 
 #[cfg(test)]

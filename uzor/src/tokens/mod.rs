@@ -47,6 +47,7 @@ pub use theme::TokenTheme;
 pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
     match widget {
         "button" => Some(crate::ui::widgets::atomic::button::tokens::BUTTON_KEYS),
+        "checkbox" => Some(crate::ui::widgets::atomic::checkbox::tokens::CHECKBOX_KEYS),
         _ => None,
     }
 }

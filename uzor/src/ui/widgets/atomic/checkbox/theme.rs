@@ -16,20 +16,12 @@ pub trait CheckboxTheme {
     fn checkbox_label_text(&self) -> &str;
 }
 
-/// Default checkbox theme using uzor prototype colors.
-pub struct DefaultCheckboxTheme;
-
-impl Default for DefaultCheckboxTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl CheckboxTheme for DefaultCheckboxTheme {
-    fn checkbox_bg_checked(&self) -> &str          { "#2196F3" }
-    fn checkbox_bg_unchecked(&self) -> &str        { "#1e222d" }
-    fn checkbox_border(&self) -> &str              { "#2a2e39" }
-    fn checkbox_checkmark(&self) -> &str           { "#ffffff" }
-    fn checkbox_notification_inner(&self) -> &str  { "#ffffff" }
-    fn checkbox_label_text(&self) -> &str          { "#d1d4dc" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultCheckboxTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 5 — `crate::tokens::theme::TokenTheme` is now the one `CheckboxTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).
