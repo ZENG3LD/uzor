@@ -8,5 +8,8 @@
 // binary, so plain `mod button;` would look for a sibling
 // `tests/button.rs` — the explicit `#[path]` is what actually places the
 // submodule under `tests/widgets/`, matching the file layout above.
+#[path = "widgets/support.rs"]
+mod support;
+
 #[path = "widgets/button.rs"]
 mod button;

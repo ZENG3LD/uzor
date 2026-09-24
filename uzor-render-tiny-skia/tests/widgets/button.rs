@@ -1,19 +1,22 @@
-//! First widget harness+golden+a11y round trip (H0 done-criterion):
-//! button passes three golden PNG states (default/hover/pressed), a
-//! click through the real `TestHarness`/`InputCoordinator` lifecycle, and
-//! an accessibility query (role=Button, name="Save", has `Click` action).
+//! Widget harness+golden+a11y round trip for button (H1 Brief 10a-1: migrated
+//! off H0's single white-canvas 3-state set onto the full golden grid —
+//! `button/<set>/{default,hover,pressed,disabled}.png` for all 4 built-in
+//! token sets, each drawn with its own `TokenTheme`). Also keeps H0's click
+//! through the real `TestHarness`/`InputCoordinator` lifecycle and an
+//! accessibility query (role=Button, name="Save", has `Click` action).
 
 #![cfg(feature = "golden")]
 
-use tiny_skia::Color;
 use uzor::a11y::{A11yAction, A11yRole};
 use uzor::input::pointer::state::MouseButton;
 use uzor::input::LayerId;
 use uzor::testing::{A11yQuery, TestHarness};
+use uzor::tokens::{BuiltinSet, TokenTheme, Tokens};
 use uzor::types::{Rect, WidgetId, WidgetState};
 use uzor::ui::widgets::atomic::button::{self, ButtonSettings, ButtonView};
-use uzor_render_tiny_skia::golden::{compare_or_bless, GoldenTolerance};
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
+
+use super::support::{self, ReviewSheet};
 
 const LABEL: &str = "Save";
 
@@ -21,43 +24,44 @@ fn rect() -> Rect {
     Rect::new(20.0, 20.0, 120.0, 36.0)
 }
 
-fn view() -> ButtonView<'static> {
+fn view(disabled: bool) -> ButtonView<'static> {
     ButtonView {
         icon: None,
         text: Some(LABEL),
         active: false,
-        disabled: false,
+        disabled,
         active_border: None,
         hover_chevron: None,
     }
 }
 
-fn render(state: WidgetState) -> TinySkiaCpuRenderContext {
-    let mut ctx = TinySkiaCpuRenderContext::new(160, 76, 1.0);
-    ctx.clear(Color::WHITE);
-    button::draw_button(&mut ctx, rect(), state, &view(), &ButtonSettings::default(), |_, _, _, _| {});
+fn render(set: BuiltinSet, state: WidgetState, disabled: bool) -> TinySkiaCpuRenderContext {
+    let mut ctx = support::canvas(160, 76, set);
+    let settings = ButtonSettings::default().with_theme(Box::new(TokenTheme::new(Tokens::builtin(set))));
+    button::draw_button(&mut ctx, rect(), state, &view(disabled), &settings, |_, _, _, _| {});
     ctx
 }
 
-#[test]
-fn button_default_matches_golden() {
-    let ctx = render(WidgetState::Normal);
-    compare_or_bless("button/default", ctx.pixels(), ctx.width(), ctx.height(), GoldenTolerance::default())
-        .expect("button/default golden mismatch");
-}
+/// `(state name, coordinator state, view.disabled)` — the 4 states H1's
+/// golden grid design doc §5 lists for button.
+const STATES: &[(&str, WidgetState, bool)] = &[
+    ("default", WidgetState::Normal, false),
+    ("hover", WidgetState::Hovered, false),
+    ("pressed", WidgetState::Pressed, false),
+    ("disabled", WidgetState::Disabled, true),
+];
 
 #[test]
-fn button_hover_matches_golden() {
-    let ctx = render(WidgetState::Hovered);
-    compare_or_bless("button/hover", ctx.pixels(), ctx.width(), ctx.height(), GoldenTolerance::default())
-        .expect("button/hover golden mismatch");
-}
-
-#[test]
-fn button_pressed_matches_golden() {
-    let ctx = render(WidgetState::Pressed);
-    compare_or_bless("button/pressed", ctx.pixels(), ctx.width(), ctx.height(), GoldenTolerance::default())
-        .expect("button/pressed golden mismatch");
+fn button_matches_golden_grid() {
+    let mut sheet = ReviewSheet::new();
+    support::for_each_set(|set, _tokens| {
+        for &(state_name, state, disabled) in STATES {
+            let ctx = render(set, state, disabled);
+            support::golden("button", set, state_name, &ctx).expect("button golden mismatch");
+            sheet.add(set, state_name, &ctx);
+        }
+    });
+    sheet.save("button");
 }
 
 #[test]
@@ -74,7 +78,7 @@ fn button_click_updates_response_and_a11y_node() {
     // proves the a11y node exists and is correct before any input at all.
     let (_, f1) = harness.frame(|coord, a11y| {
         button::register(coord, id.clone(), rect(), &LayerId::main());
-        a11y.push(button::node_for(id.clone(), rect(), &view(), false));
+        a11y.push(button::node_for(id.clone(), rect(), &view(false), false));
     });
     let node = A11yQuery::new(&f1.a11y)
         .find_by_role_name(A11yRole::Button, LABEL)
@@ -95,7 +99,7 @@ fn button_click_updates_response_and_a11y_node() {
     harness.events.pointer_down(cx, cy, MouseButton::Left);
     harness.frame(|coord, a11y| {
         button::register(coord, id.clone(), rect(), &LayerId::main());
-        a11y.push(button::node_for(id.clone(), rect(), &view(), false));
+        a11y.push(button::node_for(id.clone(), rect(), &view(false), false));
     });
     assert_eq!(harness.coordinator.widget_state(&id), WidgetState::Pressed);
 
@@ -105,7 +109,7 @@ fn button_click_updates_response_and_a11y_node() {
     harness.events.pointer_up(cx, cy, MouseButton::Left);
     let (_, f3) = harness.frame(|coord, a11y| {
         button::register(coord, id.clone(), rect(), &LayerId::main());
-        a11y.push(button::node_for(id.clone(), rect(), &view(), false));
+        a11y.push(button::node_for(id.clone(), rect(), &view(false), false));
     });
     let (_, resp) = f3
         .responses
