@@ -4,7 +4,13 @@
 //! Self-contained:
 //! - `types`    — `ColorSwatchView`, `FillToggleView`, `ColorSwatchRenderKind`.
 //! - `state`    — `ColorSwatchState` placeholder.
-//! - `theme`    — `ColorSwatchTheme` trait + `DefaultColorSwatchTheme`.
+//! - `theme`    — `ColorSwatchTheme` trait.
+//! - `tokens`   — `ColorSwatchTokens`: the token-contract implementation of
+//!                `ColorSwatchTheme`, one pre-rendered value per method,
+//!                built from `SemanticRoles` + optional
+//!                `component.color_swatch.*` overrides (H1 token contract
+//!                design §3). `TokenTheme` (`crate::tokens::theme`)
+//!                implements `ColorSwatchTheme` by reading these fields.
 //! - `style`    — `ColorSwatchStyle` trait + `SimpleSwatchStyle` / `IndicatorSwatchStyle`
 //!                / `AppearanceSwatchStyle` / `PrimitiveSwatchStyle`
 //!                + `FillToggleStyle` trait + `PrimitiveFillToggleStyle`.
@@ -15,6 +21,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -22,7 +29,7 @@ pub mod input;
 
 pub use types::{ColorSwatchRenderKind, ColorSwatchView, FillToggleView};
 pub use state::ColorSwatchState;
-pub use theme::{ColorSwatchTheme, DefaultColorSwatchTheme};
+pub use theme::ColorSwatchTheme;
 pub use style::{
     AppearanceSwatchStyle, ColorSwatchStyle,
     FillToggleStyle, IndicatorSwatchStyle,

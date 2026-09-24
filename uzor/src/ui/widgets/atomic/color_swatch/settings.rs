@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for color swatch widgets.
 
 use super::style::{ColorSwatchStyle, FillToggleStyle, PrimitiveFillToggleStyle, SimpleSwatchStyle};
-use super::theme::{ColorSwatchTheme, DefaultColorSwatchTheme};
+use super::theme::ColorSwatchTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates the visual configuration for a color swatch instance.
 pub struct ColorSwatchSettings {
@@ -16,7 +17,7 @@ pub struct ColorSwatchSettings {
 impl Default for ColorSwatchSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultColorSwatchTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(SimpleSwatchStyle),
             fill_toggle_style: Box::new(PrimitiveFillToggleStyle),
         }

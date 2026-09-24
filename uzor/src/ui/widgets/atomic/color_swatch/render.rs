@@ -191,9 +191,7 @@ fn draw_fill_toggle_inner(
 
     // ── Disabled overlay ───────────────────────────────────────────────────────
     if view.disabled {
-        // Inline constant: semi-transparent black overlay for disabled state.
-        // Value mirrors toggle_disabled_overlay from mlc: "rgba(0,0,0,0.35)".
-        ctx.set_fill_color("rgba(0,0,0,0.35)");
+        ctx.set_fill_color(theme.fill_toggle_disabled_overlay());
         ctx.fill_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
     }
 }

@@ -51,6 +51,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "chevron" => Some(crate::ui::widgets::atomic::chevron::tokens::CHEVRON_KEYS),
         "clock" => Some(crate::ui::widgets::atomic::clock::tokens::CLOCK_KEYS),
         "close_button" => Some(crate::ui::widgets::atomic::close_button::tokens::CLOSE_BUTTON_KEYS),
+        "color_swatch" => Some(crate::ui::widgets::atomic::color_swatch::tokens::COLOR_SWATCH_KEYS),
         _ => None,
     }
 }

@@ -16,6 +16,7 @@ use crate::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use crate::ui::widgets::atomic::chevron::theme::ChevronTheme;
 use crate::ui::widgets::atomic::clock::theme::ClockTheme;
 use crate::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
+use crate::ui::widgets::atomic::color_swatch::theme::ColorSwatchTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -118,6 +119,18 @@ impl CloseButtonTheme for TokenTheme {
     fn close_button_bg_hover(&self) -> &str { &self.0.close_button().close_button_bg_hover }
 }
 
+impl ColorSwatchTheme for TokenTheme {
+    fn color_swatch_border(&self) -> &str { &self.0.color_swatch().color_swatch_border }
+    fn color_swatch_hover_outline(&self) -> &str { &self.0.color_swatch().color_swatch_hover_outline }
+    fn color_swatch_selected_border(&self) -> &str { &self.0.color_swatch().color_swatch_selected_border }
+    fn transparency_checker_a(&self) -> &str { &self.0.color_swatch().transparency_checker_a }
+    fn transparency_checker_b(&self) -> &str { &self.0.color_swatch().transparency_checker_b }
+    fn fill_toggle_active_border(&self) -> &str { &self.0.color_swatch().fill_toggle_active_border }
+    fn fill_toggle_off_pattern_color(&self) -> &str { &self.0.color_swatch().fill_toggle_off_pattern_color }
+    fn fill_toggle_background(&self) -> &str { &self.0.color_swatch().fill_toggle_background }
+    fn fill_toggle_disabled_overlay(&self) -> &str { &self.0.color_swatch().fill_toggle_disabled_overlay }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,7 +142,10 @@ mod tests {
         let theme = TokenTheme::new(Arc::clone(&tokens));
         assert_eq!(theme.button_bg_hover(), tokens.button().button_bg_hover);
         assert_eq!(theme.button_accent(), "#2962ff");
-        assert_eq!(theme.transparency_checker_a(), "#ffffff");
+        // `ButtonTheme::transparency_checker_a` and
+        // `ColorSwatchTheme::transparency_checker_a` are two distinct traits
+        // both implemented on `TokenTheme` — disambiguate explicitly.
+        assert_eq!(ButtonTheme::transparency_checker_a(&theme), "#ffffff");
     }
 
     #[test]

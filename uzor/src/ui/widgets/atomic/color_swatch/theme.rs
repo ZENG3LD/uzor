@@ -33,30 +33,21 @@ pub trait ColorSwatchTheme {
     /// Background color used as the base for fill-toggle.
     /// mlc: toolbar_theme.background
     fn fill_toggle_background(&self) -> &str;
+
+    /// Semi-transparent dark overlay drawn over a fill-toggle in the
+    /// disabled state. H1 Brief 5 addition — previously an inline literal
+    /// (`"rgba(0,0,0,0.35)"`) in `render.rs`, not reachable through this
+    /// trait; same disabled-overlay role `radio`/`toggle` alias onto
+    /// `backdrop.dim`'s black at a lower alpha.
+    fn fill_toggle_disabled_overlay(&self) -> &str;
 }
 
-/// Default color swatch theme using prototype colors.
-pub struct DefaultColorSwatchTheme;
-
-impl DefaultColorSwatchTheme {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultColorSwatchTheme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ColorSwatchTheme for DefaultColorSwatchTheme {
-    fn color_swatch_border(&self)          -> &str { "#2a2e39" }
-    fn color_swatch_hover_outline(&self)   -> &str { "#2a2e39" }
-    fn color_swatch_selected_border(&self) -> &str { "#2962ff" }
-    fn transparency_checker_a(&self)       -> &str { "#ffffff" }
-    fn transparency_checker_b(&self)       -> &str { "#cccccc" }
-    fn fill_toggle_active_border(&self)    -> &str { "#2196F3" }
-    fn fill_toggle_off_pattern_color(&self)-> &str { "#2a2e39" }
-    fn fill_toggle_background(&self)       -> &str { "#1e222d" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultColorSwatchTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 5 — `crate::tokens::theme::TokenTheme` is now the one
+// `ColorSwatchTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

@@ -111,6 +111,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let color_swatch = crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -123,6 +127,7 @@ impl TokenSet {
             chevron,
             clock,
             close_button,
+            color_swatch,
         })
     }
 }
@@ -146,6 +151,7 @@ pub struct Tokens {
     chevron: crate::ui::widgets::atomic::chevron::tokens::ChevronTokens,
     clock: crate::ui::widgets::atomic::clock::tokens::ClockTokens,
     close_button: crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens,
+    color_swatch: crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens,
 }
 
 impl Tokens {
@@ -182,6 +188,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn close_button(&self) -> &crate::ui::widgets::atomic::close_button::tokens::CloseButtonTokens {
         &self.close_button
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ColorSwatchTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn color_swatch(&self) -> &crate::ui::widgets::atomic::color_swatch::tokens::ColorSwatchTokens {
+        &self.color_swatch
     }
 }
 
