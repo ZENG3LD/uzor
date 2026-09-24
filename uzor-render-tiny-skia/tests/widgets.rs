@@ -13,3 +13,13 @@ mod support;
 
 #[path = "widgets/button.rs"]
 mod button;
+#[path = "widgets/checkbox.rs"]
+mod checkbox;
+#[path = "widgets/chevron.rs"]
+mod chevron;
+#[path = "widgets/clock.rs"]
+mod clock;
+#[path = "widgets/close_button.rs"]
+mod close_button;
+#[path = "widgets/color_swatch.rs"]
+mod color_swatch;
