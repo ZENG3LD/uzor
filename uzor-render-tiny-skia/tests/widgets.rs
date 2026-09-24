@@ -45,3 +45,7 @@ mod slider;
 mod tab;
 #[path = "widgets/text.rs"]
 mod text;
+#[path = "widgets/text_input.rs"]
+mod text_input;
+#[path = "widgets/toast.rs"]
+mod toast;
