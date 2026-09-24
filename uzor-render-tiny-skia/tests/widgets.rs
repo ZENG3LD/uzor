@@ -33,5 +33,11 @@ mod dropdown_trigger;
 mod item;
 #[path = "widgets/radio.rs"]
 mod radio;
+#[path = "widgets/scroll_chevron.rs"]
+mod scroll_chevron;
 #[path = "widgets/scrollbar.rs"]
 mod scrollbar;
+#[path = "widgets/separator.rs"]
+mod separator;
+#[path = "widgets/slider.rs"]
+mod slider;
