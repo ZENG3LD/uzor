@@ -72,6 +72,7 @@ component_tokens! {
     // Modal action button slots
     button_primary_bg           => ColorSpec::Alias(Role::AccentDefault, None),
     button_primary_bg_hover     => ColorSpec::Alias(Role::AccentHover, None),
+    button_primary_text         => ColorSpec::Alias(Role::TextOnAccent, None),
     button_danger_bg            => ColorSpec::Alias(Role::StatusDangerBg, None),
     button_danger_bg_hover      => ColorSpec::Alias(Role::StatusDanger, Some(Modifier::Alpha(0.35))),
     button_danger_border        => ColorSpec::Alias(Role::StatusDanger, Some(Modifier::Alpha(0.5))),
@@ -103,7 +104,7 @@ mod tests {
     fn every_button_key_is_registered() {
         let keys = crate::tokens::component_keys("button").expect("button must be registered");
         assert_eq!(keys, BUTTON_KEYS);
-        assert_eq!(keys.len(), 44, "one entry per ButtonTokens field");
+        assert_eq!(keys.len(), 45, "one entry per ButtonTokens field");
         assert!(keys.contains(&"button_bg_hover"));
         assert!(keys.contains(&"transparency_checker_a"));
         assert!(keys.contains(&"dropdown_menu_row_bg_normal"));
@@ -143,6 +144,7 @@ mod tests {
         assert_eq!(b.toolbar_accent, "#2962ff");
         assert_eq!(b.button_primary_bg, "#2962ff");
         assert_eq!(b.button_primary_bg_hover, "#1e53e4");
+        assert_eq!(b.button_primary_text, "#d1d4dc");
         assert_eq!(b.button_danger_bg, "#f2364526");
         assert_eq!(b.button_danger_bg_hover, "#f2364559");
         assert_eq!(b.button_danger_border, "#f2364580");

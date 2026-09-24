@@ -188,6 +188,12 @@ pub trait ButtonTheme: Send + Sync {
     /// Primary action button hover background (#4080ff in mlc).
     fn button_primary_bg_hover(&self) -> &str;
 
+    /// Primary action button text colour, drawn atop `button_primary_bg`.
+    /// Was a hardcoded `"#ffffff"` at the `draw_primary_button` paint call
+    /// site (never a theme method) until H1 Brief 8a item 0; now aliases
+    /// `text.on_accent`.
+    fn button_primary_text(&self) -> &str;
+
     /// Danger button idle fill — semi-transparent red.
     /// mlc profile_manager: "rgba(255,80,80,0.15)"
     fn button_danger_bg(&self) -> &str;

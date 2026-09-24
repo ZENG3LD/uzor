@@ -135,6 +135,7 @@ impl ButtonTheme for StyledButtonTheme {
 
     fn button_primary_bg(&self)           -> &str { &self.accent }
     fn button_primary_bg_hover(&self)     -> &str { self.fallback.button_primary_bg_hover() }
+    fn button_primary_text(&self)         -> &str { self.fallback.button_primary_text() }
     fn button_danger_bg(&self)            -> &str { self.fallback.button_danger_bg() }
     fn button_danger_bg_hover(&self)      -> &str { self.fallback.button_danger_bg_hover() }
     fn button_danger_border(&self)        -> &str { self.fallback.button_danger_border() }

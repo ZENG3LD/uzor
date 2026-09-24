@@ -1288,7 +1288,7 @@ pub struct PrimaryButtonView<'a> {
 /// Ports section 12 from button-full.md (`chart_settings.rs` OK/Save pattern).
 ///
 /// Background: `button_primary_bg` / `button_primary_bg_hover`.
-/// Text: white (`#ffffff`), bold, 12 px, centred.
+/// Text: `button_primary_text` (`text.on_accent`), bold, 12 px, centred.
 /// Geometry: flat rect by default (caller passes `PrimaryButtonStyle` or own style).
 ///
 /// # Arguments
@@ -1311,7 +1311,7 @@ pub fn draw_primary_button(
     ctx.set_fill_color(bg);
     ctx.fill_rounded_rect(rect.x, rect.y, rect.width, rect.height, radius);
 
-    ctx.set_fill_color("#ffffff");
+    ctx.set_fill_color(theme.button_primary_text());
     ctx.set_font("bold 12px sans-serif");
     ctx.set_text_align(TextAlign::Center);
     ctx.set_text_baseline(TextBaseline::Middle);

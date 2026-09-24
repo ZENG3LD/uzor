@@ -220,6 +220,7 @@ impl ButtonTheme for VisibleButtonTheme {
     fn toolbar_accent(&self) -> &str { "#2962ff" }
     fn button_primary_bg(&self) -> &str { "#2962ff" }
     fn button_primary_bg_hover(&self) -> &str { "#4080ff" }
+    fn button_primary_text(&self) -> &str { "#ffffff" }
     fn button_danger_bg(&self) -> &str { "rgba(255,80,80,0.15)" }
     fn button_danger_bg_hover(&self) -> &str { "rgba(255,80,80,0.35)" }
     fn button_danger_border(&self) -> &str { "rgba(239,83,80,0.5)" }
