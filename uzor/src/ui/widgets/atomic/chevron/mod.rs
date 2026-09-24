@@ -12,6 +12,12 @@
 //!                  `ChevronView`.
 //! - `state.rs`   — interaction flags (mostly empty — chevron is stateless).
 //! - `theme.rs`   — colours (normal/hover/disabled/bg-hover).
+//! - `tokens.rs`  — `ChevronTokens`: the token-contract implementation of
+//!                  `ChevronTheme`, one pre-rendered value per method, built
+//!                  from `SemanticRoles` + optional `component.chevron.*`
+//!                  overrides (H1 token contract design §3). `TokenTheme`
+//!                  (`crate::tokens::theme`) implements `ChevronTheme` by
+//!                  reading these fields.
 //! - `style.rs`   — sizes, stroke thickness, hover-bg radius.
 //! - `settings.rs`— theme + style bundle.
 //! - `render.rs`  — `draw_chevron(ctx, rect, view, settings)`.
@@ -23,6 +29,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 pub use input::*;

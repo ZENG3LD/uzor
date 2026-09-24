@@ -99,6 +99,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let chevron = crate::ui::widgets::atomic::chevron::tokens::ChevronTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -108,6 +112,7 @@ impl TokenSet {
             components: self.components.clone(),
             button,
             checkbox,
+            chevron,
         })
     }
 }
@@ -128,6 +133,7 @@ pub struct Tokens {
     pub components: ComponentOverrides,
     button: crate::ui::widgets::atomic::button::tokens::ButtonTokens,
     checkbox: crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens,
+    chevron: crate::ui::widgets::atomic::chevron::tokens::ChevronTokens,
 }
 
 impl Tokens {
@@ -143,6 +149,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn checkbox(&self) -> &crate::ui::widgets::atomic::checkbox::tokens::CheckboxTokens {
         &self.checkbox
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ChevronTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn chevron(&self) -> &crate::ui::widgets::atomic::chevron::tokens::ChevronTokens {
+        &self.chevron
     }
 }
 

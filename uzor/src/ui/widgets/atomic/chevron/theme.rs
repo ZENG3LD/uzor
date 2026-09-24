@@ -9,14 +9,12 @@ pub trait ChevronTheme {
     fn bg_hover(&self)       -> &str;
 }
 
-#[derive(Default)]
-pub struct DefaultChevronTheme;
-
-impl ChevronTheme for DefaultChevronTheme {
-    fn color(&self)          -> &str { "#a0a8b8" }
-    fn color_hover(&self)    -> &str { "#d1d4dc" }
-    fn color_pressed(&self)  -> &str { "#8088a0" }
-    fn color_disabled(&self) -> &str { "#404858" }
-    fn color_active(&self)   -> &str { "#4080ff" }
-    fn bg_hover(&self)       -> &str { "rgba(255,255,255,0.08)" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultChevronTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 5 — `crate::tokens::theme::TokenTheme` is now the one `ChevronTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::chevron::tokens::ChevronTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).
