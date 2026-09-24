@@ -25,6 +25,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 // --- Re-exports ---------------------------------------------------------------
@@ -34,5 +35,5 @@ pub use render::register_context_manager_popup;
 pub use settings::PopupSettings;
 pub use state::PopupState;
 pub use style::{BackgroundFill, DefaultPopupStyle, PopupStyle};
-pub use theme::{DefaultPopupTheme, PopupTheme};
+pub use theme::PopupTheme;
 pub use types::{BackdropKind, PopupRenderKind, PopupView, PopupViewKind};

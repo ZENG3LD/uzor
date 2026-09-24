@@ -203,6 +203,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let popup = crate::ui::widgets::composite::popup::tokens::PopupTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -237,6 +241,7 @@ impl TokenSet {
             dropdown,
             modal,
             panel,
+            popup,
         })
     }
 }
@@ -282,6 +287,7 @@ pub struct Tokens {
     dropdown: crate::ui::widgets::composite::dropdown::tokens::DropdownTokens,
     modal: crate::ui::widgets::composite::modal::tokens::ModalTokens,
     panel: crate::ui::widgets::composite::panel::tokens::PanelTokens,
+    popup: crate::ui::widgets::composite::popup::tokens::PopupTokens,
 }
 
 impl Tokens {
@@ -480,6 +486,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn panel(&self) -> &crate::ui::widgets::composite::panel::tokens::PanelTokens {
         &self.panel
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `PopupTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn popup(&self) -> &crate::ui::widgets::composite::popup::tokens::PopupTokens {
+        &self.popup
     }
 }
 

@@ -193,7 +193,8 @@ pub struct PopupGridCell<'a> {
 ///
 /// Cells are laid out in `cols` columns with `gap` pixels between cells.
 /// Each cell is `cell_size × cell_size` pixels, filled with `cell.color` and
-/// rounded with radius `4.0`. A white halo is drawn when the cell is hovered.
+/// rounded with radius `4.0`. A `theme.grid_hover_halo()` halo is drawn when
+/// the cell is hovered.
 ///
 /// All cells are registered as `Button` children of `popup_id` on `layer`.
 ///
@@ -207,7 +208,9 @@ pub struct PopupGridCell<'a> {
 /// - `cols`      — number of columns.
 /// - `cell_size` — width and height of each cell in pixels.
 /// - `gap`       — gap between cells in pixels.
-/// - `layer`     — render layer for hit-test registration.
+/// - `theme`     — colour tokens; only `grid_hover_halo()` is read (H1 Brief
+///                 8b — the hover halo used to be a bare `"#ffffff"` literal
+///                 with no theme parameter to read at all).
 pub fn register_popup_grid<P: DockPanel>(
     layout:    &mut LayoutManager<P>,
     render:    &mut dyn RenderContext,
@@ -217,6 +220,7 @@ pub fn register_popup_grid<P: DockPanel>(
     cols:      usize,
     cell_size: f64,
     gap:       f64,
+    theme:     &dyn super::theme::PopupTheme,
 ) {
     use crate::types::CompositeId;
     let composite_id = CompositeId(WidgetId::new(popup_id));
@@ -239,7 +243,7 @@ pub fn register_popup_grid<P: DockPanel>(
             .map(|id| id.0.as_str() == cell.id)
             .unwrap_or(false);
         if hovered {
-            render.set_fill_color("#ffffff");
+            render.set_fill_color(theme.grid_hover_halo());
             render.fill_rounded_rect(cx - 2.0, cy - 2.0, cell_size + 4.0, cell_size + 4.0, 5.0);
         }
         render.set_fill_color(cell.color);

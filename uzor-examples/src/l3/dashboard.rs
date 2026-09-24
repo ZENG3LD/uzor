@@ -2454,7 +2454,7 @@ fn draw_l3_frame(
                         let grid_cells: Vec<PopupGridCell<'_>> = palette.iter().zip(cell_ids.iter())
                             .map(|(color, id)| PopupGridCell { id: id.as_str(), color })
                             .collect();
-                        register_popup_grid(&mut state.layout, render, "demo-popup-widget", body, &grid_cells, cols, cell, gap);
+                        register_popup_grid(&mut state.layout, render, "demo-popup-widget", body, &grid_cells, cols, cell, gap, popup_settings.theme.as_ref());
                     }
                 }
             }

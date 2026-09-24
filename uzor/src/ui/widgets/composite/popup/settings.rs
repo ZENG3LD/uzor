@@ -1,7 +1,8 @@
 //! Popup settings bundle — `PopupTheme` + `PopupStyle` in one box.
 
 use super::style::{DefaultPopupStyle, PopupStyle};
-use super::theme::{DefaultPopupTheme, PopupTheme};
+use super::theme::PopupTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the popup composite.
 pub struct PopupSettings {
@@ -14,7 +15,7 @@ pub struct PopupSettings {
 impl Default for PopupSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultPopupTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultPopupStyle>::default(),
         }
     }

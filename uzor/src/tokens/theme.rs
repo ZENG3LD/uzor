@@ -38,6 +38,7 @@ use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
 use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
 use crate::ui::widgets::composite::modal::theme::ModalTheme;
 use crate::ui::widgets::composite::panel::theme::PanelTheme;
+use crate::ui::widgets::composite::popup::theme::PopupTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -409,6 +410,29 @@ impl PanelTheme for TokenTheme {
     fn action_icon_hover(&self) -> &str { &self.0.panel().action_icon_hover }
     fn sort_arrow_color(&self) -> &str { &self.0.panel().sort_arrow_color }
     fn action_bg_hover(&self) -> &str { &self.0.panel().action_bg_hover }
+}
+
+impl PopupTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.popup().bg }
+    fn border(&self) -> &str { &self.0.popup().border }
+    fn shadow(&self) -> &str { &self.0.popup().shadow }
+    fn item_bg_normal(&self) -> &str { &self.0.popup().item_bg_normal }
+    fn item_bg_hover(&self) -> &str { &self.0.popup().item_bg_hover }
+    fn item_bg_selected(&self) -> &str { &self.0.popup().item_bg_selected }
+    fn item_text(&self) -> &str { &self.0.popup().item_text }
+    fn item_text_hover(&self) -> &str { &self.0.popup().item_text_hover }
+    fn item_text_disabled(&self) -> &str { &self.0.popup().item_text_disabled }
+    fn item_text_danger(&self) -> &str { &self.0.popup().item_text_danger }
+    fn item_bg_danger_hover(&self) -> &str { &self.0.popup().item_bg_danger_hover }
+    fn header_text(&self) -> &str { &self.0.popup().header_text }
+    fn separator(&self) -> &str { &self.0.popup().separator }
+    fn hex_input_bg(&self) -> &str { &self.0.popup().hex_input_bg }
+    fn hex_input_text(&self) -> &str { &self.0.popup().hex_input_text }
+    fn hex_input_border_focus(&self) -> &str { &self.0.popup().hex_input_border_focus }
+    fn hsv_indicator(&self) -> &str { &self.0.popup().hsv_indicator }
+    fn accent(&self) -> &str { &self.0.popup().accent }
+    fn backdrop_dim(&self) -> &str { &self.0.popup().backdrop_dim }
+    fn grid_hover_halo(&self) -> &str { &self.0.popup().grid_hover_halo }
 }
 
 #[cfg(test)]

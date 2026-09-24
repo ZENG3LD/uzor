@@ -1,6 +1,5 @@
-//! Popup colour palette trait and default dark-theme implementation.
-//!
-//! Token values ported from the mlc audit (`popup-deep.md` §7).
+//! Popup colour palette trait; token-contract default implementation lives
+//! in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 
 /// Colour tokens for the popup composite.
 ///
@@ -73,45 +72,20 @@ pub trait PopupTheme {
 
     /// Backdrop dim fill used for `BackdropKind::Dim`.  Default: `rgba(0,0,0,0.45)`.
     fn backdrop_dim(&self) -> &str;
+
+    // --- Generic colour-picker grid (`input::register_popup_grid`) ---
+
+    /// Hover halo painted behind a hovered cell in a generic swatch/colour
+    /// grid.  Default alias: `text.on_accent`.
+    fn grid_hover_halo(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation.
-///
-/// Values sourced from the mlc audit (`popup-deep.md` §7).
-#[derive(Default)]
-pub struct DefaultPopupTheme;
-
-impl PopupTheme for DefaultPopupTheme {
-    // Frame
-    fn bg(&self)     -> &str { "#1e222d" }
-    fn border(&self) -> &str { "#363a45" }
-    fn shadow(&self) -> &str { "rgba(0,0,0,0.4)" }
-
-    // Items
-    fn item_bg_normal(&self)      -> &str { "#1e222d" }
-    fn item_bg_hover(&self)       -> &str { "#2a2e39" }
-    fn item_bg_selected(&self)    -> &str { "rgba(41,98,255,0.15)" }
-    fn item_text(&self)           -> &str { "#d1d4dc" }
-    fn item_text_hover(&self)     -> &str { "#ffffff" }
-    fn item_text_disabled(&self)  -> &str { "#6a6d78" }
-    fn item_text_danger(&self)    -> &str { "#f23645" }
-    fn item_bg_danger_hover(&self)-> &str { "rgba(242,54,69,0.15)" }
-    fn header_text(&self)         -> &str { "#ffffff" }
-    fn separator(&self)           -> &str { "#363a45" }
-
-    // Hex input
-    fn hex_input_bg(&self)           -> &str { "#2a2e39" }
-    fn hex_input_text(&self)         -> &str { "#d1d4dc" }
-    fn hex_input_border_focus(&self) -> &str { "#2962ff" }
-
-    // HSV / color picker
-    fn hsv_indicator(&self) -> &str { "rainbow" }
-    fn accent(&self)        -> &str { "#2962ff" }
-
-    // Backdrop
-    fn backdrop_dim(&self) -> &str { "rgba(0,0,0,0.45)" }
-}
+//
+// `DefaultPopupTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8b — `crate::tokens::theme::TokenTheme` is now the one `PopupTheme`
+// implementation this crate ships, backed by
+// `crate::ui::widgets::composite::popup::tokens::PopupTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

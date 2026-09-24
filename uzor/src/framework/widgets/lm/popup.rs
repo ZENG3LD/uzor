@@ -17,10 +17,11 @@ use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::popup::input::register_layout_manager_popup;
 use crate::ui::widgets::composite::popup::settings::PopupSettings;
 use crate::ui::widgets::composite::popup::style::{DefaultPopupStyle, PopupStyle};
-use crate::ui::widgets::composite::popup::theme::{DefaultPopupTheme, PopupTheme};
+use crate::ui::widgets::composite::popup::theme::PopupTheme;
 use crate::ui::widgets::composite::popup::types::{
     BackdropKind, PopupRenderKind, PopupView, PopupViewKind,
 };
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // =============================================================================
 // StyledPopupTheme — reads bg/fg/accent from StyleManager, delegates rest
@@ -33,7 +34,10 @@ struct StyledPopupTheme {
     item_bg_selected:  String,
     item_text:         String,
     accent:            String,
-    fallback:          DefaultPopupTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:          TokenTheme,
 }
 
 impl StyledPopupTheme {
@@ -47,7 +51,7 @@ impl StyledPopupTheme {
             item_bg_selected: accent_dim,
             item_text:        s.color_or_owned("fg_1",          "#d1d4dc"),
             accent:           accent,
-            fallback:         DefaultPopupTheme,
+            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }
@@ -72,6 +76,7 @@ impl PopupTheme for StyledPopupTheme {
     fn hsv_indicator(&self)          -> &str { self.fallback.hsv_indicator() }
     fn accent(&self)                 -> &str { &self.accent }
     fn backdrop_dim(&self)           -> &str { self.fallback.backdrop_dim() }
+    fn grid_hover_halo(&self)        -> &str { self.fallback.grid_hover_halo() }
 }
 
 fn popup_settings_from_styles(s: &StyleManager) -> PopupSettings {
