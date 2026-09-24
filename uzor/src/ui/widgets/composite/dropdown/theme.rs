@@ -1,6 +1,10 @@
-//! Dropdown colour palette trait and default dark-theme implementation.
+//! Dropdown colour palette trait; token-contract default implementation
+//! lives in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 //!
-//! Token values ported from the mlc audit (`dropdown-deep.md` §6).
+//! Shares the same default-alias vocabulary as `ContextMenuTheme` — both
+//! menus alias the same semantic roles for the fields they hold in common
+//! (H1 companion doc: "that is the point"), but each is its own registered
+//! `component.*` widget with its own override surface.
 
 /// Colour tokens for the Dropdown composite.
 ///
@@ -8,165 +12,120 @@
 pub trait DropdownTheme {
     // --- Panel frame ---
 
-    /// Menu panel background (fully opaque).  Default: `#1e222d`.
+    /// Menu panel background (fully opaque).  Default alias: `surface.floating`.
     fn bg(&self) -> &str;
 
-    /// Menu panel border (1 px stroke).  Default: `#363a45`.
+    /// Menu panel border (1 px stroke).  Default alias: `border.default`.
     fn border(&self) -> &str;
 
-    /// Shadow rect fill.  Default: `rgba(0,0,0,0.5)`.
+    /// Shadow rect fill.  Default alias: `shadow.default`.
     fn shadow(&self) -> &str;
 
     // --- Items ---
 
-    /// Normal item background (transparent / same as bg).  Default: `#1e222d`.
+    /// Normal item background (transparent / same as bg).  Default alias:
+    /// `surface.floating`.
     fn item_bg_normal(&self) -> &str;
 
-    /// Hovered item background.  Default: `#2a2e39`.
+    /// Hovered item background.  Default alias: `surface.control.hover`.
     fn item_bg_hover(&self) -> &str;
 
-    /// Selected / active item background.  Default: `rgba(41,98,255,0.15)`.
+    /// Selected / active item background.  Default alias: `accent.default`
+    /// + alpha(0.15).
     fn item_bg_selected(&self) -> &str;
 
-    /// Danger item hover background.  Default: `rgba(242,54,69,0.15)`.
+    /// Danger item hover background.  Default alias: `status.danger_bg`.
     fn item_bg_danger_hover(&self) -> &str;
 
-    /// Normal item text colour.  Default: `#d1d4dc`.
+    /// Normal item text colour.  Default alias: `text.primary`.
     fn item_text(&self) -> &str;
 
-    /// Hovered item text colour.  Default: `#ffffff`.
+    /// Hovered item text colour.  Default alias: `text.on_accent`.
     fn item_text_hover(&self) -> &str;
 
-    /// Disabled item text colour.  Default: `#6a6d78`.
+    /// Disabled item text colour.  Default alias: `text.disabled`.
     fn item_text_disabled(&self) -> &str;
 
-    /// Danger item text colour.  Default: `#f23645`.
+    /// Danger item text colour.  Default alias: `status.danger`.
     fn item_text_danger(&self) -> &str;
 
     // --- Headers ---
 
-    /// Section header text colour.  Default: `#ffffff`.
+    /// Section header text colour.  Default alias: `text.on_accent`.
     fn header_text(&self) -> &str;
 
-    /// Header bottom separator line colour.  Default: `#363a45`.
+    /// Header bottom separator line colour.  Default alias: `border.default`.
     fn header_border(&self) -> &str;
 
     // --- Separators ---
 
-    /// Separator line colour.  Default: `#363a45`.
+    /// Separator line colour.  Default alias: `border.default`.
     fn separator(&self) -> &str;
 
     // --- Right-side content ---
 
-    /// Shortcut / subtitle text colour (right-aligned).  Default: `#6a6d78`.
+    /// Shortcut / subtitle text colour (right-aligned).  Default alias:
+    /// `text.disabled`.
     fn shortcut_text(&self) -> &str;
 
     // --- Submenu caret ---
 
-    /// Submenu arrow / caret colour.  Default: `#6a6d78`.
+    /// Submenu arrow / caret colour.  Default alias: `text.disabled`.
     fn caret_color(&self) -> &str;
 
     // --- Toggle ---
 
-    /// Toggle track colour when on.  Default: `#2962ff`.
+    /// Toggle track colour when on.  Default alias: `accent.default`.
     fn toggle_on(&self) -> &str;
 
-    /// Toggle track colour when off.  Default: `#6a6d78`.
+    /// Toggle track colour when off.  Default alias: `text.disabled`.
     fn toggle_off(&self) -> &str;
 
-    /// Toggle thumb colour.  Default: `#ffffff`.
+    /// Toggle thumb colour.  Default alias: `text.on_accent`.
     fn toggle_thumb(&self) -> &str;
 
     // --- Trigger button (closed state) ---
 
-    /// Trigger button background.  Default: `#2a2e39`.
+    /// Trigger button background.  Default alias: `surface.control.hover`.
     fn trigger_bg(&self) -> &str;
 
-    /// Trigger button background on hover.  Default: `#363a45`.
+    /// Trigger button background on hover.  Default alias: `border.default`
+    /// (value match, odd role-name reuse — companion doc).
     fn trigger_bg_hover(&self) -> &str;
 
-    /// Trigger button border.  Default: `#363a45`.
+    /// Trigger button border.  Default alias: `border.default`.
     fn trigger_border(&self) -> &str;
 
-    /// Trigger button text.  Default: `#d1d4dc`.
+    /// Trigger button text.  Default alias: `text.primary`.
     fn trigger_text(&self) -> &str;
 
-    /// Trigger button chevron / arrow.  Default: `#6a6d78`.
+    /// Trigger button chevron / arrow.  Default alias: `text.disabled`.
     fn trigger_arrow(&self) -> &str;
 
     // --- Checkbox (Grouped template) ---
 
-    /// Checkbox stroke colour (unchecked).  Default: `#6a6d78`.
+    /// Checkbox stroke colour (unchecked).  Default alias: `text.disabled`
+    /// (value match, odd role-name reuse — companion doc).
     fn checkbox_border(&self) -> &str;
 
-    /// Checkbox fill colour (checked).  Default: `#2962ff`.
+    /// Checkbox fill colour (checked).  Default alias: `accent.default`.
     fn checkbox_checked(&self) -> &str;
 
     // --- Grid cell (Grid / Grouped templates) ---
 
-    /// Grid cell hover background.  Default: `#2a2e39`.
+    /// Grid cell hover background.  Default alias: `surface.control.hover`.
     fn cell_bg_hover(&self) -> &str;
 
-    /// Grid cell border colour.  Default: `#363a45`.
+    /// Grid cell border colour.  Default alias: `border.default`.
     fn cell_border(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation.
-///
-/// Values sourced from the mlc audit (`dropdown-deep.md` §6).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultDropdownTheme;
-
-impl DropdownTheme for DefaultDropdownTheme {
-    // Panel frame
-    fn bg(&self)     -> &str { "#1e222d" }
-    fn border(&self) -> &str { "#363a45" }
-    fn shadow(&self) -> &str { "rgba(0,0,0,0.5)" }
-
-    // Items
-    fn item_bg_normal(&self)       -> &str { "#1e222d" }
-    fn item_bg_hover(&self)        -> &str { "#2a2e39" }
-    fn item_bg_selected(&self)     -> &str { "rgba(41,98,255,0.15)" }
-    fn item_bg_danger_hover(&self) -> &str { "rgba(242,54,69,0.15)" }
-    fn item_text(&self)            -> &str { "#d1d4dc" }
-    fn item_text_hover(&self)      -> &str { "#ffffff" }
-    fn item_text_disabled(&self)   -> &str { "#6a6d78" }
-    fn item_text_danger(&self)     -> &str { "#f23645" }
-
-    // Headers
-    fn header_text(&self)   -> &str { "#ffffff" }
-    fn header_border(&self) -> &str { "#363a45" }
-
-    // Separators
-    fn separator(&self) -> &str { "#363a45" }
-
-    // Right-side content
-    fn shortcut_text(&self) -> &str { "#6a6d78" }
-
-    // Submenu caret
-    fn caret_color(&self) -> &str { "#6a6d78" }
-
-    // Toggle
-    fn toggle_on(&self)    -> &str { "#2962ff" }
-    fn toggle_off(&self)   -> &str { "#6a6d78" }
-    fn toggle_thumb(&self) -> &str { "#ffffff" }
-
-    // Trigger button
-    fn trigger_bg(&self)       -> &str { "#2a2e39" }
-    fn trigger_bg_hover(&self) -> &str { "#363a45" }
-    fn trigger_border(&self)   -> &str { "#363a45" }
-    fn trigger_text(&self)     -> &str { "#d1d4dc" }
-    fn trigger_arrow(&self)    -> &str { "#6a6d78" }
-
-    // Checkbox
-    fn checkbox_border(&self)  -> &str { "#6a6d78" }
-    fn checkbox_checked(&self) -> &str { "#2962ff" }
-
-    // Grid cell
-    fn cell_bg_hover(&self) -> &str { "#2a2e39" }
-    fn cell_border(&self)   -> &str { "#363a45" }
-}
+//
+// `DefaultDropdownTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8a — `crate::tokens::theme::TokenTheme` is now the one
+// `DropdownTheme` implementation this crate ships, backed by
+// `crate::ui::widgets::composite::dropdown::tokens::DropdownTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

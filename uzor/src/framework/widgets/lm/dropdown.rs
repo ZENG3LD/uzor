@@ -18,7 +18,8 @@ use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::dropdown::input::register_layout_manager_dropdown;
 use crate::ui::widgets::composite::dropdown::settings::DropdownSettings;
 use crate::ui::widgets::composite::dropdown::style::{DefaultDropdownStyle, DropdownStyle};
-use crate::ui::widgets::composite::dropdown::theme::{DefaultDropdownTheme, DropdownTheme};
+use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownRenderKind, DropdownView, DropdownViewKind, SubmenuWidth,
 };
@@ -34,7 +35,10 @@ struct StyledDropdownTheme {
     item_bg_selected: String,
     item_text:        String,
     accent:           String,
-    fallback:         DefaultDropdownTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:         TokenTheme,
 }
 
 impl StyledDropdownTheme {
@@ -48,7 +52,7 @@ impl StyledDropdownTheme {
             item_bg_selected: accent_dim,
             item_text:        s.color_or_owned("fg_1",          "#d1d4dc"),
             accent,
-            fallback:         DefaultDropdownTheme,
+            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

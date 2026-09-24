@@ -1,7 +1,8 @@
 //! Dropdown settings bundle — `DropdownTheme` + `DropdownStyle` in one box.
 
 use super::style::{DefaultDropdownStyle, DropdownStyle};
-use super::theme::{DefaultDropdownTheme, DropdownTheme};
+use super::theme::DropdownTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the Dropdown composite.
 pub struct DropdownSettings {
@@ -14,7 +15,7 @@ pub struct DropdownSettings {
 impl Default for DropdownSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultDropdownTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultDropdownStyle>::default(),
         }
     }

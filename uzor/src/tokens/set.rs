@@ -191,6 +191,10 @@ impl TokenSet {
                 &semantic,
                 &self.components,
             );
+        let dropdown = crate::ui::widgets::composite::dropdown::tokens::DropdownTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -222,6 +226,7 @@ impl TokenSet {
             blackbox_panel,
             chrome,
             context_menu,
+            dropdown,
         })
     }
 }
@@ -264,6 +269,7 @@ pub struct Tokens {
     blackbox_panel: crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens,
     chrome: crate::ui::widgets::composite::chrome::tokens::ChromeTokens,
     context_menu: crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens,
+    dropdown: crate::ui::widgets::composite::dropdown::tokens::DropdownTokens,
 }
 
 impl Tokens {
@@ -441,6 +447,13 @@ impl Tokens {
         &self,
     ) -> &crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens {
         &self.context_menu
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `DropdownTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn dropdown(&self) -> &crate::ui::widgets::composite::dropdown::tokens::DropdownTokens {
+        &self.dropdown
     }
 }
 

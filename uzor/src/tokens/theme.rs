@@ -35,6 +35,7 @@ use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
 use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
+use crate::ui::widgets::composite::dropdown::theme::DropdownTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -332,6 +333,37 @@ impl ContextMenuTheme for TokenTheme {
     fn item_text_disabled(&self) -> &str { &self.0.context_menu().item_text_disabled }
     fn item_text_danger(&self) -> &str { &self.0.context_menu().item_text_danger }
     fn separator(&self) -> &str { &self.0.context_menu().separator }
+}
+
+impl DropdownTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.dropdown().bg }
+    fn border(&self) -> &str { &self.0.dropdown().border }
+    fn shadow(&self) -> &str { &self.0.dropdown().shadow }
+    fn item_bg_normal(&self) -> &str { &self.0.dropdown().item_bg_normal }
+    fn item_bg_hover(&self) -> &str { &self.0.dropdown().item_bg_hover }
+    fn item_bg_selected(&self) -> &str { &self.0.dropdown().item_bg_selected }
+    fn item_bg_danger_hover(&self) -> &str { &self.0.dropdown().item_bg_danger_hover }
+    fn item_text(&self) -> &str { &self.0.dropdown().item_text }
+    fn item_text_hover(&self) -> &str { &self.0.dropdown().item_text_hover }
+    fn item_text_disabled(&self) -> &str { &self.0.dropdown().item_text_disabled }
+    fn item_text_danger(&self) -> &str { &self.0.dropdown().item_text_danger }
+    fn header_text(&self) -> &str { &self.0.dropdown().header_text }
+    fn header_border(&self) -> &str { &self.0.dropdown().header_border }
+    fn separator(&self) -> &str { &self.0.dropdown().separator }
+    fn shortcut_text(&self) -> &str { &self.0.dropdown().shortcut_text }
+    fn caret_color(&self) -> &str { &self.0.dropdown().caret_color }
+    fn toggle_on(&self) -> &str { &self.0.dropdown().toggle_on }
+    fn toggle_off(&self) -> &str { &self.0.dropdown().toggle_off }
+    fn toggle_thumb(&self) -> &str { &self.0.dropdown().toggle_thumb }
+    fn trigger_bg(&self) -> &str { &self.0.dropdown().trigger_bg }
+    fn trigger_bg_hover(&self) -> &str { &self.0.dropdown().trigger_bg_hover }
+    fn trigger_border(&self) -> &str { &self.0.dropdown().trigger_border }
+    fn trigger_text(&self) -> &str { &self.0.dropdown().trigger_text }
+    fn trigger_arrow(&self) -> &str { &self.0.dropdown().trigger_arrow }
+    fn checkbox_border(&self) -> &str { &self.0.dropdown().checkbox_border }
+    fn checkbox_checked(&self) -> &str { &self.0.dropdown().checkbox_checked }
+    fn cell_bg_hover(&self) -> &str { &self.0.dropdown().cell_bg_hover }
+    fn cell_border(&self) -> &str { &self.0.dropdown().cell_border }
 }
 
 #[cfg(test)]
