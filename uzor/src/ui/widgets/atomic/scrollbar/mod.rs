@@ -1,8 +1,17 @@
 //! Scrollbar widget.
+//!
+//! - `theme`  — `ScrollbarTheme` trait.
+//! - `tokens` — `ScrollbarTokens`: the token-contract implementation of
+//!              `ScrollbarTheme`, one pre-rendered value per method, built
+//!              from `SemanticRoles` + optional `component.scrollbar.*`
+//!              overrides (H1 token contract design §3). `TokenTheme`
+//!              (`crate::tokens::theme`) implements `ScrollbarTheme` by
+//!              reading these fields.
 
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -15,7 +24,7 @@ pub use types::{ScrollbarOrientation, ScrollbarType};
 pub use state::ScrollState;
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
-pub use theme::{DefaultScrollbarTheme, LightScrollbarTheme, ScrollbarTheme};
+pub use theme::ScrollbarTheme;
 
 // ── Style ─────────────────────────────────────────────────────────────────────
 pub use style::{

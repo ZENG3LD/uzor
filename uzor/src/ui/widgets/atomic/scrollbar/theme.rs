@@ -19,38 +19,22 @@ pub trait ScrollbarTheme {
     fn track_bg(&self) -> &str;
 }
 
-// ── Dark theme ────────────────────────────────────────────────────────────────
-
-/// Default dark-theme scrollbar palette matching mlc `WidgetTheme::default()`.
-///
-/// - `thumb_normal`  → `text_disabled`  `#6a6d78`
-/// - `thumb_hover`   → `text_normal`    `#d1d4dc`
-/// - `thumb_active`  → `text_normal`    `#d1d4dc`
-/// - `track_bg`      → separator        `#363a45`
-#[derive(Default)]
-pub struct DefaultScrollbarTheme;
-
-impl ScrollbarTheme for DefaultScrollbarTheme {
-    fn thumb_normal(&self) -> &str { "#6a6d78" }
-    fn thumb_hover(&self)  -> &str { "#d1d4dc" }
-    fn thumb_active(&self) -> &str { "#d1d4dc" }
-    fn track_bg(&self)     -> &str { "#363a45" }
-}
-
-// ── Light theme ───────────────────────────────────────────────────────────────
-
-/// Light-theme scrollbar palette matching mlc `WidgetTheme::light()`.
-///
-/// - `thumb_normal`  → `text_disabled`  `#9598a1`
-/// - `thumb_hover`   → `text_normal`    `#131722`
-/// - `thumb_active`  → `text_normal`    `#131722`
-/// - `track_bg`      → separator light  `#c8cad0`
-#[derive(Default)]
-pub struct LightScrollbarTheme;
-
-impl ScrollbarTheme for LightScrollbarTheme {
-    fn thumb_normal(&self) -> &str { "#9598a1" }
-    fn thumb_hover(&self)  -> &str { "#131722" }
-    fn thumb_active(&self) -> &str { "#131722" }
-    fn track_bg(&self)     -> &str { "#c8cad0" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultScrollbarTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 6 — `crate::tokens::theme::TokenTheme` is now the one
+// `ScrollbarTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::scrollbar::tokens::ScrollbarTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).
+//
+// `LightScrollbarTheme` (a second literal-colour impl, `#9598a1`/`#131722`/
+// `#131722`/`#c8cad0`) is also deleted, not carried forward as a token
+// override set — its only caller was this crate's own
+// `ScrollbarSettings::standard_light()`, itself uncalled anywhere in the
+// tree (grepped `uzor-examples`, `uzor-desktop`, every other widget), so
+// both are dropped together. The companion doc flags this palette as
+// already diverging from what `light`'s alias table auto-derives from the
+// dark set's `DefaultScrollbarTheme` roles — a real light-mode audit, not an
+// H1 token-contract conversion.

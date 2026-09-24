@@ -459,10 +459,10 @@ pub fn draw_modal(
             use crate::ui::widgets::atomic::scrollbar::{
                 render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState},
                 style::StandardScrollbarStyle,
-                theme::DefaultScrollbarTheme,
             };
+            use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
             let style = StandardScrollbarStyle::default();
-            let theme = DefaultScrollbarTheme::default();
+            let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
             let visual_state = if state.scroll.is_dragging {
                 ScrollbarVisualState::Dragging
             } else {

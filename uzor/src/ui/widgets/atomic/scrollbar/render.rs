@@ -219,7 +219,7 @@ pub fn draw_scrollbar(
 
 // ── Convenience wrappers ──────────────────────────────────────────────────────
 
-/// Draw using `StandardScrollbarStyle` + `DefaultScrollbarTheme` (sidebar default).
+/// Draw using `StandardScrollbarStyle` + `TokenTheme` (sidebar default).
 pub fn draw_scrollbar_standard(
     ctx: &mut dyn RenderContext,
     rect: Rect,
@@ -230,9 +230,9 @@ pub fn draw_scrollbar_standard(
     drag_pos_y: Option<f64>,
 ) -> ScrollbarResult {
     use super::style::StandardScrollbarStyle;
-    use super::theme::DefaultScrollbarTheme;
+    use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
     let style = StandardScrollbarStyle;
-    let theme = DefaultScrollbarTheme;
+    let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     draw_scrollbar(ctx, rect, &ScrollbarView {
         content_height,
         viewport_height,
@@ -244,7 +244,7 @@ pub fn draw_scrollbar_standard(
     })
 }
 
-/// Draw using `CompactScrollbarStyle` + `DefaultScrollbarTheme` (profile-manager).
+/// Draw using `CompactScrollbarStyle` + `TokenTheme` (profile-manager).
 pub fn draw_scrollbar_compact(
     ctx: &mut dyn RenderContext,
     rect: Rect,
@@ -254,9 +254,9 @@ pub fn draw_scrollbar_compact(
     drag_pos_y: Option<f64>,
 ) -> ScrollbarResult {
     use super::style::CompactScrollbarStyle;
-    use super::theme::DefaultScrollbarTheme;
+    use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
     let style = CompactScrollbarStyle;
-    let theme = DefaultScrollbarTheme;
+    let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     draw_scrollbar(ctx, rect, &ScrollbarView {
         content_height,
         viewport_height,
@@ -269,7 +269,7 @@ pub fn draw_scrollbar_compact(
     })
 }
 
-/// Draw using `SignalScrollbarStyle` + `DefaultScrollbarTheme` (signal-group).
+/// Draw using `SignalScrollbarStyle` + `TokenTheme` (signal-group).
 pub fn draw_scrollbar_signal(
     ctx: &mut dyn RenderContext,
     rect: Rect,
@@ -279,9 +279,9 @@ pub fn draw_scrollbar_signal(
     drag_pos_y: Option<f64>,
 ) -> ScrollbarResult {
     use super::style::SignalScrollbarStyle;
-    use super::theme::DefaultScrollbarTheme;
+    use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
     let style = SignalScrollbarStyle;
-    let theme = DefaultScrollbarTheme;
+    let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     draw_scrollbar(ctx, rect, &ScrollbarView {
         content_height,
         viewport_height,

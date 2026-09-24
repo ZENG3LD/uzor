@@ -21,6 +21,7 @@ use crate::ui::widgets::atomic::drag_handle::theme::DragHandleTheme;
 use crate::ui::widgets::atomic::dropdown_trigger::theme::DropdownTriggerTheme;
 use crate::ui::widgets::atomic::item::theme::ItemTheme;
 use crate::ui::widgets::atomic::radio::theme::RadioTheme;
+use crate::ui::widgets::atomic::scrollbar::theme::ScrollbarTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -160,6 +161,13 @@ impl RadioTheme for TokenTheme {
     fn radio_label_text(&self) -> &str { &self.0.radio().radio_label_text }
     fn radio_label_text_selected(&self) -> &str { &self.0.radio().radio_label_text_selected }
     fn radio_description_text(&self) -> &str { &self.0.radio().radio_description_text }
+}
+
+impl ScrollbarTheme for TokenTheme {
+    fn thumb_normal(&self) -> &str { &self.0.scrollbar().thumb_normal }
+    fn thumb_hover(&self) -> &str { &self.0.scrollbar().thumb_hover }
+    fn thumb_active(&self) -> &str { &self.0.scrollbar().thumb_active }
+    fn track_bg(&self) -> &str { &self.0.scrollbar().track_bg }
 }
 
 #[cfg(test)]

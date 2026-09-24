@@ -4588,7 +4588,7 @@ mod l2_demo_blackbox {
         use uzor::ui::widgets::atomic::tab::types::TabConfig;
         use uzor::ui::widgets::atomic::scrollbar::render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState};
         use uzor::ui::widgets::atomic::scrollbar::style::StandardScrollbarStyle;
-        use uzor::ui::widgets::atomic::scrollbar::theme::DefaultScrollbarTheme;
+        use uzor::tokens::{BuiltinSet, Tokens, TokenTheme};
         use uzor::ui::widgets::atomic::separator::render::draw_separator;
         use uzor::ui::widgets::atomic::separator::settings::SeparatorSettings;
         use uzor::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
@@ -4739,6 +4739,7 @@ mod l2_demo_blackbox {
             } else {
                 ScrollbarVisualState::Active
             };
+            let sb_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
             draw_scrollbar(&mut *render, sb_track, &ScrollbarView {
                 content_height:  CONTENT_H,
                 viewport_height: SB_H,
@@ -4746,7 +4747,7 @@ mod l2_demo_blackbox {
                 state:           sb_vis,
                 drag_pos_y:      None,
                 style:           &StandardScrollbarStyle,
-                theme:           &DefaultScrollbarTheme,
+                theme:           &sb_theme,
             });
 
             let row_labels = [
