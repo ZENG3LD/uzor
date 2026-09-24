@@ -8,6 +8,16 @@
 //! [`ScrollbarTokens`] holds one pre-rendered `String` per `ScrollbarTheme`
 //! method — all 4 are required (no default-body delegators on this trait).
 //!
+//! `thumb_hover` and `thumb_active` both default to
+//! `ColorSpec::Alias(Role::TextPrimary, None)` — the same role — so they
+//! resolve to the identical string in every built-in set today
+//! (`dark_defaults_match_the_companion_table` below asserts this for
+//! `dark`). `render.rs`'s `draw_scrollbar` reads both distinctly
+//! (`HandleHovered` → `thumb_hover`, `Dragging` → `thumb_active`, H1 Brief
+//! 10a-3 item 0b), so the two states are ready to diverge the moment either
+//! field gets its own alias — this is a token-table fact, not a bug in
+//! either the render code or this table.
+//!
 //! Built once per [`crate::tokens::set::Tokens`]
 //! ([`crate::tokens::set::TokenSet::resolve`]), never recomputed per paint
 //! call.

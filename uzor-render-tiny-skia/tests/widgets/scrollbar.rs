@@ -4,12 +4,14 @@
 //! viewport so the thumb actually renders (content fitting the viewport is
 //! the widget's "nothing to draw" early-return, not a visual state).
 //!
-//! NOTE: per `draw_scrollbar`'s own table, `HandleHovered` and `Dragging`
-//! both resolve to `(theme.thumb_active(), 0.8 opacity)` — mlc parity
-//! (module doc), not a colour axis this widget currently distinguishes. The
-//! "hover" and "dragging" golden cells are therefore expected to be
-//! pixel-identical to each other; `ScrollbarTheme::thumb_hover` exists as a
-//! colour slot but `draw_scrollbar` never reads it.
+//! UPDATE (H1 Brief 10a-3 item 0b): `draw_scrollbar` now reads
+//! `theme.thumb_hover()` for `HandleHovered` and `theme.thumb_active()` for
+//! `Dragging` — previously both read `thumb_active()`, leaving
+//! `thumb_hover()` dead. The "hover" and "dragging" golden cells stay
+//! pixel-identical in every built-in set today only because
+//! `ScrollbarTokens`' own default table aliases both fields to the same
+//! semantic role (`ScrollbarTokens`'s own module doc) — a token-table fact,
+//! not a code defect; the two draw paths are independent now.
 
 #![cfg(feature = "golden")]
 

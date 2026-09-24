@@ -13,6 +13,16 @@
 //! `CompactScrollbarStyle` bypasses opacity gating — always fully opaque (1.0).
 //! `SignalScrollbarStyle` also ignores `ScrollbarVisualState` and applies
 //! fixed alpha via hex suffix directly on the separator colour string.
+//!
+//! ## Thumb colour (Standard / Compact only)
+//!
+//! `HandleHovered` reads `theme.thumb_hover()`; `Dragging` reads
+//! `theme.thumb_active()` — two distinct colour slots (H1 Brief 10a-3 item
+//! 0b; both previously read `thumb_active()`, leaving `thumb_hover()`
+//! dead). `ScrollbarTokens`' own default table aliases both to the exact
+//! same semantic role in every built-in set today, so this is currently a
+//! token-table observation, not a visible difference — see
+//! `ScrollbarTokens`' own module doc.
 
 use crate::render::RenderContext;
 use crate::types::Rect;
@@ -191,9 +201,8 @@ pub fn draw_scrollbar(
         };
     } else {
         match view.state {
-            ScrollbarVisualState::HandleHovered | ScrollbarVisualState::Dragging => {
-                theme.thumb_active()
-            }
+            ScrollbarVisualState::HandleHovered => theme.thumb_hover(),
+            ScrollbarVisualState::Dragging => theme.thumb_active(),
             _ => theme.thumb_normal(),
         }
     };
