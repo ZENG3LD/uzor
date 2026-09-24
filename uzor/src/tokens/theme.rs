@@ -32,6 +32,7 @@ use crate::ui::widgets::atomic::text_input::theme::TextInputTheme;
 use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
 use crate::ui::widgets::atomic::toast::theme::ToastTheme;
 use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
+use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -288,6 +289,14 @@ impl TooltipTheme for TokenTheme {
     fn border(&self) -> &str { &self.0.tooltip().border }
     fn text(&self) -> &str { &self.0.tooltip().text }
     fn shadow(&self) -> &str { &self.0.tooltip().shadow }
+}
+
+impl BlackboxTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.blackbox_panel().bg }
+    fn border(&self) -> &str { &self.0.blackbox_panel().border }
+    fn header_bg(&self) -> &str { &self.0.blackbox_panel().header_bg }
+    fn header_text(&self) -> &str { &self.0.blackbox_panel().header_text }
+    fn divider(&self) -> &str { &self.0.blackbox_panel().divider }
 }
 
 #[cfg(test)]

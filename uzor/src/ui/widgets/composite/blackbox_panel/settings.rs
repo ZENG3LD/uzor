@@ -1,7 +1,8 @@
 //! BlackboxPanel settings bundle — theme + style in one box.
 
 use super::style::{BlackboxStyle, DefaultBlackboxStyle};
-use super::theme::{BlackboxTheme, DefaultBlackboxTheme};
+use super::theme::BlackboxTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // ---------------------------------------------------------------------------
 // BlackboxPanelSettings
@@ -18,7 +19,7 @@ pub struct BlackboxPanelSettings {
 impl Default for BlackboxPanelSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultBlackboxTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultBlackboxStyle>::default(),
         }
     }

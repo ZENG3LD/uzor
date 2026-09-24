@@ -177,6 +177,11 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let blackbox_panel =
+            crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens::resolve(
+                &semantic,
+                &self.components,
+            );
 
         Ok(Tokens {
             semantic,
@@ -205,6 +210,7 @@ impl TokenSet {
             toggle,
             toast,
             tooltip,
+            blackbox_panel,
         })
     }
 }
@@ -244,6 +250,7 @@ pub struct Tokens {
     toggle: crate::ui::widgets::atomic::toggle::tokens::ToggleTokens,
     toast: crate::ui::widgets::atomic::toast::tokens::ToastTokens,
     tooltip: crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens,
+    blackbox_panel: crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens,
 }
 
 impl Tokens {
@@ -396,6 +403,15 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn tooltip(&self) -> &crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens {
         &self.tooltip
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `BlackboxTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn blackbox_panel(
+        &self,
+    ) -> &crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens {
+        &self.blackbox_panel
     }
 }
 

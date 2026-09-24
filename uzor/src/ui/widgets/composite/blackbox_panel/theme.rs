@@ -1,4 +1,5 @@
-//! BlackboxPanel colour palette trait and default dark-theme implementation.
+//! BlackboxPanel colour palette trait; token-contract default implementation
+//! lives in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 
 // ---------------------------------------------------------------------------
 // BlackboxTheme trait
@@ -10,42 +11,36 @@
 pub trait BlackboxTheme {
     /// Panel body background fill.
     ///
-    /// Default: `#1a1d28` (dark chart background).
+    /// Default alias: `surface.floating` (`#1e222d`).
     fn bg(&self) -> &str;
 
     /// 1 px border colour (`WithBorder` / `WithHeaderBorder` kinds).
     ///
-    /// Default: `#363a45`.
+    /// Default alias: `border.default` (`#363a45`).
     fn border(&self) -> &str;
 
     /// Header strip background.
     ///
-    /// Default: `#1e222d`.
+    /// Default alias: `surface.header` (`#1e222d`).
     fn header_bg(&self) -> &str;
 
     /// Header title text colour.
     ///
-    /// Default: `#ffffff`.
+    /// Default alias: `text.on_accent` (`#d1d4dc`).
     fn header_text(&self) -> &str;
 
     /// 1 px divider line between header and body.
     ///
-    /// Default: `#363a45`.
+    /// Default alias: `border.default` (`#363a45`).
     fn divider(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation matching mlc blackbox panel colours.
-#[derive(Default)]
-pub struct DefaultBlackboxTheme;
-
-impl BlackboxTheme for DefaultBlackboxTheme {
-    fn bg(&self)          -> &str { "#1a1d28" }
-    fn border(&self)      -> &str { "#363a45" }
-    fn header_bg(&self)   -> &str { "#1e222d" }
-    fn header_text(&self) -> &str { "#ffffff"  }
-    fn divider(&self)     -> &str { "#363a45" }
-}
+//
+// `DefaultBlackboxTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8a — `crate::tokens::theme::TokenTheme` is now the one `BlackboxTheme`
+// implementation this crate ships, backed by
+// `crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens`
+// (see `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

@@ -69,6 +69,9 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "toggle" => Some(crate::ui::widgets::atomic::toggle::tokens::TOGGLE_KEYS),
         "toast" => Some(crate::ui::widgets::atomic::toast::tokens::TOAST_KEYS),
         "tooltip" => Some(crate::ui::widgets::atomic::tooltip::tokens::TOOLTIP_KEYS),
+        "blackbox_panel" => {
+            Some(crate::ui::widgets::composite::blackbox_panel::tokens::BLACKBOX_PANEL_KEYS)
+        }
         _ => None,
     }
 }
