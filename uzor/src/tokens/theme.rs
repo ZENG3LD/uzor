@@ -27,6 +27,7 @@ use crate::ui::widgets::atomic::scroll_chevron::theme::ScrollChevronTheme;
 use crate::ui::widgets::atomic::separator::theme::SeparatorTheme;
 use crate::ui::widgets::atomic::text::theme::TextTheme;
 use crate::ui::widgets::atomic::tab::theme::TabTheme;
+use crate::ui::widgets::atomic::slider::theme::SliderTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -224,6 +225,22 @@ impl TabTheme for TokenTheme {
     fn close_normal(&self) -> &str { &self.0.tab().close_normal }
     fn close_hover(&self) -> &str { &self.0.tab().close_hover }
     fn tags_pill_bg_hover(&self) -> &str { &self.0.tab().tags_pill_bg_hover }
+}
+
+impl SliderTheme for TokenTheme {
+    fn track_empty(&self) -> &str { &self.0.slider().track_empty }
+    fn accent(&self) -> &str { &self.0.slider().accent }
+    fn text_normal(&self) -> &str { &self.0.slider().text_normal }
+    fn text_disabled(&self) -> &str { &self.0.slider().text_disabled }
+    fn input_bg(&self) -> &str { &self.0.slider().input_bg }
+    fn input_border_normal(&self) -> &str { &self.0.slider().input_border_normal }
+    fn input_border_focused(&self) -> &str { &self.0.slider().input_border_focused }
+    fn toolbar_track_empty(&self) -> &str { &self.0.slider().toolbar_track_empty }
+    fn toolbar_track_filled(&self) -> &str { &self.0.slider().toolbar_track_filled }
+    fn toolbar_handle(&self) -> &str { &self.0.slider().toolbar_handle }
+    fn input_bg_disabled(&self) -> &str { &self.0.slider().input_bg_disabled }
+    fn input_placeholder(&self) -> &str { &self.0.slider().input_placeholder }
+    fn input_selection(&self) -> &str { &self.0.slider().input_selection }
 }
 
 #[cfg(test)]

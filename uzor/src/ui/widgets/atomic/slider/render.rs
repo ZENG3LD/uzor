@@ -52,20 +52,24 @@ fn make_input_settings(
 
     struct SliderInputTheme {
         bg: [u8; 4],
+        bg_disabled: [u8; 4],
         border_n: [u8; 4],
         border_f: [u8; 4],
         text: [u8; 4],
+        text_disabled: [u8; 4],
+        placeholder: [u8; 4],
+        selection: [u8; 4],
     }
     impl TextInputTheme for SliderInputTheme {
         fn bg_normal(&self)        -> [u8; 4] { self.bg }
-        fn bg_disabled(&self)      -> [u8; 4] { [35, 35, 35, 255] }
+        fn bg_disabled(&self)      -> [u8; 4] { self.bg_disabled }
         fn border_normal(&self)    -> [u8; 4] { self.border_n }
         fn border_hover(&self)     -> [u8; 4] { self.border_f }
         fn border_focused(&self)   -> [u8; 4] { self.border_f }
         fn text_normal(&self)      -> [u8; 4] { self.text }
-        fn text_disabled(&self)    -> [u8; 4] { [120, 123, 134, 255] }
-        fn placeholder(&self)      -> [u8; 4] { [120, 123, 134, 255] }
-        fn selection(&self)        -> [u8; 4] { [33, 150, 243, 128] }
+        fn text_disabled(&self)    -> [u8; 4] { self.text_disabled }
+        fn placeholder(&self)      -> [u8; 4] { self.placeholder }
+        fn selection(&self)        -> [u8; 4] { self.selection }
         fn cursor(&self)           -> [u8; 4] { self.text }
     }
 
@@ -108,10 +112,14 @@ fn make_input_settings(
 
     TextInputSettings {
         theme: Box::new(SliderInputTheme {
-            bg:       hex_to_rgba(theme.input_bg()),
-            border_n: hex_to_rgba(theme.input_border_normal()),
-            border_f: hex_to_rgba(theme.input_border_focused()),
-            text:     hex_to_rgba(theme.text_normal()),
+            bg:            hex_to_rgba(theme.input_bg()),
+            bg_disabled:   hex_to_rgba(theme.input_bg_disabled()),
+            border_n:      hex_to_rgba(theme.input_border_normal()),
+            border_f:      hex_to_rgba(theme.input_border_focused()),
+            text:          hex_to_rgba(theme.text_normal()),
+            text_disabled: hex_to_rgba(theme.text_disabled()),
+            placeholder:   hex_to_rgba(theme.input_placeholder()),
+            selection:     hex_to_rgba(theme.input_selection()),
         }),
         style: Box::new(SliderInputStyle {
             font_size: style.font_size(),

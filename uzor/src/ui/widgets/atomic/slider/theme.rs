@@ -51,29 +51,39 @@ pub trait SliderTheme {
 
     /// Handle + label colour when using toolbar style.
     fn toolbar_handle(&self) -> &str;
+
+    // ── Numeric-input sub-theme tokens (H1 Brief 7a additions) ──────────────
+    //
+    // `render.rs`'s `make_input_settings` builds a `TextInputTheme` for the
+    // inline numeric value box (variants 1.1 / 1.2 / 1.4). Its `bg`/
+    // `border_n`/`border_f`/`text` fields already round-trip through
+    // `input_bg`/`input_border_normal`/`input_border_focused`/`text_normal`
+    // above via `hex_to_rgba`; these 3 cover the remaining fields that used
+    // to be `[u8; 4]` literals, never reachable through this trait at all.
+
+    /// Input box background in the disabled state (mlc `bg_disabled =
+    /// "#232323"`, corrected onto `surface.control.idle` — same convention
+    /// `text_input::TextInputTheme::bg_disabled` uses).
+    fn input_bg_disabled(&self) -> &str;
+
+    /// Input box placeholder text colour (mlc `placeholder = "#787b86"` —
+    /// same value `text_disabled` already resolves to, `text.muted`, same
+    /// convention `text_input::TextInputTheme::placeholder` uses).
+    fn input_placeholder(&self) -> &str;
+
+    /// Input box text-selection highlight (mlc `selection =
+    /// "#2196f380"`-equivalent, corrected onto the shared `selection` role —
+    /// same Windows/Material-blue-style correction
+    /// `text_input::TextInputTheme::selection` uses).
+    fn input_selection(&self) -> &str;
 }
 
-// ─── Dark default ─────────────────────────────────────────────────────────────
-
-pub struct DefaultSliderTheme;
-
-impl Default for DefaultSliderTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl SliderTheme for DefaultSliderTheme {
-    fn track_empty(&self)          -> &str { "#363a45" }
-    fn accent(&self)               -> &str { "#2196F3" }
-    fn text_normal(&self)          -> &str { "#d1d4dc" }
-    fn text_disabled(&self)        -> &str { "#787b86" }
-    fn input_bg(&self)             -> &str { "#2a2e39" }
-    fn input_border_normal(&self)  -> &str { "#363a45" }
-    fn input_border_focused(&self) -> &str { "#2196F3" }
-    // Toolbar-style (variant 1.5) — maps to toolbar_theme.separator /
-    // item_bg_active / item_text from mlc compare_settings.
-    fn toolbar_track_empty(&self)  -> &str { "#363a45" }
-    fn toolbar_track_filled(&self) -> &str { "#2196F3" }
-    fn toolbar_handle(&self)       -> &str { "#d1d4dc" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultSliderTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 7a — `crate::tokens::theme::TokenTheme` is now the one
+// `SliderTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::slider::tokens::SliderTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

@@ -1,8 +1,17 @@
 //! Slider widget — Single / Dual / LineWidth.
+//!
+//! - `theme`  — `SliderTheme` trait.
+//! - `tokens` — `SliderTokens`: the token-contract implementation of
+//!              `SliderTheme`, one pre-rendered value per owned method,
+//!              built from `SemanticRoles` + optional `component.slider.*`
+//!              overrides (H1 token contract design §3). `TokenTheme`
+//!              (`crate::tokens::theme`) implements `SliderTheme` by
+//!              reading these fields.
 
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -15,7 +24,7 @@ pub use types::{
     SingleSliderResult, DualSliderResult, LineWidthSliderResult,
 };
 pub use state::SliderDragState;
-pub use theme::{DefaultSliderTheme, SliderTheme};
+pub use theme::SliderTheme;
 pub use style::{DefaultSliderStyle, SliderStyle};
 pub use settings::SliderSettings;
 pub use render::{

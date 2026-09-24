@@ -157,6 +157,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let slider = crate::ui::widgets::atomic::slider::tokens::SliderTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -180,6 +184,7 @@ impl TokenSet {
             separator,
             text,
             tab,
+            slider,
         })
     }
 }
@@ -214,6 +219,7 @@ pub struct Tokens {
     separator: crate::ui::widgets::atomic::separator::tokens::SeparatorTokens,
     text: crate::ui::widgets::atomic::text::tokens::TextTokens,
     tab: crate::ui::widgets::atomic::tab::tokens::TabTokens,
+    slider: crate::ui::widgets::atomic::slider::tokens::SliderTokens,
 }
 
 impl Tokens {
@@ -331,6 +337,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn tab(&self) -> &crate::ui::widgets::atomic::tab::tokens::TabTokens {
         &self.tab
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `SliderTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn slider(&self) -> &crate::ui::widgets::atomic::slider::tokens::SliderTokens {
+        &self.slider
     }
 }
 

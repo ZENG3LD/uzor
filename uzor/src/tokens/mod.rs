@@ -64,6 +64,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "separator" => Some(crate::ui::widgets::atomic::separator::tokens::SEPARATOR_KEYS),
         "text" => Some(crate::ui::widgets::atomic::text::tokens::TEXT_KEYS),
         "tab" => Some(crate::ui::widgets::atomic::tab::tokens::TAB_KEYS),
+        "slider" => Some(crate::ui::widgets::atomic::slider::tokens::SLIDER_KEYS),
         _ => None,
     }
 }
