@@ -18,9 +18,10 @@ use crate::types::{WidgetId, WidgetState};
 // StyledButtonTheme — reads from StyleManager, delegates rest to Default
 // =============================================================================
 
-use crate::ui::widgets::atomic::button::theme::{ButtonTheme, DefaultButtonTheme};
+use crate::ui::widgets::atomic::button::theme::ButtonTheme;
 use crate::ui::widgets::atomic::button::style::{ButtonStyle, DefaultButtonStyle};
 use crate::ui::widgets::atomic::button::settings::ButtonSettings;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 struct StyledButtonTheme {
     bg_normal:               String,
@@ -47,7 +48,10 @@ struct StyledButtonTheme {
     toolbar_item_bg_active:  String,
     toolbar_item_text:       String,
     toolbar_item_text_hover: String,
-    fallback:                DefaultButtonTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:                TokenTheme,
 }
 
 impl StyledButtonTheme {
@@ -89,7 +93,7 @@ impl StyledButtonTheme {
             toolbar_item_bg_active:  accent.clone(),
             toolbar_item_text:       fg_1,
             toolbar_item_text_hover: fg_0,
-            fallback:                DefaultButtonTheme,
+            fallback:                TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

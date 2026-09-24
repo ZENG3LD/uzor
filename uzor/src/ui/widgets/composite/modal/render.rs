@@ -29,7 +29,7 @@ use crate::ui::widgets::atomic::button::render::{
     draw_danger_button, draw_ghost_outline_button, draw_primary_button, DangerButtonView,
     DangerVariant, GhostOutlineButtonView, PrimaryButtonView,
 };
-use crate::ui::widgets::atomic::button::theme::DefaultButtonTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::atomic::close_button::render::{draw_close_button, CloseButtonView};
 use crate::ui::widgets::atomic::close_button::settings::CloseButtonSettings;
 use crate::ui::widgets::atomic::close_button::style::DefaultCloseButtonStyle;
@@ -872,7 +872,7 @@ fn draw_footer_buttons(
     view:   &ModalView<'_>,
     state:  &ModalState,
 ) {
-    let btn_theme    = DefaultButtonTheme;
+    let btn_theme    = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     let btn_w        = 80.0_f64;
     let btn_h        = 28.0_f64;
     let btn_gap      = 8.0_f64;
@@ -960,7 +960,7 @@ fn draw_wizard_nav(
     // --- Back / Next buttons -------------------------------------------------
     let btn_w     = 72.0_f64;
     let btn_h     = 28.0_f64;
-    let btn_theme = DefaultButtonTheme;
+    let btn_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     let btn_y     = nav.y + (nav.height - btn_h) / 2.0;
     let padding_x = style.padding();
 

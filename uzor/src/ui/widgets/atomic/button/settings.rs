@@ -4,7 +4,8 @@
 //! threading two independent params.
 
 use super::style::{ButtonStyle, DefaultButtonStyle};
-use super::theme::{ButtonTheme, DefaultButtonTheme};
+use super::theme::ButtonTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates the visual configuration for a button instance.
 ///
@@ -21,7 +22,7 @@ pub struct ButtonSettings {
 impl Default for ButtonSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultButtonTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultButtonStyle),
         }
     }

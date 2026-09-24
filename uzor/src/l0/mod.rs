@@ -165,7 +165,7 @@ pub mod atomic {
                 DropdownMenuRowStyle,
                 RoundedDropdownMenuRowStyle, FlatDropdownMenuRowStyle,
             },
-            theme::{ButtonTheme, DefaultButtonTheme},
+            theme::ButtonTheme,
             types::{
                 ButtonType, ActionVariant, ButtonStyle as ButtonStyleEnum,
                 ButtonContent,

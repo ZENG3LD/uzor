@@ -424,77 +424,10 @@ pub trait ButtonTheme: Send + Sync {
 }
 
 // =============================================================================
-// Default Theme Implementation
+// Token-contract implementation
 // =============================================================================
-
-/// Default button theme using prototype colors
-pub struct DefaultButtonTheme;
-
-impl DefaultButtonTheme {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultButtonTheme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ButtonTheme for DefaultButtonTheme {
-    // Background colors
-    fn button_bg_normal(&self) -> &str { "transparent" }
-    fn button_bg_hover(&self) -> &str { "#2a2a2a" }
-    fn button_bg_pressed(&self) -> &str { "#1e3a5f" }
-    fn button_bg_active(&self) -> &str { "#1e3a5f" }
-    fn button_bg_disabled(&self) -> &str { "#2a2a2a" }
-
-    // Text colors
-    fn button_text_normal(&self) -> &str { "#d1d5db" }
-    fn button_text_hover(&self) -> &str { "#ffffff" }
-    fn button_text_active(&self) -> &str { "#ffffff" }
-    fn button_text_disabled(&self) -> &str { "#4a4a4a" }
-
-    // Icon colors
-    fn button_icon_normal(&self) -> &str { "#787b86" }
-    fn button_icon_hover(&self) -> &str { "#e5e7eb" }
-    fn button_icon_active(&self) -> &str { "#ffffff" }
-    fn button_icon_disabled(&self) -> &str { "#4a4a4a" }
-
-    // Border colors
-    fn button_border_normal(&self) -> &str { "#3a3a3a" }
-    fn button_border_hover(&self) -> &str { "#e5e7eb" }
-    fn button_border_focused(&self) -> &str { "#2962ff" }
-
-    // Semantic colors
-    fn button_accent(&self) -> &str { "#2962ff" }
-    fn button_danger(&self) -> &str { "#ef5350" }
-    fn button_success(&self) -> &str { "#10b981" }
-    fn button_warning(&self) -> &str { "#f59e0b" }
-
-    // Toolbar-specific slots
-    fn toolbar_item_bg_hover(&self) -> &str   { "#2a2e39" }
-    fn toolbar_item_bg_active(&self) -> &str  { "#2196F3" }
-    fn toolbar_item_text(&self) -> &str       { "#d1d4dc" }
-    fn toolbar_item_text_hover(&self) -> &str { "#ffffff" }
-    fn toolbar_item_text_active(&self) -> &str{ "#ffffff" }
-    fn toolbar_separator(&self) -> &str       { "#2a2e39" }
-    fn toolbar_background(&self) -> &str      { "#1e222d" }
-    fn toolbar_accent(&self) -> &str          { "#2962ff" }
-
-    // Modal action button slots
-    fn button_primary_bg(&self) -> &str              { "#2962ff" }
-    fn button_primary_bg_hover(&self) -> &str        { "#4080ff" }
-    fn button_danger_bg(&self) -> &str               { "rgba(255,80,80,0.15)" }
-    fn button_danger_bg_hover(&self) -> &str         { "rgba(255,80,80,0.35)" }
-    fn button_danger_border(&self) -> &str           { "rgba(239,83,80,0.5)" }
-    fn button_danger_border_hover(&self) -> &str     { "rgba(239,83,80,0.75)" }
-    fn button_danger_text(&self) -> &str             { "#ef5350" }
-    fn button_secondary_hover_bg(&self) -> &str      { "rgba(255,255,255,0.12)" }
-    fn button_secondary_text_muted(&self) -> &str    { "rgba(254,255,238,0.7)" }
-    fn button_secondary_text(&self) -> &str          { "rgba(254,255,238,0.95)" }
-    fn button_ghost_idle_bg(&self) -> &str           { "#1e222d" }
-    fn button_utility_bg(&self) -> &str              { "#2a2e39" }
-    fn button_utility_bg_hover(&self) -> &str        { "#363a45" }
-}
+//
+// `DefaultButtonTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 4 — `crate::tokens::theme::TokenTheme` is now the one `ButtonTheme`
+// implementation ships, backed by `crate::ui::widgets::atomic::button::tokens::ButtonTokens`
+// (see `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

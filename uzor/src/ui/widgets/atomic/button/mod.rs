@@ -15,9 +15,8 @@
 //!
 //! Self-contained:
 //! - `types`     — variant catalog (`ButtonType`, ActionVariant, …) + capabilities.
-//! - `defaults`  — per-variant prototype defaults.
 //! - `state`     — `ButtonState` placeholder + `SplitButtonHoverZone`.
-//! - `theme`     — `ButtonTheme` colour trait + `DefaultButtonTheme`
+//! - `theme`     — `ButtonTheme` colour trait
 //!                 (toolbar + modal action + color swatch + dropdown + selector colour slots).
 //! - `tokens`    — `ButtonTokens`: the token-contract implementation of
 //!                 `ButtonTheme`, one pre-rendered value per method, built
@@ -38,7 +37,6 @@
 //! - `a11y`      — `node_for`, this button's per-frame accessibility node.
 
 pub mod types;
-pub mod defaults;
 pub mod state;
 pub mod theme;
 pub mod tokens;
@@ -54,7 +52,7 @@ pub use types::{
     ButtonContent, ChevronDirection,
 };
 pub use state::{ButtonState, SplitButtonHoverZone};
-pub use theme::{ButtonTheme, DefaultButtonTheme};
+pub use theme::ButtonTheme;
 pub use style::{
     ButtonStyle, DefaultButtonStyle, CompactButtonStyle, FlatButtonStyle,
     ToolbarButtonStyle, ToolbarLabelStyle,

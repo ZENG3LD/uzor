@@ -1787,7 +1787,7 @@ pub fn draw_utility_button(
     let text_color = if view.hovered || view.prominent {
         theme.toolbar_item_text()
     } else {
-        theme.toolbar_item_text()  // mlc item_text_muted — falls back to item_text in DefaultButtonTheme
+        theme.toolbar_item_text()  // mlc item_text_muted — no separate token, falls back to item_text
     };
     ctx.set_fill_color(text_color);
     ctx.set_font(font);

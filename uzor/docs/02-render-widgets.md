@@ -911,14 +911,17 @@ pub trait ButtonTheme {
 }
 ```
 
-`DefaultButtonTheme` is provided for prototyping (dark theme, blue accent):
+`crate::tokens::theme::TokenTheme` is the one `ButtonTheme` implementation
+uzor ships, backed by a resolved token set (H1 token contract; see
+`docs/uzor/plans/h1-token-contract-design-2026-09-24.md`). `ButtonSettings::default()`
+uses the dark built-in set:
 
 ```rust
-use uzor::widgets::button::theme::DefaultButtonTheme;
-let theme = DefaultButtonTheme::default();
+use uzor::tokens::{BuiltinSet, Tokens, TokenTheme};
+let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
 // button_accent() → "#2962ff"
-// button_danger() → "#ef5350"
-// button_bg_active() → "#1e3a5f"
+// button_danger() → "#f23645"
+// button_bg_active() → "#1e53e4"
 ```
 
 ### 3.9 ButtonState Trait
@@ -972,11 +975,12 @@ pub trait ButtonInputHandler {
 
 `DefaultButtonInputHandler` implements the trait using all defaults — zero-cost struct.
 
-### 3.11 Default Parameters
+### 3.11 Default Parameters (removed)
 
-**File:** `src/widgets/button/defaults.rs`
-
-Per-variant size and prototype color structs. These are for rapid prototyping only — the terminal uses custom inline values. All structs implement `Default`.
+`src/widgets/button/defaults.rs` (per-variant size and prototype-colour
+structs, confirmed zero call sites) was deleted in the H1 token-contract
+migration — see `src/tokens/` and `src/widgets/button/tokens.rs` for the
+colour side of what it used to prototype.
 
 | Struct | Key defaults |
 |--------|-------------|
