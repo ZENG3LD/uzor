@@ -22,6 +22,7 @@ use crate::ui::widgets::atomic::dropdown_trigger::theme::DropdownTriggerTheme;
 use crate::ui::widgets::atomic::item::theme::ItemTheme;
 use crate::ui::widgets::atomic::radio::theme::RadioTheme;
 use crate::ui::widgets::atomic::scrollbar::theme::ScrollbarTheme;
+use crate::ui::widgets::atomic::container::theme::ContainerTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -168,6 +169,17 @@ impl ScrollbarTheme for TokenTheme {
     fn thumb_hover(&self) -> &str { &self.0.scrollbar().thumb_hover }
     fn thumb_active(&self) -> &str { &self.0.scrollbar().thumb_active }
     fn track_bg(&self) -> &str { &self.0.scrollbar().track_bg }
+}
+
+impl ContainerTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.container().bg }
+    fn border(&self) -> &str { &self.0.container().border }
+    fn shadow(&self) -> &str { &self.0.container().shadow }
+    fn card_shadow_color(&self) -> &str { &self.0.container().card_shadow_color }
+    fn section_header_bg(&self) -> &str { &self.0.container().section_header_bg }
+    fn section_header_text(&self) -> &str { &self.0.container().section_header_text }
+    fn panel_bg(&self) -> &str { &self.0.container().panel_bg }
+    fn panel_border(&self) -> &str { &self.0.container().panel_border }
 }
 
 #[cfg(test)]

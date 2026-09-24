@@ -1,7 +1,8 @@
 //! Container settings bundle — theme + style boxed together.
 
 use super::style::{ContainerStyle, DefaultContainerStyle};
-use super::theme::{ContainerTheme, DefaultContainerTheme};
+use super::theme::ContainerTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Bundles a theme and style for a container widget.
 ///
@@ -15,7 +16,7 @@ pub struct ContainerSettings {
 impl Default for ContainerSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultContainerTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultContainerStyle),
         }
     }

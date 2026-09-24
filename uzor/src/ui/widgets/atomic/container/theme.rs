@@ -68,25 +68,17 @@ pub trait ContainerTheme {
     }
 }
 
-/// Default theme with mlc dark-mode hex values.
-#[derive(Default)]
-pub struct DefaultContainerTheme;
-
-impl ContainerTheme for DefaultContainerTheme {
-    // bg: mlc ToolbarTheme::background = #1e1e2e; also dropdown_bg / button_bg = #1e222d.
-    // We use the toolbar background as the universal default.
-    fn bg(&self) -> &str {
-        "#1e1e2e"
-    }
-
-    // border: mlc ToolbarTheme::separator = #313244; PopupTheme::border = #363a45.
-    // Using the popup/modal value as the universal default.
-    fn border(&self) -> &str {
-        "#363a45"
-    }
-
-    // shadow: generic semi-transparent black.
-    fn shadow(&self) -> &str {
-        "rgba(0,0,0,0.4)"
-    }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultContainerTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 6 — `crate::tokens::theme::TokenTheme` is now the one
+// `ContainerTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::container::tokens::ContainerTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3). `TokenTheme`
+// overrides all 8 methods explicitly, including the 5 with a default body
+// above that returns its own literal (`card_shadow_color`,
+// `section_header_bg`, `section_header_text`, `panel_bg`, `panel_border`) —
+// each is reachable from render code like any other, per H1's scope note on
+// trait-default methods.

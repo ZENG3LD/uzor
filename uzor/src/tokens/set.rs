@@ -136,6 +136,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let container = crate::ui::widgets::atomic::container::tokens::ContainerTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -154,6 +158,7 @@ impl TokenSet {
             item,
             radio,
             scrollbar,
+            container,
         })
     }
 }
@@ -183,6 +188,7 @@ pub struct Tokens {
     item: crate::ui::widgets::atomic::item::tokens::ItemTokens,
     radio: crate::ui::widgets::atomic::radio::tokens::RadioTokens,
     scrollbar: crate::ui::widgets::atomic::scrollbar::tokens::ScrollbarTokens,
+    container: crate::ui::widgets::atomic::container::tokens::ContainerTokens,
 }
 
 impl Tokens {
@@ -263,6 +269,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn scrollbar(&self) -> &crate::ui::widgets::atomic::scrollbar::tokens::ScrollbarTokens {
         &self.scrollbar
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ContainerTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn container(&self) -> &crate::ui::widgets::atomic::container::tokens::ContainerTokens {
+        &self.container
     }
 }
 

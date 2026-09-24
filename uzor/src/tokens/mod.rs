@@ -57,6 +57,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "item" => Some(crate::ui::widgets::atomic::item::tokens::ITEM_KEYS),
         "radio" => Some(crate::ui::widgets::atomic::radio::tokens::RADIO_KEYS),
         "scrollbar" => Some(crate::ui::widgets::atomic::scrollbar::tokens::SCROLLBAR_KEYS),
+        "container" => Some(crate::ui::widgets::atomic::container::tokens::CONTAINER_KEYS),
         _ => None,
     }
 }

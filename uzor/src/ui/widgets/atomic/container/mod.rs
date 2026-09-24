@@ -1,4 +1,12 @@
 //! Container widget — Plain / Bordered / Card / Clip / Section / Panel.
+//!
+//! - `theme`  — `ContainerTheme` trait.
+//! - `tokens` — `ContainerTokens`: the token-contract implementation of
+//!              `ContainerTheme`, one pre-rendered value per method, built
+//!              from `SemanticRoles` + optional `component.container.*`
+//!              overrides (H1 token contract design §3). `TokenTheme`
+//!              (`crate::tokens::theme`) implements `ContainerTheme` by
+//!              reading these fields.
 
 pub mod input;
 pub mod render;
@@ -6,6 +14,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 pub use input::{
@@ -25,5 +34,5 @@ pub use style::{
     BorderedContainerStyle, CardContainerStyle, ClippingContainerStyle, ContainerStyle,
     DefaultContainerStyle, PanelContainerStyle, PlainContainerStyle, SectionContainerStyle,
 };
-pub use theme::{ContainerTheme, DefaultContainerTheme};
+pub use theme::ContainerTheme;
 pub use types::{ContainerType, PanelRole};
