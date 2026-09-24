@@ -1,7 +1,8 @@
 //! ContextMenu settings bundle — `ContextMenuTheme` + `ContextMenuStyle` in one box.
 
 use super::style::{ContextMenuStyle, DefaultContextMenuStyle};
-use super::theme::{ContextMenuTheme, DefaultContextMenuTheme};
+use super::theme::ContextMenuTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Combined visual configuration for the ContextMenu composite.
 pub struct ContextMenuSettings {
@@ -14,7 +15,7 @@ pub struct ContextMenuSettings {
 impl Default for ContextMenuSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultContextMenuTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultContextMenuStyle>::default(),
         }
     }

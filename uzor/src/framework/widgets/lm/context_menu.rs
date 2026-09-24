@@ -17,7 +17,8 @@ use crate::render::RenderContext;
 use crate::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
 use crate::ui::widgets::composite::context_menu::settings::ContextMenuSettings;
 use crate::ui::widgets::composite::context_menu::style::{ContextMenuStyle, DefaultContextMenuStyle};
-use crate::ui::widgets::composite::context_menu::theme::{ContextMenuTheme, DefaultContextMenuTheme};
+use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 use crate::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
 };
@@ -31,7 +32,10 @@ struct StyledContextMenuTheme {
     border:        String,
     item_bg_hover: String,
     item_text:     String,
-    fallback:      DefaultContextMenuTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:      TokenTheme,
 }
 
 impl StyledContextMenuTheme {
@@ -41,7 +45,7 @@ impl StyledContextMenuTheme {
             border:        s.color_or_owned("border_strong", "#363a45"),
             item_bg_hover: s.color_or_owned("surface_raised","#2a2e39"),
             item_text:     s.color_or_owned("fg_1",          "#d1d4dc"),
-            fallback:      DefaultContextMenuTheme,
+            fallback:      TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

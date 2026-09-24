@@ -34,6 +34,7 @@ use crate::ui::widgets::atomic::toast::theme::ToastTheme;
 use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
 use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
+use crate::ui::widgets::composite::context_menu::theme::ContextMenuTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -317,6 +318,20 @@ impl ChromeTheme for TokenTheme {
     fn drag_zone_bg(&self) -> &str { &self.0.chrome().drag_zone_bg }
     fn tooltip_bg(&self) -> &str { &self.0.chrome().tooltip_bg }
     fn tooltip_text(&self) -> &str { &self.0.chrome().tooltip_text }
+}
+
+impl ContextMenuTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.context_menu().bg }
+    fn border(&self) -> &str { &self.0.context_menu().border }
+    fn shadow(&self) -> &str { &self.0.context_menu().shadow }
+    fn item_bg_normal(&self) -> &str { &self.0.context_menu().item_bg_normal }
+    fn item_bg_hover(&self) -> &str { &self.0.context_menu().item_bg_hover }
+    fn item_bg_danger_hover(&self) -> &str { &self.0.context_menu().item_bg_danger_hover }
+    fn item_text(&self) -> &str { &self.0.context_menu().item_text }
+    fn item_text_hover(&self) -> &str { &self.0.context_menu().item_text_hover }
+    fn item_text_disabled(&self) -> &str { &self.0.context_menu().item_text_disabled }
+    fn item_text_danger(&self) -> &str { &self.0.context_menu().item_text_danger }
+    fn separator(&self) -> &str { &self.0.context_menu().separator }
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
-//! ContextMenu colour palette trait and default dark-theme implementation.
+//! ContextMenu colour palette trait; token-contract default implementation
+//! lives in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 //!
-//! Reuses the same token set as `DropdownTheme` — both menus share a common
-//! dark-panel vocabulary.  ContextMenu does NOT use header, shortcut, toggle,
-//! checkbox, or cell tokens; they are included here for completeness so the
-//! same theme instance can back both widgets.
+//! Shares the same default-alias vocabulary as `DropdownTheme` — both menus
+//! alias the same semantic roles for the fields they hold in common (H1
+//! companion doc, "context_menu"/"dropdown" sections: "that is the point"),
+//! but each is its own registered `component.*` widget with its own
+//! override surface.
 
 /// Colour tokens for the ContextMenu composite.
 ///
@@ -12,69 +14,51 @@
 pub trait ContextMenuTheme {
     // --- Panel frame ---
 
-    /// Menu panel background.  Default: `#1e222d`.
+    /// Menu panel background.  Default alias: `surface.floating`.
     fn bg(&self) -> &str;
 
-    /// Panel border (1 px stroke).  Default: `#363a45`.
+    /// Panel border (1 px stroke).  Default alias: `border.default`.
     fn border(&self) -> &str;
 
-    /// Shadow rect fill.  Default: `rgba(0,0,0,0.3)`.
+    /// Shadow rect fill.  Default alias: `shadow.default`.
     fn shadow(&self) -> &str;
 
     // --- Items ---
 
-    /// Normal item background (transparent / same as bg).  Default: `#1e222d`.
+    /// Normal item background (transparent / same as bg).  Default alias:
+    /// `surface.floating`.
     fn item_bg_normal(&self) -> &str;
 
-    /// Hovered item background.  Default: `#2a2e39`.
+    /// Hovered item background.  Default alias: `surface.control.hover`.
     fn item_bg_hover(&self) -> &str;
 
-    /// Danger item hover background.  Default: `rgba(242,54,69,0.15)`.
+    /// Danger item hover background.  Default alias: `status.danger_bg`.
     fn item_bg_danger_hover(&self) -> &str;
 
-    /// Normal item text colour.  Default: `#d1d4dc`.
+    /// Normal item text colour.  Default alias: `text.primary`.
     fn item_text(&self) -> &str;
 
-    /// Hovered item text colour.  Default: `#ffffff`.
+    /// Hovered item text colour.  Default alias: `text.on_accent`.
     fn item_text_hover(&self) -> &str;
 
-    /// Disabled item text colour.  Default: `#6a6d78`.
+    /// Disabled item text colour.  Default alias: `text.disabled`.
     fn item_text_disabled(&self) -> &str;
 
-    /// Danger item text colour (red).  Default: `#f23645`.
+    /// Danger item text colour (red).  Default alias: `status.danger`.
     fn item_text_danger(&self) -> &str;
 
     // --- Separator ---
 
-    /// Separator line colour.  Default: `#363a45`.
+    /// Separator line colour.  Default alias: `border.default`.
     fn separator(&self) -> &str;
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation.
-///
-/// Values match the mlc audit token table in `context-menu-deep.md` §5.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultContextMenuTheme;
-
-impl ContextMenuTheme for DefaultContextMenuTheme {
-    // Panel frame
-    fn bg(&self)     -> &str { "#1e222d" }
-    fn border(&self) -> &str { "#363a45" }
-    fn shadow(&self) -> &str { "rgba(0,0,0,0.3)" }
-
-    // Items
-    fn item_bg_normal(&self)       -> &str { "#1e222d" }
-    fn item_bg_hover(&self)        -> &str { "#2a2e39" }
-    fn item_bg_danger_hover(&self) -> &str { "rgba(242,54,69,0.15)" }
-    fn item_text(&self)            -> &str { "#d1d4dc" }
-    fn item_text_hover(&self)      -> &str { "#ffffff" }
-    fn item_text_disabled(&self)   -> &str { "#6a6d78" }
-    fn item_text_danger(&self)     -> &str { "#f23645" }
-
-    // Separator
-    fn separator(&self) -> &str { "#363a45" }
-}
+//
+// `DefaultContextMenuTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 8a — `crate::tokens::theme::TokenTheme` is now the one
+// `ContextMenuTheme` implementation this crate ships, backed by
+// `crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens`
+// (see `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

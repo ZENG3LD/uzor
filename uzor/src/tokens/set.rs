@@ -186,6 +186,11 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let context_menu =
+            crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens::resolve(
+                &semantic,
+                &self.components,
+            );
 
         Ok(Tokens {
             semantic,
@@ -216,6 +221,7 @@ impl TokenSet {
             tooltip,
             blackbox_panel,
             chrome,
+            context_menu,
         })
     }
 }
@@ -257,6 +263,7 @@ pub struct Tokens {
     tooltip: crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens,
     blackbox_panel: crate::ui::widgets::composite::blackbox_panel::tokens::BlackboxPanelTokens,
     chrome: crate::ui::widgets::composite::chrome::tokens::ChromeTokens,
+    context_menu: crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens,
 }
 
 impl Tokens {
@@ -425,6 +432,15 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn chrome(&self) -> &crate::ui::widgets::composite::chrome::tokens::ChromeTokens {
         &self.chrome
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ContextMenuTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn context_menu(
+        &self,
+    ) -> &crate::ui::widgets::composite::context_menu::tokens::ContextMenuTokens {
+        &self.context_menu
     }
 }
 

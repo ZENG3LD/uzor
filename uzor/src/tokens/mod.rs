@@ -73,6 +73,9 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
             Some(crate::ui::widgets::composite::blackbox_panel::tokens::BLACKBOX_PANEL_KEYS)
         }
         "chrome" => Some(crate::ui::widgets::composite::chrome::tokens::CHROME_KEYS),
+        "context_menu" => {
+            Some(crate::ui::widgets::composite::context_menu::tokens::CONTEXT_MENU_KEYS)
+        }
         _ => None,
     }
 }
