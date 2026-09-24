@@ -5,55 +5,47 @@
 
 use super::types::ToastSeverity;
 
-// ─── mlc hardcoded RGBA (verbatim from `render_toasts`) ───────────────────────
+// ─── Runtime alpha multipliers (mlc `render_toasts` fade-composited ratios) ────
+//
+// These are opacity ratios, not colours — kept as plain constants (H1 does
+// not route them through the token contract). `render.rs` multiplies each by
+// the toast's own fade fraction; `rgba()` below combines the product with a
+// token-resolved RGB.
 
-/// mlc background: `rgba(20,24,33)`.
-pub const MLC_BG: (u8, u8, u8) = (20, 24, 33);
 /// mlc background alpha multiplier: `0.92`.
 pub const MLC_BG_ALPHA: f64 = 0.92;
-
-/// mlc border/title accent: `rgba(59,130,246)`.
-pub const MLC_ACCENT: (u8, u8, u8) = (59, 130, 246);
 /// mlc border alpha multiplier: `0.6`.
 pub const MLC_BORDER_ALPHA: f64 = 0.6;
 /// mlc title alpha multiplier: `1.0`.
 pub const MLC_TITLE_ALPHA: f64 = 1.0;
-
-/// mlc message text: `rgba(220,220,230)`.
-pub const MLC_TEXT: (u8, u8, u8) = (220, 220, 230);
 /// mlc message alpha multiplier: `0.85`.
 pub const MLC_TEXT_ALPHA: f64 = 0.85;
-
-/// mlc drop-shadow: `rgba(0,0,0)`.
-pub const MLC_SHADOW: (u8, u8, u8) = (0, 0, 0);
 /// mlc shadow alpha multiplier: `0.4`.
 pub const MLC_SHADOW_ALPHA: f64 = 0.4;
 
-// ─── Per-severity accent colours (uzor extension) ─────────────────────────────
-
-/// Formats an `rgba(r,g,b,a)` string with a pre-computed combined alpha.
+/// Formats an `rgba(r,g,b,a)` string with a pre-computed combined alpha —
+/// combines a resolved token colour's RGB (`render.rs`'s `hex_to_rgb`) with
+/// the runtime fade/alpha-multiplier product above. Still needed after H1:
+/// `render.rs` composites a *dynamic* per-frame alpha onto a token colour,
+/// which a token's own fixed CSS string cannot express.
 pub fn rgba(rgb: (u8, u8, u8), alpha: f64) -> String {
     format!("rgba({},{},{},{:.2})", rgb.0, rgb.1, rgb.2, alpha)
 }
 
-/// Accent RGB per severity.  Info = mlc blue.  Others are uzor extensions.
-pub fn accent_rgb(sev: ToastSeverity) -> (u8, u8, u8) {
-    match sev {
-        ToastSeverity::Info    => MLC_ACCENT,              // (59,130,246) — mlc blue
-        ToastSeverity::Success => (34, 197, 94),            // green-500
-        ToastSeverity::Warning => (234, 179, 8),            // yellow-500
-        ToastSeverity::Error   => (239, 68, 68),            // red-500
-    }
-}
-
-// ─── Trait-based theme interface (kept for callers that already use it) ────────
+// ─── Trait-based theme interface ───────────────────────────────────────────────
 
 pub trait ToastTheme {
+    /// Card background fill (mlc hardcoded `rgba(20,24,33)`, alpha applied
+    /// separately via [`MLC_BG_ALPHA`] × the toast's own fade fraction).
+    fn bg(&self) -> &str;
     fn bg_info(&self) -> &str;
     fn bg_success(&self) -> &str;
     fn bg_warning(&self) -> &str;
     fn bg_error(&self) -> &str;
     fn text(&self) -> &str;
+    /// Drop-shadow colour (mlc hardcodes plain black; alpha applied
+    /// separately via [`MLC_SHADOW_ALPHA`] × the toast's own fade fraction).
+    fn shadow(&self) -> &str;
 
     fn bg_for(&self, sev: ToastSeverity) -> &str {
         match sev {
@@ -65,15 +57,17 @@ pub trait ToastTheme {
     }
 }
 
-/// Legacy default theme — plain CSS hex strings.
-/// The mlc-parity render path uses `ToastThemeColors` instead.
-#[derive(Default)]
-pub struct DefaultToastTheme;
-
-impl ToastTheme for DefaultToastTheme {
-    fn bg_info(&self)    -> &str { "#3b82f6" }   // same blue as mlc accent
-    fn bg_success(&self) -> &str { "#22c55e" }
-    fn bg_warning(&self) -> &str { "#eab308" }
-    fn bg_error(&self)   -> &str { "#ef4444" }
-    fn text(&self)       -> &str { "#dcdce6" }   // same as mlc MLC_TEXT
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultToastTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 7b — `crate::tokens::theme::TokenTheme` is now the one `ToastTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::toast::tokens::ToastTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3). The former
+// `MLC_BG`/`MLC_ACCENT`/`MLC_TEXT`/`MLC_SHADOW` byte-tuple consts and the
+// `accent_rgb()` match arm — a second, independent implementation of the
+// same 4-severity lookup `bg_for` already did — are deleted; `render.rs` now
+// reads `theme.bg()`/`theme.bg_for(severity)`/`theme.text()`/`theme.shadow()`
+// through the SAME `ToastTokens` fields, one colour path instead of two.

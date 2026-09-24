@@ -13,8 +13,26 @@ use crate::render::{RenderContext, TextAlign, TextBaseline};
 
 use super::state::ToastEntry;
 use super::style::ToastGeometry as G;
-use super::theme::{accent_rgb, rgba, MLC_BG, MLC_BG_ALPHA, MLC_BORDER_ALPHA, MLC_SHADOW, MLC_SHADOW_ALPHA, MLC_TEXT, MLC_TEXT_ALPHA, MLC_TITLE_ALPHA};
+use super::theme::{rgba, ToastTheme, MLC_BG_ALPHA, MLC_BORDER_ALPHA, MLC_SHADOW_ALPHA, MLC_TEXT_ALPHA, MLC_TITLE_ALPHA};
 use super::types::ToastType;
+
+/// Parses a token-resolved `#rrggbb`/`#rrggbbaa` CSS hex string into a plain
+/// RGB byte tuple (alpha dropped — every caller here recombines its own
+/// dynamic fade alpha via [`rgba`] instead). Falls back to opaque white on a
+/// malformed input, matching `slider::render`'s own `hex_to_rgba` — every
+/// token-resolved string this widget reads is well-formed, so the fallback
+/// is unreachable in practice.
+fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
+    let s = hex.trim_start_matches('#');
+    if s.len() >= 6 {
+        let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(255);
+        let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(255);
+        let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(255);
+        (r, g, b)
+    } else {
+        (255, 255, 255)
+    }
+}
 
 // ─── Alpha ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +63,7 @@ pub fn draw_toast_at(
     x: f64,
     y: f64,
     entry: &ToastEntry,
+    theme: &dyn ToastTheme,
     now_ms: u64,
 ) {
     let toast = &entry.toast;
@@ -58,14 +77,14 @@ pub fn draw_toast_at(
     let bt = G::BORDER_THICKNESS;
     let pad = G::PADDING;
     let so = G::SHADOW_OFFSET;
-    let accent = accent_rgb(toast.severity);
+    let accent = hex_to_rgb(theme.bg_for(toast.severity));
 
     // Shadow
-    ctx.set_fill_color(&rgba(MLC_SHADOW, alpha * MLC_SHADOW_ALPHA));
+    ctx.set_fill_color(&rgba(hex_to_rgb(theme.shadow()), alpha * MLC_SHADOW_ALPHA));
     ctx.fill_rect(x + so, y + so, w, h);
 
     // Background
-    ctx.set_fill_color(&rgba(MLC_BG, alpha * MLC_BG_ALPHA));
+    ctx.set_fill_color(&rgba(hex_to_rgb(theme.bg()), alpha * MLC_BG_ALPHA));
     ctx.fill_rect(x, y, w, h);
 
     // Border — four filled rects (mlc uses no border-radius)
@@ -89,7 +108,7 @@ pub fn draw_toast_at(
 
     // Message — 11px, muted white
     ctx.set_font("11px sans-serif");
-    ctx.set_fill_color(&rgba(MLC_TEXT, alpha * MLC_TEXT_ALPHA));
+    ctx.set_fill_color(&rgba(hex_to_rgb(theme.text()), alpha * MLC_TEXT_ALPHA));
 
     // If no title, vertically centre the message in the card.
     let msg_y = if title_str.is_some() {
@@ -113,6 +132,7 @@ pub fn draw_toast_at(
 pub fn draw_toast_stack(
     ctx: &mut dyn RenderContext,
     entries: &[ToastEntry],
+    theme: &dyn ToastTheme,
     window_width: f64,
     window_height: f64,
     now_ms: u64,
@@ -131,7 +151,7 @@ pub fn draw_toast_stack(
             continue;
         }
 
-        draw_toast_at(ctx, start_x, y, entry, now_ms);
+        draw_toast_at(ctx, start_x, y, entry, theme, now_ms);
     }
 }
 
@@ -147,8 +167,8 @@ pub fn draw_toast(
     ctx: &mut dyn RenderContext,
     rect: Rect,
     entry: &ToastEntry,
-    _settings: &ToastSettings,
+    settings: &ToastSettings,
     now_ms: u64,
 ) {
-    draw_toast_at(ctx, rect.x, rect.y, entry, now_ms);
+    draw_toast_at(ctx, rect.x, rect.y, entry, settings.theme.as_ref(), now_ms);
 }

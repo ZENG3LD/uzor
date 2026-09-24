@@ -67,6 +67,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "slider" => Some(crate::ui::widgets::atomic::slider::tokens::SLIDER_KEYS),
         "text_input" => Some(crate::ui::widgets::atomic::text_input::tokens::TEXT_INPUT_KEYS),
         "toggle" => Some(crate::ui::widgets::atomic::toggle::tokens::TOGGLE_KEYS),
+        "toast" => Some(crate::ui::widgets::atomic::toast::tokens::TOAST_KEYS),
         _ => None,
     }
 }

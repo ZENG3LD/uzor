@@ -169,6 +169,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let toast = crate::ui::widgets::atomic::toast::tokens::ToastTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -195,6 +199,7 @@ impl TokenSet {
             slider,
             text_input,
             toggle,
+            toast,
         })
     }
 }
@@ -232,6 +237,7 @@ pub struct Tokens {
     slider: crate::ui::widgets::atomic::slider::tokens::SliderTokens,
     text_input: crate::ui::widgets::atomic::text_input::tokens::TextInputTokens,
     toggle: crate::ui::widgets::atomic::toggle::tokens::ToggleTokens,
+    toast: crate::ui::widgets::atomic::toast::tokens::ToastTokens,
 }
 
 impl Tokens {
@@ -370,6 +376,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn toggle(&self) -> &crate::ui::widgets::atomic::toggle::tokens::ToggleTokens {
         &self.toggle
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ToastTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn toast(&self) -> &crate::ui::widgets::atomic::toast::tokens::ToastTokens {
+        &self.toast
     }
 }
 

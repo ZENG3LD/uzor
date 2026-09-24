@@ -30,6 +30,7 @@ use crate::ui::widgets::atomic::tab::theme::TabTheme;
 use crate::ui::widgets::atomic::slider::theme::SliderTheme;
 use crate::ui::widgets::atomic::text_input::theme::TextInputTheme;
 use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
+use crate::ui::widgets::atomic::toast::theme::ToastTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -268,6 +269,16 @@ impl ToggleTheme for TokenTheme {
     fn toggle_label_text_disabled(&self) -> &str { &self.0.toggle().toggle_label_text_disabled }
     fn toggle_icon_normal(&self) -> &str { &self.0.toggle().toggle_icon_normal }
     fn toggle_icon_active(&self) -> &str { &self.0.toggle().toggle_icon_active }
+}
+
+impl ToastTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.toast().bg }
+    fn bg_info(&self) -> &str { &self.0.toast().bg_info }
+    fn bg_success(&self) -> &str { &self.0.toast().bg_success }
+    fn bg_warning(&self) -> &str { &self.0.toast().bg_warning }
+    fn bg_error(&self) -> &str { &self.0.toast().bg_error }
+    fn text(&self) -> &str { &self.0.toast().text }
+    fn shadow(&self) -> &str { &self.0.toast().shadow }
 }
 
 #[cfg(test)]
