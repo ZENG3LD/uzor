@@ -23,6 +23,7 @@ use crate::ui::widgets::atomic::item::theme::ItemTheme;
 use crate::ui::widgets::atomic::radio::theme::RadioTheme;
 use crate::ui::widgets::atomic::scrollbar::theme::ScrollbarTheme;
 use crate::ui::widgets::atomic::container::theme::ContainerTheme;
+use crate::ui::widgets::atomic::scroll_chevron::theme::ScrollChevronTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -180,6 +181,13 @@ impl ContainerTheme for TokenTheme {
     fn section_header_text(&self) -> &str { &self.0.container().section_header_text }
     fn panel_bg(&self) -> &str { &self.0.container().panel_bg }
     fn panel_border(&self) -> &str { &self.0.container().panel_border }
+}
+
+impl ScrollChevronTheme for TokenTheme {
+    fn scroll_chevron_color(&self) -> &str { &self.0.scroll_chevron().scroll_chevron_color }
+    fn scroll_chevron_color_hover(&self) -> &str { &self.0.scroll_chevron().scroll_chevron_color_hover }
+    fn scroll_chevron_color_disabled(&self) -> &str { &self.0.scroll_chevron().scroll_chevron_color_disabled }
+    fn scroll_chevron_bg_hover(&self) -> &str { &self.0.scroll_chevron().scroll_chevron_bg_hover }
 }
 
 #[cfg(test)]

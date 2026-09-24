@@ -140,6 +140,11 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let scroll_chevron =
+            crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens::resolve(
+                &semantic,
+                &self.components,
+            );
 
         Ok(Tokens {
             semantic,
@@ -159,6 +164,7 @@ impl TokenSet {
             radio,
             scrollbar,
             container,
+            scroll_chevron,
         })
     }
 }
@@ -189,6 +195,7 @@ pub struct Tokens {
     radio: crate::ui::widgets::atomic::radio::tokens::RadioTokens,
     scrollbar: crate::ui::widgets::atomic::scrollbar::tokens::ScrollbarTokens,
     container: crate::ui::widgets::atomic::container::tokens::ContainerTokens,
+    scroll_chevron: crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens,
 }
 
 impl Tokens {
@@ -276,6 +283,15 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn container(&self) -> &crate::ui::widgets::atomic::container::tokens::ContainerTokens {
         &self.container
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ScrollChevronTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn scroll_chevron(
+        &self,
+    ) -> &crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens {
+        &self.scroll_chevron
     }
 }
 

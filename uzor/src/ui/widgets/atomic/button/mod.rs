@@ -138,7 +138,7 @@ pub use super::close_button::{
 };
 pub use super::scroll_chevron::{
     ScrollChevronStyle, DefaultScrollChevronStyle,
-    ScrollChevronTheme, DefaultScrollChevronTheme,
+    ScrollChevronTheme,
     ScrollChevronView, ScrollChevronResult, ChevronDirection as ScrollChevronDirection,
     draw_scroll_chevron,
 };

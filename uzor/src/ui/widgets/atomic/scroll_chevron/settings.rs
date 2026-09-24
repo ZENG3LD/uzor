@@ -1,7 +1,8 @@
 //! Bundled per-instance settings for the scroll chevron widget.
 
 use super::style::{DefaultScrollChevronStyle, ScrollChevronStyle};
-use super::theme::{DefaultScrollChevronTheme, ScrollChevronTheme};
+use super::theme::ScrollChevronTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Aggregates visual configuration for a scroll chevron instance.
 pub struct ScrollChevronSettings {
@@ -14,7 +15,7 @@ pub struct ScrollChevronSettings {
 impl Default for ScrollChevronSettings {
     fn default() -> Self {
         Self {
-            theme: Box::new(DefaultScrollChevronTheme),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultScrollChevronStyle),
         }
     }

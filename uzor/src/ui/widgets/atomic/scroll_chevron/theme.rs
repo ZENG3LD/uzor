@@ -19,18 +19,12 @@ pub trait ScrollChevronTheme {
     fn scroll_chevron_bg_hover(&self) -> &str;
 }
 
-/// Default scroll chevron theme.
-pub struct DefaultScrollChevronTheme;
-
-impl Default for DefaultScrollChevronTheme {
-    fn default() -> Self {
-        Self
-    }
-}
-
-impl ScrollChevronTheme for DefaultScrollChevronTheme {
-    fn scroll_chevron_color(&self) -> &str          { "#d1d4dc" }
-    fn scroll_chevron_color_hover(&self) -> &str    { "#ffffff" }
-    fn scroll_chevron_color_disabled(&self) -> &str { "#4a4a4a" }
-    fn scroll_chevron_bg_hover(&self) -> &str        { "#2a2e39" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultScrollChevronTheme` (a literal-colour prototype impl) was deleted
+// in H1 Brief 7a — `crate::tokens::theme::TokenTheme` is now the one
+// `ScrollChevronTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens`
+// (see `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

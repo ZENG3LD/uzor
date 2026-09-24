@@ -9,7 +9,13 @@
 //! Self-contained:
 //! - `types`    — `ScrollChevronRenderKind`.
 //! - `state`    — `ScrollChevronState` placeholder.
-//! - `theme`    — `ScrollChevronTheme` trait + `DefaultScrollChevronTheme`.
+//! - `theme`    — `ScrollChevronTheme` trait.
+//! - `tokens`   — `ScrollChevronTokens`: the token-contract implementation of
+//!                `ScrollChevronTheme`, one pre-rendered value per method,
+//!                built from `SemanticRoles` + optional
+//!                `component.scroll_chevron.*` overrides (H1 token contract
+//!                design §3). `TokenTheme` (`crate::tokens::theme`)
+//!                implements `ScrollChevronTheme` by reading these fields.
 //! - `style`    — `ScrollChevronStyle` trait + `DefaultScrollChevronStyle`.
 //! - `settings` — `ScrollChevronSettings` bundle.
 //! - `render`   — `draw_scroll_chevron` dispatcher + `ScrollChevronView` + `ScrollChevronResult`.
@@ -19,6 +25,7 @@
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -26,7 +33,7 @@ pub mod input;
 
 pub use types::ScrollChevronRenderKind;
 pub use state::ScrollChevronState;
-pub use theme::{DefaultScrollChevronTheme, ScrollChevronTheme};
+pub use theme::ScrollChevronTheme;
 pub use style::{DefaultScrollChevronStyle, ScrollChevronStyle};
 pub use settings::ScrollChevronSettings;
 pub use render::{ChevronDirection, ScrollChevronResult, ScrollChevronView, draw_scroll_chevron};
