@@ -19,6 +19,13 @@
 //! - `state`     — `ButtonState` placeholder + `SplitButtonHoverZone`.
 //! - `theme`     — `ButtonTheme` colour trait + `DefaultButtonTheme`
 //!                 (toolbar + modal action + color swatch + dropdown + selector colour slots).
+//! - `tokens`    — `ButtonTokens`: the token-contract implementation of
+//!                 `ButtonTheme`, one pre-rendered value per method, built
+//!                 from `SemanticRoles` + optional `component.button.*`
+//!                 overrides (H1 token contract design §3). `TokenTheme`
+//!                 (`crate::tokens::theme`) implements `ButtonTheme` by
+//!                 reading these fields — this is the worked example every
+//!                 other widget's own `tokens.rs` copies.
 //! - `style`     — `ButtonStyle` geometry trait + Default/Compact/Flat/Toolbar/Label
 //!                 presets + Primary/GhostOutline/Danger/Utility modal presets
 //!                 + `SidebarTabStyle` / `HorizontalTabStyle`
@@ -34,6 +41,7 @@ pub mod types;
 pub mod defaults;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;

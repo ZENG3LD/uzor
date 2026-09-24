@@ -91,19 +91,29 @@ impl TokenSet {
             radius_lg: required_radius("radius.lg")?,
         };
 
+        let button = crate::ui::widgets::atomic::button::tokens::ButtonTokens::resolve(
+            &semantic,
+            &self.components,
+        );
+
         Ok(Tokens {
             semantic,
             geometry,
             name: self.name.clone(),
             app: self.app.clone(),
             components: self.components.clone(),
+            button,
         })
     }
 }
 
 /// The fully validated, widget-consumable result of [`TokenSet::resolve`].
 /// `name` replaces `StyleManager::active_preset` (H1 §3) — `None` for a
-/// token set loaded without a `$name` metadata key.
+/// token set loaded without a `$name` metadata key. Per-widget component
+/// token fields (`button`, growing by one per converted widget) stay
+/// private — the only public read path is through a widget's own theme
+/// trait, implemented by [`crate::tokens::theme::TokenTheme`], never a
+/// generic stringly getter.
 #[derive(Clone, Debug)]
 pub struct Tokens {
     pub semantic: SemanticRoles,
@@ -111,6 +121,16 @@ pub struct Tokens {
     pub name: Option<String>,
     pub app: AppTokens,
     pub components: ComponentOverrides,
+    button: crate::ui::widgets::atomic::button::tokens::ButtonTokens,
+}
+
+impl Tokens {
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `ButtonTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn button(&self) -> &crate::ui::widgets::atomic::button::tokens::ButtonTokens {
+        &self.button
+    }
 }
 
 /// A resolved `app.*` value — MLC's escape hatch namespace (D4). uzor
