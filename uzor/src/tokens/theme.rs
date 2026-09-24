@@ -31,6 +31,7 @@ use crate::ui::widgets::atomic::slider::theme::SliderTheme;
 use crate::ui::widgets::atomic::text_input::theme::TextInputTheme;
 use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
 use crate::ui::widgets::atomic::toast::theme::ToastTheme;
+use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -279,6 +280,13 @@ impl ToastTheme for TokenTheme {
     fn bg_error(&self) -> &str { &self.0.toast().bg_error }
     fn text(&self) -> &str { &self.0.toast().text }
     fn shadow(&self) -> &str { &self.0.toast().shadow }
+}
+
+impl TooltipTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.tooltip().bg }
+    fn border(&self) -> &str { &self.0.tooltip().border }
+    fn text(&self) -> &str { &self.0.tooltip().text }
+    fn shadow(&self) -> &str { &self.0.tooltip().shadow }
 }
 
 #[cfg(test)]

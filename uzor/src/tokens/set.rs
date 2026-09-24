@@ -173,6 +173,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let tooltip = crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -200,6 +204,7 @@ impl TokenSet {
             text_input,
             toggle,
             toast,
+            tooltip,
         })
     }
 }
@@ -238,6 +243,7 @@ pub struct Tokens {
     text_input: crate::ui::widgets::atomic::text_input::tokens::TextInputTokens,
     toggle: crate::ui::widgets::atomic::toggle::tokens::ToggleTokens,
     toast: crate::ui::widgets::atomic::toast::tokens::ToastTokens,
+    tooltip: crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens,
 }
 
 impl Tokens {
@@ -383,6 +389,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn toast(&self) -> &crate::ui::widgets::atomic::toast::tokens::ToastTokens {
         &self.toast
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `TooltipTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn tooltip(&self) -> &crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens {
+        &self.tooltip
     }
 }
 

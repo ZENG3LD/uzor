@@ -9,41 +9,30 @@ pub trait TooltipTheme {
     fn shadow(&self) -> &str { "#00000060" }
 }
 
-#[derive(Default)]
-pub struct DefaultTooltipTheme;
-
-impl TooltipTheme for DefaultTooltipTheme {
-    fn bg(&self)     -> &str { "#2a2a2a" }
-    fn border(&self) -> &str { "#3a3a3a" }
-    fn text(&self)   -> &str { "#ffffff" }
-}
-
-/// Theme matching mlc chrome/toolbar tooltip defaults.
-///
-/// In mlc these are synced from `theme.colors.button_bg` / `theme.colors.text_primary`
-/// each frame.  The static defaults here match the mlc struct defaults before first sync.
-/// Callers that integrate with a live theme should supply a custom `TooltipTheme` impl.
-#[derive(Default)]
-pub struct ChromeTooltipTheme;
-
-impl TooltipTheme for ChromeTooltipTheme {
-    fn bg(&self)     -> &str { "#323232" }
-    fn border(&self) -> &str { "" }        // No border on chrome variant — shadow only.
-    fn text(&self)   -> &str { "#ffffff" }
-    fn shadow(&self) -> &str { "#00000060" }
-}
-
-/// Theme matching mlc OHLC crosshair tooltip.
-///
-/// In mlc these are assembled in `draw_chart_tooltip()` from chart theme:
-/// `bg = theme.background + "ee"`, `text = theme.text`, `border = theme.scale_border`.
-/// Static defaults here match the mlc `Tooltip::default()` values.
-/// Callers integrating a chart theme should supply a custom impl.
-#[derive(Default)]
-pub struct CrosshairTooltipTheme;
-
-impl TooltipTheme for CrosshairTooltipTheme {
-    fn bg(&self)     -> &str { "#1e222dee" }
-    fn border(&self) -> &str { "#2a2e39" }
-    fn text(&self)   -> &str { "#b2b5be" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultTooltipTheme`, `ChromeTooltipTheme`, `CrosshairTooltipTheme` (three
+// literal-colour prototype impls) were deleted in H1 Brief 7b —
+// `crate::tokens::theme::TokenTheme` is now the one `TooltipTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::tooltip::tokens::TooltipTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).
+//
+// The companion doc's own design kept Chrome/Crosshair as distinct wrapper
+// types (`TokenChromeTooltipTheme`/`TokenCrosshairTooltipTheme`) on the
+// assumption MLC uses both concurrently on screen. Grepping the whole
+// uzor-next tree (uzor-examples, uzor-desktop, `framework::widgets::lm`,
+// every composite renderer including `chrome`) found ZERO call sites for
+// either constructor path today: `TooltipSettings::chrome()`/`.toolbar()`/
+// `.crosshair()` and `TooltipPreset::for_chrome`/`for_toolbar`/
+// `for_crosshair` only ever called each other, with no root caller anywhere
+// in the tree — dead code by the house rule ("if code is unused, delete
+// it"), not yet-wired MLC-side API (MLC does not consume uzor's token
+// contract before the W1 switch, main design doc §4). Deleted along with
+// the two theme structs (`settings.rs`, this brief);
+// `ChromeTooltipStyle`/`CrosshairTooltipStyle` (geometry — H1 is
+// colour-only) stay exported for whenever a real caller needs them. A4's
+// `ChromeTooltipTheme::border == ""` "no border" sentinel question is moot —
+// the struct it lived on is gone.

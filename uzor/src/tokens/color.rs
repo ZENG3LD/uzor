@@ -185,13 +185,16 @@ impl fmt::Display for Rgba {
     }
 }
 
-/// A resolved token colour value. Two non-colour sentinel forms exist for
-/// widgets that already special-case a literal, non-colour string at their
-/// own render call site — H1 does not change those call sites (coordinator
-/// amendment A4): `popup`'s `hsv_indicator` returns `"rainbow"` (a gradient
-/// marker) and `ChromeTooltipTheme::border` returns `""` (meaning "no border
-/// drawn"). `Sentinel` is a carried crutch, marked for removal once those
-/// call sites are converted (A4).
+/// A resolved token colour value. `Sentinel` exists for widgets that already
+/// special-case a literal, non-colour string at their own render call site —
+/// H1 does not change those call sites (coordinator amendment A4): `popup`'s
+/// `hsv_indicator` returns `"rainbow"` (a gradient marker). `Sentinel` is a
+/// carried crutch, marked for removal once that call site is converted (A4).
+/// The tooltip widget's own `ChromeTooltipTheme::border == ""` "no border"
+/// sentinel — A4's other named example — never needed this variant: H1
+/// Brief 7b deleted `ChromeTooltipTheme` outright as dead code (grepped zero
+/// call sites anywhere in uzor-next; `ui::widgets::atomic::tooltip::theme`'s
+/// module doc has the evidence), so the sentinel question resolved itself.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColorValue {
     Solid(Rgba),
