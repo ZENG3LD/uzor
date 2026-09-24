@@ -239,57 +239,6 @@ pub enum ChromeButton {
 }
 
 // ---------------------------------------------------------------------------
-// ChromeColors
-// ---------------------------------------------------------------------------
-
-/// All colour tokens used by the Chrome composite.
-///
-/// Values are ARGB `u32` (same convention as the rest of uzor).
-#[derive(Debug, Clone)]
-pub struct ChromeColors {
-    /// Titlebar background strip.
-    pub titlebar_bg:   u32,
-    /// Button hover background (most buttons).
-    pub button_hover:  u32,
-    /// Frame border (bottom separator + dividers).
-    pub border:        u32,
-    /// Primary text / label colour.
-    pub text:          u32,
-    /// Icon in normal state.
-    pub icon_normal:   u32,
-    /// Icon on hover / active.
-    pub icon_hover:    u32,
-    /// Close-app button hover background (red).
-    pub close_hover:   u32,
-    /// Divider lines between button groups.
-    pub separator:     u32,
-    /// Active tab bottom accent line (2 px blue).
-    pub tab_accent:    u32,
-    /// Tooltip background.
-    pub tooltip_bg:    u32,
-    /// Tooltip text.
-    pub tooltip_text:  u32,
-}
-
-impl Default for ChromeColors {
-    fn default() -> Self {
-        Self {
-            titlebar_bg:   0xFF131722,
-            button_hover:  0xFF1F2937,
-            border:        0xFF313244,
-            text:          0xFFCDD6F4,
-            icon_normal:   0xFFA6ADC8,
-            icon_hover:    0xFFCDD6F4,
-            close_hover:   0xFFE81123,
-            separator:     0xFF313244,
-            tab_accent:    0xFF3B82F6,
-            tooltip_bg:    0xFF323232,
-            tooltip_text:  0xFFFFFFFF,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // ChromeResponse
 // ---------------------------------------------------------------------------
 

@@ -33,6 +33,7 @@ use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
 use crate::ui::widgets::atomic::toast::theme::ToastTheme;
 use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
 use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
+use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -297,6 +298,25 @@ impl BlackboxTheme for TokenTheme {
     fn header_bg(&self) -> &str { &self.0.blackbox_panel().header_bg }
     fn header_text(&self) -> &str { &self.0.blackbox_panel().header_text }
     fn divider(&self) -> &str { &self.0.blackbox_panel().divider }
+}
+
+impl ChromeTheme for TokenTheme {
+    fn background(&self) -> &str { &self.0.chrome().background }
+    fn icon_normal(&self) -> &str { &self.0.chrome().icon_normal }
+    fn icon_hover(&self) -> &str { &self.0.chrome().icon_hover }
+    fn button_hover(&self) -> &str { &self.0.chrome().button_hover }
+    fn close_hover(&self) -> &str { &self.0.chrome().close_hover }
+    fn separator(&self) -> &str { &self.0.chrome().separator }
+    fn tab_bg_normal(&self) -> &str { &self.0.chrome().tab_bg_normal }
+    fn tab_bg_hover(&self) -> &str { &self.0.chrome().tab_bg_hover }
+    fn tab_bg_active(&self) -> &str { &self.0.chrome().tab_bg_active }
+    fn tab_text_normal(&self) -> &str { &self.0.chrome().tab_text_normal }
+    fn tab_text_hover(&self) -> &str { &self.0.chrome().tab_text_hover }
+    fn tab_text_active(&self) -> &str { &self.0.chrome().tab_text_active }
+    fn tab_accent(&self) -> &str { &self.0.chrome().tab_accent }
+    fn drag_zone_bg(&self) -> &str { &self.0.chrome().drag_zone_bg }
+    fn tooltip_bg(&self) -> &str { &self.0.chrome().tooltip_bg }
+    fn tooltip_text(&self) -> &str { &self.0.chrome().tooltip_text }
 }
 
 #[cfg(test)]

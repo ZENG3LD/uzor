@@ -1184,7 +1184,9 @@ fn draw_l3_frame(
             time_ms,
         };
         let chrome_settings = ChromeSettings {
-            theme: Box::<uzor::ui::widgets::composite::chrome::theme::DefaultChromeTheme>::default(),
+            theme: Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
             style: Box::new(ChromeWithBottomBorder),
         };
         let chrome_kind = ChromeRenderKind::Default;

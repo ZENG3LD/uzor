@@ -20,10 +20,11 @@ use crate::render::RenderContext;
 use crate::ui::widgets::composite::chrome::input::register_layout_manager_chrome;
 use crate::ui::widgets::composite::chrome::settings::ChromeSettings;
 use crate::ui::widgets::composite::chrome::style::{ChromeStyle, DefaultChromeStyle};
-use crate::ui::widgets::composite::chrome::theme::{ChromeTheme, DefaultChromeTheme};
+use crate::ui::widgets::composite::chrome::theme::ChromeTheme;
 use crate::ui::widgets::composite::chrome::types::{
     ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // =============================================================================
 // StyledChromeTheme — reads accent/fg from StyleManager, delegates rest
@@ -35,7 +36,10 @@ struct StyledChromeTheme {
     icon_hover:  String,
     button_hover:String,
     tab_accent:  String,
-    fallback:    DefaultChromeTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:    TokenTheme,
 }
 
 impl StyledChromeTheme {
@@ -46,7 +50,7 @@ impl StyledChromeTheme {
             icon_hover:   s.color_or_owned("fg_0",     "#cdd6f4"),
             button_hover: s.color_or_owned("surface_raised", "#1f2937"),
             tab_accent:   s.color_or_owned("accent",   "#3b82f6"),
-            fallback:     DefaultChromeTheme,
+            fallback:     TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

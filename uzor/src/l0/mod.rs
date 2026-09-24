@@ -33,12 +33,12 @@ pub mod chrome {
         // data types
         types::{
             ChromeHit, ChromeView, ChromeTabConfig, ChromeRenderKind,
-            ChromeAction, ChromeColors, ChromeResponse,
+            ChromeAction, ChromeResponse,
         },
         state::{ChromeState, TabState},
         settings::ChromeSettings,
         style::ChromeStyle,
-        theme::{ChromeTheme, DefaultChromeTheme},
+        theme::ChromeTheme,
     };
 
     /// Slot-driven chrome (alternative to `draw_chrome` —

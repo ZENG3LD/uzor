@@ -9,7 +9,7 @@ use crate::layout::LayoutManager;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;
 
-use super::types::{ChromeColors, ChromeHit, ChromeLayoutConfig};
+use super::types::{ChromeHit, ChromeLayoutConfig};
 
 // ---------------------------------------------------------------------------
 // TabState
@@ -78,11 +78,6 @@ pub struct ChromeState {
     /// Context-menu state (right-click on tab or button area).
     pub context_menu: ContextMenuState,
 
-    // --- Theme colours ---
-
-    /// Live colour tokens.  Caller may swap these to reflect theme changes.
-    pub colors: ChromeColors,
-
     // --- Legacy field (kept so existing callers compile) ---
 
     /// Which titlebar button the pointer is over (coarse — use `hovered` for
@@ -103,7 +98,7 @@ pub struct ChromeState {
 }
 
 impl ChromeState {
-    /// Create a new `ChromeState` with default colours.
+    /// Create a new, all-default `ChromeState`.
     pub fn new() -> Self {
         Self::default()
     }
