@@ -17,7 +17,7 @@
 //!     register_context_manager_toolbar,
 //!     ToolbarView, ToolbarSection, ToolbarItem, ToolbarState,
 //!     ToolbarSettings, ToolbarRenderKind,
-//!     DefaultToolbarTheme, DefaultToolbarStyle,
+//!     DefaultToolbarStyle,
 //!     HorizontalToolbarStyle, VerticalToolbarStyle,
 //!     ChromeStripStyle, InlineToolbarStyle,
 //!     BackgroundFill,
@@ -31,6 +31,7 @@ pub mod settings;
 pub mod state;
 pub mod style;
 pub mod theme;
+pub mod tokens;
 pub mod types;
 
 // --- Re-exports ---------------------------------------------------------------
@@ -46,7 +47,7 @@ pub use style::{
     BackgroundFill, ChromeStripStyle, DefaultToolbarStyle, HorizontalToolbarStyle,
     InlineToolbarStyle, ToolbarStyle, VerticalToolbarStyle,
 };
-pub use theme::{DefaultToolbarTheme, ToolbarTheme};
+pub use theme::ToolbarTheme;
 pub use types::{
     ChromeStripView, SplitButtonHoverZone, TabConfig, ToolbarItem, ToolbarRenderKind,
     ToolbarSection, ToolbarView,

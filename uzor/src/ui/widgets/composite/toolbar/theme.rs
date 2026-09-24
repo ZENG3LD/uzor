@@ -1,6 +1,5 @@
-//! Toolbar colour palette trait and default dark-theme implementation.
-//!
-//! Token values ported from the mlc audit (`toolbar-deep.md` §6).
+//! Toolbar colour palette trait; token-contract default implementation
+//! lives in `crate::tokens::theme::TokenTheme`, backed by `super::tokens`.
 
 /// Colour tokens for the Toolbar composite.
 ///
@@ -112,61 +111,11 @@ pub trait ToolbarTheme {
 }
 
 // ---------------------------------------------------------------------------
-// Default dark theme
+// Token-contract implementation
 // ---------------------------------------------------------------------------
-
-/// Default dark-theme implementation.
-///
-/// Values sourced from the mlc audit (`toolbar-deep.md` §6).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DefaultToolbarTheme;
-
-impl ToolbarTheme for DefaultToolbarTheme {
-    // Background
-    fn bg(&self) -> &str { "#1e222d" }
-
-    // Separator
-    fn separator(&self) -> &str { "#363a45" }
-
-    // Item backgrounds
-    fn item_bg_normal(&self)   -> &str { "transparent" }
-    fn item_bg_hover(&self)    -> &str { "#2a2e39" }
-    fn item_bg_active(&self)   -> &str { "rgba(41,98,255,0.15)" }
-    fn item_bg_pressed(&self)  -> &str { "rgba(41,98,255,0.25)" }
-
-    // Item text
-    fn item_text_normal(&self)   -> &str { "#d1d4dc" }
-    fn item_text_hover(&self)    -> &str { "#ffffff" }
-    fn item_text_active(&self)   -> &str { "#2962ff" }
-    fn item_text_disabled(&self) -> &str { "#6a6d78" }
-
-    // Icons
-    fn icon_normal(&self)   -> &str { "#d1d4dc" }
-    fn icon_hover(&self)    -> &str { "#ffffff" }
-    fn icon_active(&self)   -> &str { "#2962ff" }
-    fn icon_disabled(&self) -> &str { "#6a6d78" }
-
-    // Scroll chevron
-    fn scroll_chevron_color(&self) -> &str { "#6a6d78" }
-
-    // Label / Clock
-    fn label_text(&self) -> &str { "#6a6d78" }
-    fn clock_text(&self) -> &str { "#d1d4dc" }
-
-    // ChromeStrip tabs
-    fn chrome_tab_bg_active(&self)    -> &str { "#1e222d" }
-    fn chrome_tab_bg_inactive(&self)  -> &str { "transparent" }
-    fn chrome_tab_bg_hover(&self)     -> &str { "#2a2e39" }
-    fn chrome_tab_text_active(&self)  -> &str { "#ffffff" }
-    fn chrome_tab_text_inactive(&self) -> &str { "#6a6d78" }
-    fn chrome_ctrl_hover(&self)       -> &str { "rgba(255,255,255,0.1)" }
-    fn chrome_close_hover(&self)      -> &str { "#e81123" }
-    fn chrome_ctrl_icon(&self)        -> &str { "#d1d4dc" }
-
-    // Color swatch
-    fn color_swatch_border(&self) -> &str { "#363a45" }
-
-    // Split-button
-    fn split_chevron(&self) -> &str { "#6a6d78" }
-    fn split_divider(&self) -> &str { "#363a45" }
-}
+//
+// `DefaultToolbarTheme` (a literal-colour prototype impl) was deleted in H1
+// Brief 8b — `crate::tokens::theme::TokenTheme` is now the one
+// `ToolbarTheme` implementation this crate ships, backed by
+// `crate::ui::widgets::composite::toolbar::tokens::ToolbarTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

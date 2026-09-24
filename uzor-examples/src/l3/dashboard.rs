@@ -948,7 +948,9 @@ fn draw_l3_frame(
             resize_edge: None,
         };
         let probe_settings = ToolbarSettings::new(
-            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
             Box::new(HorizToolbarWithBorder),
         );
         let (_, top_h_measured) = measure_toolbar_h(&probe_view_h, &probe_settings);
@@ -979,7 +981,9 @@ fn draw_l3_frame(
             resize_edge: None,
         };
         let probe_settings_v = ToolbarSettings::new(
-            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
             Box::new(VertToolbarWithBorder),
         );
         let (left_w, _) = measure_toolbar_v(&probe_view_v, &probe_settings_v);
@@ -1233,7 +1237,9 @@ fn draw_l3_frame(
             &state.top_toolbar_h.clone(),
             &top_toolbar_view,
             &ToolbarSettings::new(
-                Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
                 Box::new(HorizToolbarWithBorder),
             ),
             &ToolbarRenderKind::Horizontal,
@@ -1263,7 +1269,9 @@ fn draw_l3_frame(
                 &state.left_vtoolbar_h.clone(),
                 &left_toolbar_view,
                 &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
                     Box::new(VertToolbarWithBorder),
                 ),
                 &ToolbarRenderKind::Vertical,
@@ -1313,7 +1321,9 @@ fn draw_l3_frame(
                 "demo-toolbar-left2", &state.demo_toolbar_left2_h.clone(),
                 &view,
                 &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
                     Box::new(VertToolbarWithBorder),
                 ),
                 &ToolbarRenderKind::Vertical,
@@ -1326,7 +1336,9 @@ fn draw_l3_frame(
                 "demo-toolbar-right", &state.demo_toolbar_right_h.clone(),
                 &view,
                 &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
                     Box::new(VertToolbarWithBorder),
                 ),
                 &ToolbarRenderKind::Vertical,
@@ -1339,7 +1351,9 @@ fn draw_l3_frame(
                 "demo-toolbar-bottom", &state.demo_toolbar_bottom_h.clone(),
                 &view,
                 &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(uzor::tokens::TokenTheme::new(uzor::tokens::Tokens::builtin(
+                uzor::tokens::BuiltinSet::Dark,
+            ))),
                     Box::new(HorizToolbarWithBorder),
                 ),
                 &ToolbarRenderKind::Horizontal,

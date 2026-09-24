@@ -81,6 +81,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "panel" => Some(crate::ui::widgets::composite::panel::tokens::PANEL_KEYS),
         "popup" => Some(crate::ui::widgets::composite::popup::tokens::POPUP_KEYS),
         "sidebar" => Some(crate::ui::widgets::composite::sidebar::tokens::SIDEBAR_KEYS),
+        "toolbar" => Some(crate::ui::widgets::composite::toolbar::tokens::TOOLBAR_KEYS),
         _ => None,
     }
 }

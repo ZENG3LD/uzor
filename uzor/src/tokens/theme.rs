@@ -40,6 +40,7 @@ use crate::ui::widgets::composite::modal::theme::ModalTheme;
 use crate::ui::widgets::composite::panel::theme::PanelTheme;
 use crate::ui::widgets::composite::popup::theme::PopupTheme;
 use crate::ui::widgets::composite::sidebar::theme::SidebarTheme;
+use crate::ui::widgets::composite::toolbar::theme::ToolbarTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -464,6 +465,37 @@ impl SidebarTheme for TokenTheme {
     fn panel_row_bg_active(&self) -> &str { &self.0.sidebar().panel_row_bg_active }
     fn panel_row_bg_inactive(&self) -> &str { &self.0.sidebar().panel_row_bg_inactive }
     fn panel_close_icon(&self) -> &str { &self.0.sidebar().panel_close_icon }
+}
+
+impl ToolbarTheme for TokenTheme {
+    fn bg(&self) -> &str { &self.0.toolbar().bg }
+    fn separator(&self) -> &str { &self.0.toolbar().separator }
+    fn item_bg_normal(&self) -> &str { &self.0.toolbar().item_bg_normal }
+    fn item_bg_hover(&self) -> &str { &self.0.toolbar().item_bg_hover }
+    fn item_bg_active(&self) -> &str { &self.0.toolbar().item_bg_active }
+    fn item_bg_pressed(&self) -> &str { &self.0.toolbar().item_bg_pressed }
+    fn item_text_normal(&self) -> &str { &self.0.toolbar().item_text_normal }
+    fn item_text_hover(&self) -> &str { &self.0.toolbar().item_text_hover }
+    fn item_text_active(&self) -> &str { &self.0.toolbar().item_text_active }
+    fn item_text_disabled(&self) -> &str { &self.0.toolbar().item_text_disabled }
+    fn icon_normal(&self) -> &str { &self.0.toolbar().icon_normal }
+    fn icon_hover(&self) -> &str { &self.0.toolbar().icon_hover }
+    fn icon_active(&self) -> &str { &self.0.toolbar().icon_active }
+    fn icon_disabled(&self) -> &str { &self.0.toolbar().icon_disabled }
+    fn scroll_chevron_color(&self) -> &str { &self.0.toolbar().scroll_chevron_color }
+    fn label_text(&self) -> &str { &self.0.toolbar().label_text }
+    fn clock_text(&self) -> &str { &self.0.toolbar().clock_text }
+    fn chrome_tab_bg_active(&self) -> &str { &self.0.toolbar().chrome_tab_bg_active }
+    fn chrome_tab_bg_inactive(&self) -> &str { &self.0.toolbar().chrome_tab_bg_inactive }
+    fn chrome_tab_bg_hover(&self) -> &str { &self.0.toolbar().chrome_tab_bg_hover }
+    fn chrome_tab_text_active(&self) -> &str { &self.0.toolbar().chrome_tab_text_active }
+    fn chrome_tab_text_inactive(&self) -> &str { &self.0.toolbar().chrome_tab_text_inactive }
+    fn chrome_ctrl_hover(&self) -> &str { &self.0.toolbar().chrome_ctrl_hover }
+    fn chrome_close_hover(&self) -> &str { &self.0.toolbar().chrome_close_hover }
+    fn chrome_ctrl_icon(&self) -> &str { &self.0.toolbar().chrome_ctrl_icon }
+    fn color_swatch_border(&self) -> &str { &self.0.toolbar().color_swatch_border }
+    fn split_chevron(&self) -> &str { &self.0.toolbar().split_chevron }
+    fn split_divider(&self) -> &str { &self.0.toolbar().split_divider }
 }
 
 #[cfg(test)]

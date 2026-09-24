@@ -21,10 +21,11 @@ use crate::types::OverflowMode;
 use crate::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
 use crate::ui::widgets::composite::toolbar::settings::ToolbarSettings;
 use crate::ui::widgets::composite::toolbar::style::{DefaultToolbarStyle, ToolbarStyle};
-use crate::ui::widgets::composite::toolbar::theme::{DefaultToolbarTheme, ToolbarTheme};
+use crate::ui::widgets::composite::toolbar::theme::ToolbarTheme;
 use crate::ui::widgets::composite::toolbar::types::{
     ChromeStripView, ToolbarItem, ToolbarRenderKind, ToolbarSection, ToolbarView,
 };
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 // =============================================================================
 // StyledToolbarTheme — reads bg/fg/accent from StyleManager, delegates rest
@@ -36,7 +37,10 @@ struct StyledToolbarTheme {
     item_bg_active:   String,
     item_text_normal: String,
     item_text_active: String,
-    fallback:         DefaultToolbarTheme,
+    /// Colour-token fallback for slots `StyleManager` doesn't cover — the
+    /// dark built-in set (H1 §3). `StyleManager`'s own removal is H1 Brief 9;
+    /// until then this is the least-literal fallback available.
+    fallback:         TokenTheme,
 }
 
 impl StyledToolbarTheme {
@@ -49,7 +53,7 @@ impl StyledToolbarTheme {
             item_bg_active:   accent_dim,
             item_text_normal: s.color_or_owned("fg_1",          "#d1d4dc"),
             item_text_active: accent,
-            fallback:         DefaultToolbarTheme,
+            fallback:         TokenTheme::new(Tokens::builtin(BuiltinSet::Dark)),
         }
     }
 }

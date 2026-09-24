@@ -1,7 +1,8 @@
 //! Toolbar settings bundle.
 
 use super::style::{DefaultToolbarStyle, ToolbarStyle};
-use super::theme::{DefaultToolbarTheme, ToolbarTheme};
+use super::theme::ToolbarTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Bundles theme + style for a toolbar instance.
 pub struct ToolbarSettings {
@@ -14,7 +15,7 @@ pub struct ToolbarSettings {
 impl Default for ToolbarSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultToolbarTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::<DefaultToolbarStyle>::default(),
         }
     }
