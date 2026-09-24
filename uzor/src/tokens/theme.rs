@@ -26,6 +26,7 @@ use crate::ui::widgets::atomic::container::theme::ContainerTheme;
 use crate::ui::widgets::atomic::scroll_chevron::theme::ScrollChevronTheme;
 use crate::ui::widgets::atomic::separator::theme::SeparatorTheme;
 use crate::ui::widgets::atomic::text::theme::TextTheme;
+use crate::ui::widgets::atomic::tab::theme::TabTheme;
 
 /// Holds a resolved, shared token set and implements every converted
 /// widget's colour-theme trait by borrowing its matching pre-rendered
@@ -207,6 +208,24 @@ impl TextTheme for TokenTheme {
     fn text_color_hover(&self) -> &str { &self.0.text().text_color_hover }
 }
 
+// `chrome_bottom_accent`, `chrome_hover_line`, `sidebar_left_accent`,
+// `sidebar_bg_active`, and `tags_pill_bg_active` are NOT overridden here —
+// each is a pure delegator whose default body resolves to the exact same
+// value as its target once the fields below are aliased (see
+// `ui::widgets::atomic::tab::tokens`'s module doc for the per-method proof),
+// so `TabTheme`'s own default body runs unmodified on `TokenTheme` too.
+impl TabTheme for TokenTheme {
+    fn bg_normal(&self) -> &str { &self.0.tab().bg_normal }
+    fn bg_hover(&self) -> &str { &self.0.tab().bg_hover }
+    fn bg_active(&self) -> &str { &self.0.tab().bg_active }
+    fn text_normal(&self) -> &str { &self.0.tab().text_normal }
+    fn text_active(&self) -> &str { &self.0.tab().text_active }
+    fn accent(&self) -> &str { &self.0.tab().accent }
+    fn close_normal(&self) -> &str { &self.0.tab().close_normal }
+    fn close_hover(&self) -> &str { &self.0.tab().close_hover }
+    fn tags_pill_bg_hover(&self) -> &str { &self.0.tab().tags_pill_bg_hover }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +248,23 @@ mod tests {
         let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
         let cloned = theme.clone();
         assert!(Arc::ptr_eq(&theme.0, &cloned.0));
+    }
+
+    /// Proves the tab-token design decision (`tab/tokens.rs`'s module doc):
+    /// the 5 default-body methods `TokenTheme` does NOT override still
+    /// resolve correctly by falling through to `TabTheme`'s own default
+    /// body, landing on the exact same value as their delegation target.
+    #[test]
+    fn tab_theme_pure_delegators_resolve_through_their_target() {
+        let theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
+        assert_eq!(TabTheme::chrome_bottom_accent(&theme), TabTheme::accent(&theme));
+        assert_eq!(TabTheme::chrome_hover_line(&theme), TabTheme::bg_hover(&theme));
+        assert_eq!(TabTheme::sidebar_left_accent(&theme), TabTheme::accent(&theme));
+        assert_eq!(TabTheme::sidebar_bg_active(&theme), TabTheme::bg_active(&theme));
+        assert_eq!(TabTheme::tags_pill_bg_active(&theme), TabTheme::accent(&theme));
+        // `tags_pill_bg_hover` is the one default-body method that does NOT
+        // delegate on `TokenTheme` — its own alias (`text.secondary`)
+        // diverges from `text_normal`'s (`text.muted`).
+        assert_ne!(TabTheme::tags_pill_bg_hover(&theme), TabTheme::text_normal(&theme));
     }
 }

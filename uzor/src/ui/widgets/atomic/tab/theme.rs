@@ -45,25 +45,15 @@ pub trait TabTheme {
     fn tags_pill_bg_hover(&self) -> &str { self.text_normal() }
 }
 
-#[derive(Default)]
-pub struct DefaultTabTheme;
-
-impl TabTheme for DefaultTabTheme {
-    fn bg_normal(&self)   -> &str { "#1e1e1e" }
-    fn bg_hover(&self)    -> &str { "#2a2a2a" }
-    fn bg_active(&self)   -> &str { "#1e3a5f" }
-    fn text_normal(&self) -> &str { "#787b86" }
-    fn text_active(&self) -> &str { "#ffffff" }
-    fn accent(&self)      -> &str { "#2962ff" }
-    fn close_normal(&self) -> &str { "#787b86" }
-    fn close_hover(&self)  -> &str { "#ffffff" }
-    // Chrome defaults (matches mlc ChromeColors)
-    fn chrome_bottom_accent(&self) -> &str { "#3b82f6" }
-    fn chrome_hover_line(&self)    -> &str { "#1f2937" }
-    // Sidebar defaults
-    fn sidebar_left_accent(&self) -> &str { "#2962ff" }
-    fn sidebar_bg_active(&self)   -> &str { "#1e3a5f" }
-    // Tags pill defaults
-    fn tags_pill_bg_active(&self) -> &str { "#2962ff" }
-    fn tags_pill_bg_hover(&self)  -> &str { "#a6adc8" }
-}
+// =============================================================================
+// Token-contract implementation
+// =============================================================================
+//
+// `DefaultTabTheme` (a literal-colour prototype impl that overrode every
+// default-body method with its own literal) was deleted in H1 Brief 7a —
+// `crate::tokens::theme::TokenTheme` is now the one `TabTheme`
+// implementation ships, backed by
+// `crate::ui::widgets::atomic::tab::tokens::TabTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3 and this
+// trait's own `tokens.rs` module doc for which default-body methods
+// `TokenTheme` overrides vs. leaves as pure delegators).

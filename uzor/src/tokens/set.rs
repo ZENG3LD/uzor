@@ -153,6 +153,10 @@ impl TokenSet {
             &semantic,
             &self.components,
         );
+        let tab = crate::ui::widgets::atomic::tab::tokens::TabTokens::resolve(
+            &semantic,
+            &self.components,
+        );
 
         Ok(Tokens {
             semantic,
@@ -175,6 +179,7 @@ impl TokenSet {
             scroll_chevron,
             separator,
             text,
+            tab,
         })
     }
 }
@@ -208,6 +213,7 @@ pub struct Tokens {
     scroll_chevron: crate::ui::widgets::atomic::scroll_chevron::tokens::ScrollChevronTokens,
     separator: crate::ui::widgets::atomic::separator::tokens::SeparatorTokens,
     text: crate::ui::widgets::atomic::text::tokens::TextTokens,
+    tab: crate::ui::widgets::atomic::tab::tokens::TabTokens,
 }
 
 impl Tokens {
@@ -318,6 +324,13 @@ impl Tokens {
     /// [`crate::tokens::theme::TokenTheme`], not directly.
     pub(crate) fn text(&self) -> &crate::ui::widgets::atomic::text::tokens::TextTokens {
         &self.text
+    }
+
+    /// This widget's resolved component tokens (H1 §3). `pub(crate)` — read
+    /// through `TabTheme`'s trait methods via
+    /// [`crate::tokens::theme::TokenTheme`], not directly.
+    pub(crate) fn tab(&self) -> &crate::ui::widgets::atomic::tab::tokens::TabTokens {
+        &self.tab
     }
 }
 

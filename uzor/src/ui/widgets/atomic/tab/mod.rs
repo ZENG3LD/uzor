@@ -1,8 +1,19 @@
 //! Tab widget — single tab (composite with optional close-button child).
+//!
+//! - `theme`  — `TabTheme` trait.
+//! - `tokens` — `TabTokens`: the token-contract implementation of
+//!              `TabTheme`, one pre-rendered value per owned method, built
+//!              from `SemanticRoles` + optional `component.tab.*` overrides
+//!              (H1 token contract design §3). `TokenTheme`
+//!              (`crate::tokens::theme`) implements `TabTheme` by reading
+//!              these fields (and, for pure-delegator methods, by falling
+//!              through to the trait's own default body — see `tokens.rs`'s
+//!              module doc).
 
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -11,7 +22,7 @@ pub mod input;
 // Core types
 pub use types::{TabConfig, TabKind, TabResponse};
 pub use state::TabState;
-pub use theme::{DefaultTabTheme, TabTheme};
+pub use theme::TabTheme;
 
 // Style — generic trait + all variant presets
 pub use style::{

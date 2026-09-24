@@ -41,7 +41,6 @@ use crate::ui::widgets::atomic::tab::render::{
     draw_modal_horizontal_tab, draw_modal_sidebar_tab, TabView,
 };
 use crate::ui::widgets::atomic::tab::style::{ModalHorizontalTabStyle, ModalSidebarTabStyle};
-use crate::ui::widgets::atomic::tab::theme::DefaultTabTheme;
 use crate::ui::widgets::atomic::tab::types::TabConfig;
 use crate::ui::widgets::atomic::text::render::draw_text;
 use crate::ui::widgets::atomic::text::settings::TextSettings;
@@ -782,7 +781,7 @@ fn draw_top_tabs(
     state:    &ModalState,
     _settings: &ModalSettings,
 ) {
-    let tab_theme = DefaultTabTheme;
+    let tab_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     let tab_style = ModalHorizontalTabStyle::default();
     let tab_count = view.tabs.len();
     if tab_count == 0 {
@@ -825,7 +824,7 @@ fn draw_side_tabs(
     state:    &ModalState,
     _settings: &ModalSettings,
 ) {
-    let tab_theme = DefaultTabTheme;
+    let tab_theme = TokenTheme::new(Tokens::builtin(BuiltinSet::Dark));
     let tab_style = ModalSidebarTabStyle::default();
     let tab_count = view.tabs.len();
     if tab_count == 0 {

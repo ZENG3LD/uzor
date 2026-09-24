@@ -4,7 +4,8 @@ use super::style::{
     ChromeTabStyle, DefaultTabStyle, ModalHorizontalTabStyle, ModalSidebarTabStyle,
     TagsTabsSidebarTabStyle, TabStyle,
 };
-use super::theme::{DefaultTabTheme, TabTheme};
+use super::theme::TabTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// All configuration needed to render any tab variant.
 ///
@@ -28,7 +29,7 @@ pub struct TabSettings {
 impl Default for TabSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultTabTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultTabStyle),
             chrome: ChromeTabStyle::default(),
             modal_sidebar: ModalSidebarTabStyle::default(),
