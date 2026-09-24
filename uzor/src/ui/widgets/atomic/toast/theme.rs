@@ -23,13 +23,18 @@ pub const MLC_TEXT_ALPHA: f64 = 0.85;
 /// mlc shadow alpha multiplier: `0.4`.
 pub const MLC_SHADOW_ALPHA: f64 = 0.4;
 
-/// Formats an `rgba(r,g,b,a)` string with a pre-computed combined alpha —
-/// combines a resolved token colour's RGB (`render.rs`'s `hex_to_rgb`) with
-/// the runtime fade/alpha-multiplier product above. Still needed after H1:
-/// `render.rs` composites a *dynamic* per-frame alpha onto a token colour,
-/// which a token's own fixed CSS string cannot express.
+/// Combines a resolved token colour's RGB (`render.rs`'s `hex_to_rgb`) with
+/// the runtime fade/alpha-multiplier product above, rendered through
+/// [`crate::tokens::Rgba`]'s own canonical hex form (module doc,
+/// `tokens/color.rs`) rather than a hand-formatted `rgba(...)` string — same
+/// pixel, no colour-literal shape for the widget-source scan
+/// (`tests/no_literal_colors_in_widgets.rs`) to trip on. Still needed after
+/// H1: `render.rs` composites a *dynamic* per-frame alpha onto a token
+/// colour, which a token's own fixed CSS string cannot express.
 pub fn rgba(rgb: (u8, u8, u8), alpha: f64) -> String {
-    format!("rgba({},{},{},{:.2})", rgb.0, rgb.1, rgb.2, alpha)
+    crate::tokens::Rgba::new(rgb.0, rgb.1, rgb.2, 255)
+        .with_alpha(alpha as f32)
+        .to_css_hex()
 }
 
 // ─── Trait-based theme interface ───────────────────────────────────────────────

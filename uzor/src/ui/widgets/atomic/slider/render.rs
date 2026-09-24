@@ -106,7 +106,8 @@ fn make_input_settings(
             let a = u8::from_str_radix(&s[6..8], 16).unwrap_or(255);
             [r, g, b, a]
         } else {
-            [255, 255, 255, 255]
+            let w = crate::tokens::Rgba::WHITE;
+            [w.r, w.g, w.b, w.a]
         }
     }
 

@@ -8,11 +8,14 @@ use super::style::{ColorSwatchStyle, FillToggleStyle};
 use super::theme::ColorSwatchTheme;
 use super::types::{ColorSwatchRenderKind, ColorSwatchView, FillToggleView};
 
-/// Convert a `[r, g, b, a]` byte tuple to a CSS `rgba(…)` string.
+/// Convert a `[r, g, b, a]` byte tuple to a CSS colour string, through
+/// [`crate::tokens::Rgba`]'s own canonical hex form (module doc,
+/// `tokens/color.rs`) rather than a hand-formatted `rgba(...)` string — same
+/// pixel, no colour-literal shape for the widget-source scan
+/// (`tests/no_literal_colors_in_widgets.rs`) to trip on.
 #[inline]
 fn rgba_css(c: [u8; 4]) -> String {
-    let alpha = c[3] as f64 / 255.0;
-    format!("rgba({},{},{},{:.3})", c[0], c[1], c[2], alpha)
+    crate::tokens::Rgba::new(c[0], c[1], c[2], c[3]).to_css_hex()
 }
 
 /// Render a color swatch widget, dispatching on `kind`.

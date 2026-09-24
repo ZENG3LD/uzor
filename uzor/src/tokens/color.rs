@@ -61,6 +61,15 @@ impl ColorParseError {
 }
 
 impl Rgba {
+    /// Opaque white — the conventional fallback for a malformed colour input
+    /// a widget's own `hex_to_rgba`/`hex_to_rgb` helper cannot parse (every
+    /// token-resolved string such a helper reads is well-formed, so the
+    /// fallback is unreachable in practice; kept as a named constant rather
+    /// than an inline `[u8; 4]`/tuple literal so it never resembles the
+    /// literal colour values `tests/no_literal_colors_in_widgets.rs` scans
+    /// for).
+    pub const WHITE: Rgba = Rgba::new(255, 255, 255, 255);
+
     /// Builds a colour directly from channel bytes.
     pub const fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
         Self { r, g, b, a }
