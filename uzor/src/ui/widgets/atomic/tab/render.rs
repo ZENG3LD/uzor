@@ -226,7 +226,7 @@ pub fn draw_modal_sidebar_tab(
 
 /// Draw a text-label horizontal tab (primitive settings, alert settings, etc.).
 ///
-/// - Active: `draw_active_rect` (theme-aware glass/solid), white text.
+/// - Active: `draw_active_rect` (theme-aware glass/solid), `theme.text_active()`.
 /// - Inactive: text only, no background.
 /// - No accent bar.
 /// - `rect` must be pre-computed by caller (intrinsic width = `text_w + padding_h * 2`).
@@ -239,7 +239,7 @@ pub fn draw_modal_horizontal_tab(
 ) -> TabResult {
     let text_color = if view.tab.active {
         ctx.draw_active_rect(rect.x, rect.y, rect.width, rect.height, theme.bg_active());
-        "#ffffff" // mlc: hardcoded white for active text
+        theme.text_active()
     } else {
         theme.text_normal()
     };
