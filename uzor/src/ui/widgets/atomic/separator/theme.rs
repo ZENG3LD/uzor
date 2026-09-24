@@ -51,39 +51,11 @@ pub trait SeparatorTheme {
 }
 
 // =============================================================================
-// Default theme
+// Token-contract implementation
 // =============================================================================
-
-#[derive(Default)]
-pub struct DefaultSeparatorTheme;
-
-impl SeparatorTheme for DefaultSeparatorTheme {
-    // Generic resize handle
-    fn line(&self) -> &str {
-        "#3a3a3a"
-    }
-    fn handle_hover(&self) -> &str {
-        "#787b86"
-    }
-    fn handle_active(&self) -> &str {
-        "#2962ff"
-    }
-
-    // Pane handles (split-panel + sub-pane)
-    fn pane_handle_idle(&self) -> &str {
-        "#363a45"
-    }
-    fn pane_handle_hover(&self) -> &str {
-        "#758696"
-    }
-
-    // Sidebar separator
-    fn sidebar_separator(&self) -> &str {
-        "#363a45"
-    }
-
-    // Modal section divider
-    fn modal_divider(&self) -> &str {
-        "#363a45"
-    }
-}
+//
+// `DefaultSeparatorTheme` (a literal-colour prototype impl) was deleted in
+// H1 Brief 7a — `crate::tokens::theme::TokenTheme` is now the one
+// `SeparatorTheme` implementation ships, backed by
+// `crate::ui::widgets::atomic::separator::tokens::SeparatorTokens` (see
+// `docs/uzor/plans/h1-token-contract-design-2026-09-24.md` §3).

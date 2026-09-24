@@ -2,7 +2,8 @@ use super::style::{
     DefaultSeparatorStyle, ModalSectionDividerStyle, SeparatorStyle, SidebarSeparatorStyle,
     SplitPanelSeparatorStyle, SubPaneSeparatorStyle,
 };
-use super::theme::{DefaultSeparatorTheme, SeparatorTheme};
+use super::theme::SeparatorTheme;
+use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 
 /// Bundle of theme + style for a separator widget.
 ///
@@ -16,7 +17,7 @@ pub struct SeparatorSettings {
 impl Default for SeparatorSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultSeparatorTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(DefaultSeparatorStyle),
         }
     }
@@ -26,7 +27,7 @@ impl SeparatorSettings {
     /// Sub-pane separator (1 px visual / ±6 px hit / 80 px drag min).
     pub fn sub_pane() -> Self {
         Self {
-            theme: Box::<DefaultSeparatorTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(SubPaneSeparatorStyle),
         }
     }
@@ -36,7 +37,7 @@ impl SeparatorSettings {
     /// `active` = hovered or dragging.
     pub fn split_panel(active: bool) -> Self {
         Self {
-            theme: Box::<DefaultSeparatorTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(SplitPanelSeparatorStyle { active }),
         }
     }
@@ -44,7 +45,7 @@ impl SeparatorSettings {
     /// Sidebar separator (1 px visual / 8 px hit zone / min width 280 px).
     pub fn sidebar() -> Self {
         Self {
-            theme: Box::<DefaultSeparatorTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(SidebarSeparatorStyle),
         }
     }
@@ -52,7 +53,7 @@ impl SeparatorSettings {
     /// Modal section divider (1 px stroke, non-interactive).
     pub fn modal_divider() -> Self {
         Self {
-            theme: Box::<DefaultSeparatorTheme>::default(),
+            theme: Box::new(TokenTheme::new(Tokens::builtin(BuiltinSet::Dark))),
             style: Box::new(ModalSectionDividerStyle),
         }
     }

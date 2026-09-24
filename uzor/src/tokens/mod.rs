@@ -61,6 +61,7 @@ pub(crate) fn component_keys(widget: &str) -> Option<&'static [&'static str]> {
         "scroll_chevron" => {
             Some(crate::ui::widgets::atomic::scroll_chevron::tokens::SCROLL_CHEVRON_KEYS)
         }
+        "separator" => Some(crate::ui::widgets::atomic::separator::tokens::SEPARATOR_KEYS),
         _ => None,
     }
 }

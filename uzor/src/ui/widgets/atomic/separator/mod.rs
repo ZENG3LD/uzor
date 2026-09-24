@@ -1,8 +1,17 @@
 //! Separator / resize handle widget.
+//!
+//! - `theme`  — `SeparatorTheme` trait.
+//! - `tokens` — `SeparatorTokens`: the token-contract implementation of
+//!              `SeparatorTheme`, one pre-rendered value per method, built
+//!              from `SemanticRoles` + optional `component.separator.*`
+//!              overrides (H1 token contract design §3). `TokenTheme`
+//!              (`crate::tokens::theme`) implements `SeparatorTheme` by
+//!              reading these fields.
 
 pub mod types;
 pub mod state;
 pub mod theme;
+pub mod tokens;
 pub mod style;
 pub mod settings;
 pub mod render;
@@ -15,7 +24,7 @@ pub use types::{SeparatorOrientation, SeparatorType};
 pub use state::{SeparatorDragState, SeparatorHoverState};
 
 // --- theme ---
-pub use theme::{DefaultSeparatorTheme, SeparatorTheme};
+pub use theme::SeparatorTheme;
 
 // --- style ---
 pub use style::{
