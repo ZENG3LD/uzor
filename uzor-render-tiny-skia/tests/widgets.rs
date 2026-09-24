@@ -49,3 +49,7 @@ mod text;
 mod text_input;
 #[path = "widgets/toast.rs"]
 mod toast;
+#[path = "widgets/toggle.rs"]
+mod toggle;
+#[path = "widgets/tooltip.rs"]
+mod tooltip;
