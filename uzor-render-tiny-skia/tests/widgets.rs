@@ -19,6 +19,8 @@ mod button;
 mod checkbox;
 #[path = "widgets/chevron.rs"]
 mod chevron;
+#[path = "widgets/chrome.rs"]
+mod chrome;
 #[path = "widgets/clock.rs"]
 mod clock;
 #[path = "widgets/close_button.rs"]
