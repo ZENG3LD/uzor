@@ -464,12 +464,17 @@ fn draw_window_controls(
     }
 
     // Close: ICON_CLOSE — same SVG and size as the legacy
-    // draw_chrome uses (action_icon_size = 18).
+    // draw_chrome uses (action_icon_size = 18).  Painted over
+    // close_hover()'s red background while hovered, so the icon
+    // colour must be close_icon_hover(), not icon_hover() — in
+    // high_contrast_mono both close_hover() and icon_hover() are
+    // white, which makes the X vanish (same bug d4ba84d fixed in
+    // render.rs step 12).
     {
         let s  = settings.style.action_icon_size();
         let ix = close_r.x + (close_r.width - s) / 2.0;
         let iy = close_r.y + (h - s) / 2.0;
-        let color = if close_hover { theme.icon_hover() } else { theme.icon_normal() };
+        let color = if close_hover { theme.close_icon_hover() } else { theme.icon_normal() };
         draw_svg_icon(ctx, ICON_CLOSE, ix, iy, s, s, color);
     }
 }
@@ -670,4 +675,116 @@ fn undo_redo_hit(rect: Rect, px: f64) -> (ChromeHitKind, String) {
     let bw = rect.width / 2.0;
     if px < rect.x + bw { (ChromeHitKind::UndoBtn, String::from("undo_btn")) }
     else                { (ChromeHitKind::RedoBtn, String::from("redo_btn")) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::state::ChromeState;
+    use super::super::style::DefaultChromeStyle;
+    use super::super::types::ChromeHit;
+    use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
+
+    /// Minimal `RenderContext` that records every colour handed to
+    /// `set_fill_color`/`set_stroke_color`, in call order. `draw_svg_icon`
+    /// (used by [`draw_window_controls`]'s close icon) always calls
+    /// `set_stroke_color(color)` with its `color` argument regardless of
+    /// whether the SVG's paths are stroke- or fill-based, so the last
+    /// recorded stroke colour is always the icon's paint colour.
+    #[derive(Default)]
+    struct ColorRecorder {
+        fill_colors: Vec<String>,
+        stroke_colors: Vec<String>,
+    }
+
+    impl crate::render::Painter for ColorRecorder {
+        fn save(&mut self) {}
+        fn restore(&mut self) {}
+        fn translate(&mut self, _x: f64, _y: f64) {}
+        fn rotate(&mut self, _angle: f64) {}
+        fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, color: &str) { self.fill_colors.push(color.to_string()); }
+        fn set_global_alpha(&mut self, _alpha: f64) {}
+        fn set_stroke_color(&mut self, color: &str) { self.stroke_colors.push(color.to_string()); }
+        fn set_stroke_width(&mut self, _width: f64) {}
+        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_cap(&mut self, _cap: &str) {}
+        fn set_line_join(&mut self, _join: &str) {}
+        fn begin_path(&mut self) {}
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn close_path(&mut self) {}
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
+        fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
+        fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
+        fn stroke(&mut self) {}
+        fn fill(&mut self) {}
+    }
+    impl crate::render::TextRenderer for ColorRecorder {
+        fn set_font(&mut self, _font: &str) {}
+        fn set_text_align(&mut self, _align: crate::render::TextAlign) {}
+        fn set_text_baseline(&mut self, _baseline: crate::render::TextBaseline) {}
+        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+    }
+    impl crate::render::TextMetrics for ColorRecorder {
+        fn measure_text(&self, _text: &str) -> f64 { 0.0 }
+        fn text_bounds(&self, _text: &str, _font: &str) -> crate::render::TextBounds {
+            crate::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
+    }
+    impl crate::render::Masking for ColorRecorder {
+        fn clip(&mut self) {}
+    }
+    impl crate::render::Effects for ColorRecorder {}
+    impl crate::render::ShapeHelpers for ColorRecorder {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl crate::render::GradientPainter for ColorRecorder {}
+    impl crate::render::UiEffectHelpers for ColorRecorder {}
+    impl crate::render::BatchPainter for ColorRecorder {}
+    impl RenderContext for ColorRecorder {
+        fn dpr(&self) -> f64 { 1.0 }
+    }
+
+    /// `draw_window_controls` (the `Slot::WindowControls` paint path) must
+    /// use `close_icon_hover()` — not `icon_hover()` — for the close-app
+    /// icon while hovered: `close_hover()` (the hover background) and
+    /// `icon_hover()` are the same white in `high_contrast_mono`, which
+    /// makes the X vanish (same bug d4ba84d fixed in `render.rs`'s
+    /// `draw_chrome` step 12). Covers all 4 built-in sets, not just mono,
+    /// since a future regression could reintroduce the collision in any of
+    /// them.
+    #[test]
+    fn window_controls_close_icon_differs_from_close_hover_background_in_every_builtin_set() {
+        for &set in BuiltinSet::ALL {
+            let settings = ChromeSettings {
+                theme: Box::new(TokenTheme::new(Tokens::builtin(set))),
+                style: Box::<DefaultChromeStyle>::default(),
+            };
+            let mut state = ChromeState::new();
+            state.hovered = ChromeHit::CloseBtn;
+
+            let mut ctx = ColorRecorder::default();
+            let rect = Rect::new(0.0, 0.0, 138.0, 46.0);
+            draw_window_controls(&mut ctx, rect, &state, &settings);
+
+            let icon_color = ctx.stroke_colors.last()
+                .unwrap_or_else(|| panic!("{set:?}: close icon draw must set a stroke colour"));
+            let close_hover_bg = settings.theme.close_hover();
+            let close_icon_hover = settings.theme.close_icon_hover();
+
+            assert_eq!(
+                icon_color, close_icon_hover,
+                "{set:?}: hovered close icon must paint with close_icon_hover()"
+            );
+            assert_ne!(
+                icon_color, close_hover_bg,
+                "{set:?}: hovered close icon colour must differ from the close-hover background"
+            );
+        }
+    }
 }
