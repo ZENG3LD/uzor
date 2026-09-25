@@ -11,6 +11,8 @@
 #[path = "widgets/support.rs"]
 mod support;
 
+#[path = "widgets/blackbox_panel.rs"]
+mod blackbox_panel;
 #[path = "widgets/button.rs"]
 mod button;
 #[path = "widgets/checkbox.rs"]
