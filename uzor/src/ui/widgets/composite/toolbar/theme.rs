@@ -98,6 +98,15 @@ pub trait ToolbarTheme {
     /// Chrome close / minimize / maximize icon colour.  Default: `#d1d4dc`.
     fn chrome_ctrl_icon(&self) -> &str;
 
+    /// Chrome close-button icon colour while hovered (painted over
+    /// [`chrome_close_hover`](Self::chrome_close_hover)'s background).
+    /// Default alias: `text.primary` — same as [`chrome_ctrl_icon`](Self::chrome_ctrl_icon)
+    /// everywhere except `high_contrast_mono`, where `chrome_close_hover` and
+    /// `text.primary` are both white; overridden there to `surface.app_chrome`
+    /// (black) so the hovered close icon stays visible (same fix as the
+    /// `chrome` composite's own `ChromeTheme::close_icon_hover`).
+    fn chrome_close_icon_hover(&self) -> &str;
+
     // --- Color swatch border ---
 
     /// Border drawn around the color swatch.  Default: `#363a45`.

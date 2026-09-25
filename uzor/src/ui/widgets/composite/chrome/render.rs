@@ -594,27 +594,29 @@ pub fn draw_chrome(
 
         // --- 10. Minimize icon (10×1 filled rect) ---
         {
+            let hovered = state.hovered == super::types::ChromeHit::MinBtn;
             let btn_rect = Rect::new(rect.x + bp.minimize_x, rect.y, BUTTON_WIDTH, h);
-            if state.hovered == super::types::ChromeHit::MinBtn {
+            if hovered {
                 ctx.set_fill_color(theme.button_hover());
                 ctx.fill_rect(btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height);
             }
             let mid_x = rect.x + bp.minimize_x + BUTTON_WIDTH / 2.0;
             let mid_y = rect.y + h / 2.0;
-            ctx.set_fill_color(theme.icon_normal());
+            ctx.set_fill_color(if hovered { theme.icon_hover() } else { theme.icon_normal() });
             ctx.fill_rect(mid_x - 5.0, mid_y - 0.5, 10.0, 1.0);
         }
 
         // --- 11. Maximize / restore icon (only when view.show_maximize) ---
         if let Some(max_x) = bp.maximize_x {
+            let hovered = state.hovered == super::types::ChromeHit::MaxBtn;
             let btn_rect = Rect::new(rect.x + max_x, rect.y, BUTTON_WIDTH, h);
-            if state.hovered == super::types::ChromeHit::MaxBtn {
+            if hovered {
                 ctx.set_fill_color(theme.button_hover());
                 ctx.fill_rect(btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height);
             }
             let mid_x = rect.x + max_x + BUTTON_WIDTH / 2.0;
             let mid_y = rect.y + h / 2.0;
-            ctx.set_stroke_color(theme.icon_normal());
+            ctx.set_stroke_color(if hovered { theme.icon_hover() } else { theme.icon_normal() });
             ctx.set_stroke_width(1.0);
             ctx.set_line_dash(&[]);
             if view.is_maximized {
@@ -628,16 +630,18 @@ pub fn draw_chrome(
 
         // --- 12. Close-app button (hover = red BG) ---
         {
+            let hovered = state.hovered == super::types::ChromeHit::CloseBtn;
             let close_rect = Rect::new(rect.x + bp.close_x, rect.y, BUTTON_WIDTH, h);
             // Hover background
-            if state.hovered == super::types::ChromeHit::CloseBtn {
+            if hovered {
                 ctx.set_fill_color(theme.close_hover());
                 ctx.fill_rect(close_rect.x, close_rect.y, close_rect.width, close_rect.height);
             }
             let cx  = rect.x + bp.close_x + BUTTON_WIDTH / 2.0;
             let cy  = rect.y + h / 2.0;
             let arm = 5.0_f64;
-            draw_cross(ctx, cx - arm, cy - arm, arm * 2.0, theme.icon_normal(), 1.5);
+            let icon_color = if hovered { theme.close_icon_hover() } else { theme.icon_normal() };
+            draw_cross(ctx, cx - arm, cy - arm, arm * 2.0, icon_color, 1.5);
         }
     }
 

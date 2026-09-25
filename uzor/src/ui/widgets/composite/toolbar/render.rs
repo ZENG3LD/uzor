@@ -770,7 +770,12 @@ fn draw_chrome_strip(
         if _state.chrome_close_hovered {
             ctx.fill_rect(close_rect.x, close_rect.y, close_rect.width, close_rect.height);
         }
-        draw_icon_centered(ctx, close_rect, "close", theme.chrome_ctrl_icon(), 10.0);
+        let close_icon_color = if _state.chrome_close_hovered {
+            theme.chrome_close_icon_hover()
+        } else {
+            theme.chrome_ctrl_icon()
+        };
+        draw_icon_centered(ctx, close_rect, "close", close_icon_color, 10.0);
     }
 }
 

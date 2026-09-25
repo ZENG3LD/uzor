@@ -75,6 +75,12 @@
   "component": {
     "container": {
       "section_border": { "$type": "color", "$value": "{color.border.default}" }
+    },
+    "chrome": {
+      "close_icon_hover": { "$type": "color", "$value": "{color.surface.app_chrome}" }
+    },
+    "toolbar": {
+      "chrome_close_icon_hover": { "$type": "color", "$value": "{color.surface.app_chrome}" }
     }
   }
 }

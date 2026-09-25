@@ -314,6 +314,7 @@ impl ChromeTheme for TokenTheme {
     fn icon_hover(&self) -> &str { &self.0.chrome().icon_hover }
     fn button_hover(&self) -> &str { &self.0.chrome().button_hover }
     fn close_hover(&self) -> &str { &self.0.chrome().close_hover }
+    fn close_icon_hover(&self) -> &str { &self.0.chrome().close_icon_hover }
     fn separator(&self) -> &str { &self.0.chrome().separator }
     fn tab_bg_normal(&self) -> &str { &self.0.chrome().tab_bg_normal }
     fn tab_bg_hover(&self) -> &str { &self.0.chrome().tab_bg_hover }
@@ -494,6 +495,7 @@ impl ToolbarTheme for TokenTheme {
     fn chrome_ctrl_hover(&self) -> &str { &self.0.toolbar().chrome_ctrl_hover }
     fn chrome_close_hover(&self) -> &str { &self.0.toolbar().chrome_close_hover }
     fn chrome_ctrl_icon(&self) -> &str { &self.0.toolbar().chrome_ctrl_icon }
+    fn chrome_close_icon_hover(&self) -> &str { &self.0.toolbar().chrome_close_icon_hover }
     fn color_swatch_border(&self) -> &str { &self.0.toolbar().color_swatch_border }
     fn split_chevron(&self) -> &str { &self.0.toolbar().split_chevron }
     fn split_divider(&self) -> &str { &self.0.toolbar().split_divider }

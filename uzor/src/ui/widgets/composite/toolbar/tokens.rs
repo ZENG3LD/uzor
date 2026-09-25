@@ -57,6 +57,10 @@ component_tokens! {
     // fix as the `chrome` composite's own `close_hover`.
     chrome_close_hover => ColorSpec::Alias(Role::StatusDanger, None),
     chrome_ctrl_icon    => ColorSpec::Alias(Role::TextPrimary, None),
+    // Overridden to `surface.app_chrome` in high_contrast_mono, where
+    // `status.danger` (`chrome_close_hover`) and `text.primary` are both
+    // white — same fix as `chrome::tokens::ChromeTokens::close_icon_hover`.
+    chrome_close_icon_hover => ColorSpec::Alias(Role::TextPrimary, None),
 
     color_swatch_border => ColorSpec::Alias(Role::BorderDefault, None),
 
@@ -73,8 +77,9 @@ mod tests {
     fn every_toolbar_key_is_registered() {
         let keys = crate::tokens::component_keys("toolbar").expect("toolbar must be registered");
         assert_eq!(keys, TOOLBAR_KEYS);
-        assert_eq!(keys.len(), 28, "one entry per ToolbarTokens field");
+        assert_eq!(keys.len(), 29, "one entry per ToolbarTokens field");
         assert!(keys.contains(&"chrome_close_hover"));
+        assert!(keys.contains(&"chrome_close_icon_hover"));
     }
 
     #[test]
@@ -106,8 +111,34 @@ mod tests {
         assert_eq!(t.chrome_ctrl_hover, "#2a2e39");
         assert_eq!(t.chrome_close_hover, "#f23645");
         assert_eq!(t.chrome_ctrl_icon, "#d1d4dc");
+        assert_eq!(t.chrome_close_icon_hover, "#d1d4dc");
         assert_eq!(t.color_swatch_border, "#363a45");
         assert_eq!(t.split_chevron, "#6a6d78");
         assert_eq!(t.split_divider, "#363a45");
+    }
+
+    /// `high_contrast_mono` overrides `chrome_close_icon_hover` to
+    /// `surface.app_chrome` (black) because its `status.danger`
+    /// (`chrome_close_hover`) and `text.primary` are both white — without the
+    /// override the hovered chrome-close icon in the toolbar composite is
+    /// invisible (same defect class as the `chrome` composite's
+    /// `close_icon_hover`, 10b-1a). Every other built-in set keeps the
+    /// `text.primary` default, same as `chrome_ctrl_icon`.
+    #[test]
+    fn only_high_contrast_mono_overrides_chrome_close_icon_hover() {
+        let dark = Tokens::builtin(BuiltinSet::Dark);
+        let light = Tokens::builtin(BuiltinSet::Light);
+        let hc = Tokens::builtin(BuiltinSet::HighContrast);
+        let hc_mono = Tokens::builtin(BuiltinSet::HighContrastMono);
+
+        assert_eq!(dark.toolbar().chrome_close_icon_hover, dark.toolbar().chrome_ctrl_icon);
+        assert_eq!(light.toolbar().chrome_close_icon_hover, light.toolbar().chrome_ctrl_icon);
+        assert_eq!(hc.toolbar().chrome_close_icon_hover, hc.toolbar().chrome_ctrl_icon);
+
+        // `surface.app_chrome` — same role the `chrome` composite's own
+        // `background` aliases, so this cross-checks against its resolved
+        // value rather than a bare literal.
+        assert_eq!(hc_mono.toolbar().chrome_close_icon_hover, hc_mono.chrome().background);
+        assert_ne!(hc_mono.toolbar().chrome_close_icon_hover, hc_mono.toolbar().chrome_close_hover);
     }
 }

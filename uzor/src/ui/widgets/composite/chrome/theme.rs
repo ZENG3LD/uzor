@@ -37,6 +37,15 @@ pub trait ChromeTheme: Send + Sync {
     /// grayscale contract, one meaning per role).
     fn close_hover(&self) -> &str;
 
+    /// Close-app icon colour while the close button is hovered (the icon
+    /// painted over [`close_hover`](Self::close_hover)'s background).
+    /// Default alias: `text.primary` — same as [`icon_hover`](Self::icon_hover)
+    /// everywhere except `high_contrast_mono`, where `close_hover` and
+    /// `text.primary` are both white; that set overrides this token to
+    /// `surface.app_chrome` (black) so the X stays visible on its own hover
+    /// background instead of disappearing into it.
+    fn close_icon_hover(&self) -> &str;
+
     // --- Structural ---
 
     /// 1 px divider lines between button groups and the bottom edge.

@@ -28,6 +28,10 @@ component_tokens! {
     // Brief 9 item b). Aliased onto `status.danger`, which is `#ffffff` in
     // high_contrast_mono and `#f23645` everywhere else.
     close_hover  => ColorSpec::Alias(Role::StatusDanger, None),
+    // Overridden to `surface.app_chrome` in high_contrast_mono, where
+    // `status.danger` and `text.primary` are both white (see
+    // `builtin/high_contrast_mono.json`'s `component.chrome.close_icon_hover`).
+    close_icon_hover => ColorSpec::Alias(Role::TextPrimary, None),
 
     separator    => ColorSpec::Alias(Role::BorderDefault, None),
 
@@ -54,7 +58,7 @@ mod tests {
     fn every_chrome_key_is_registered() {
         let keys = crate::tokens::component_keys("chrome").expect("chrome must be registered");
         assert_eq!(keys, CHROME_KEYS);
-        assert_eq!(keys.len(), 16, "one entry per ChromeTokens field");
+        assert_eq!(keys.len(), 17, "one entry per ChromeTokens field");
         assert!(keys.contains(&"tab_accent"));
     }
 
@@ -67,6 +71,7 @@ mod tests {
         assert_eq!(c.icon_hover, "#d1d4dc");
         assert_eq!(c.button_hover, "#2a2e39");
         assert_eq!(c.close_hover, "#f23645");
+        assert_eq!(c.close_icon_hover, "#d1d4dc");
         assert_eq!(c.separator, "#363a45");
         assert_eq!(c.tab_bg_normal, "transparent");
         assert_eq!(c.tab_bg_hover, "#2a2e39");
@@ -78,5 +83,26 @@ mod tests {
         assert_eq!(c.drag_zone_bg, "transparent");
         assert_eq!(c.tooltip_bg, "#2a2e39");
         assert_eq!(c.tooltip_text, "#d1d4dc");
+    }
+
+    /// `high_contrast_mono` overrides `close_icon_hover` to
+    /// `surface.app_chrome` (black) because its `status.danger` (the
+    /// `close_hover` background) and `text.primary` (the default alias)
+    /// are both white — without the override the hovered close-app X is
+    /// invisible (chrome golden defect 10b-1a). Every other built-in set
+    /// keeps the `text.primary` default, same as `icon_hover`.
+    #[test]
+    fn only_high_contrast_mono_overrides_close_icon_hover() {
+        let dark = Tokens::builtin(BuiltinSet::Dark);
+        let light = Tokens::builtin(BuiltinSet::Light);
+        let hc = Tokens::builtin(BuiltinSet::HighContrast);
+        let hc_mono = Tokens::builtin(BuiltinSet::HighContrastMono);
+
+        assert_eq!(dark.chrome().close_icon_hover, dark.chrome().icon_hover);
+        assert_eq!(light.chrome().close_icon_hover, light.chrome().icon_hover);
+        assert_eq!(hc.chrome().close_icon_hover, hc.chrome().icon_hover);
+
+        assert_eq!(hc_mono.chrome().close_icon_hover, hc_mono.chrome().background);
+        assert_ne!(hc_mono.chrome().close_icon_hover, hc_mono.chrome().close_hover);
     }
 }
