@@ -310,7 +310,12 @@ impl InstancedRenderer {
     ///
     /// Construct the cache via [`uzor_urx_core::pipeline_cache::load_or_create`]
     /// at app boot; persist via [`uzor_urx_core::pipeline_cache::save_to_disk`]
-    /// on graceful shutdown.
+    /// on graceful shutdown. Both take the disk cache directory as an
+    /// explicit `Option<&Path>` — `urx-core` never resolves it itself
+    /// (plan rev 2 §2); the host resolves the platform directory (e.g.
+    /// `uzor-desktop`'s `window::creation::platform_pipeline_cache_dir`)
+    /// and passes `None` for headless/test callers that want an
+    /// in-memory-only cache.
     pub fn new_with_cache(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

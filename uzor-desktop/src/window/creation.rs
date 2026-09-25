@@ -1,5 +1,6 @@
 //! Window + surface + renderer creation.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use vello::{
@@ -40,6 +41,42 @@ impl std::error::Error for WindowCreateError {}
 impl From<winit::error::OsError> for WindowCreateError {
     fn from(e: winit::error::OsError) -> Self {
         Self::WindowCreate(e)
+    }
+}
+
+/// Resolve this platform's base cache directory — the host-side half
+/// of `uzor_urx_core::pipeline_cache`'s "the library never picks its
+/// own directory" contract (plan rev 2 §2). Feed the result into
+/// `uzor_urx_core::config::UrxConfig::pipeline_cache_dir`;
+/// `pipeline_cache::cache_path_for_adapter` appends its own
+/// `<app_id>/pipeline-cache/...` subpath on top, so this returns only
+/// the OS base — no app-specific segment.
+///
+/// - Windows: `%LOCALAPPDATA%`
+/// - macOS:   `$HOME/Library/Caches`
+/// - other:   `$XDG_CACHE_HOME`, or `$HOME/.cache`
+///
+/// Returns `None` when the relevant environment variable isn't set.
+/// Callers should treat that as "disk persistence unavailable" and
+/// pass `None` straight through to `pipeline_cache_dir` rather than
+/// guessing a fallback location — `uzor_urx_core::pipeline_cache`
+/// already treats `None` as "skip disk I/O, in-memory cache only".
+pub fn platform_pipeline_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Caches"))
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME") {
+            Some(PathBuf::from(xdg))
+        } else {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))
+        }
     }
 }
 
@@ -162,4 +199,22 @@ where
         hwnd,
         app,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The real ambient environment always has a base cache dir set on
+    /// every platform this crate targets (`LOCALAPPDATA` on Windows,
+    /// `HOME` elsewhere) — a `None` here would mean the resolved value
+    /// silently becomes "no disk persistence" for every window, which
+    /// is worth catching in CI rather than only in the field.
+    #[test]
+    fn resolves_a_cache_dir_in_the_real_test_environment() {
+        assert!(
+            platform_pipeline_cache_dir().is_some(),
+            "expected the ambient test environment to expose a base cache dir"
+        );
+    }
 }

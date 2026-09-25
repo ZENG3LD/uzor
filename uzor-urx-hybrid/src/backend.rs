@@ -38,8 +38,10 @@ pub struct HybridBackend {
     /// set BEFORE the first `composite()` call, the compositor
     /// pipeline is built using this cache, saving ~50-500 ms cold
     /// start on first launch after a driver update / fresh install.
-    /// Use [`uzor_urx_core::pipeline_cache::load_or_create`] +
-    /// [`Self::set_pipeline_cache`] before first composite.
+    /// Use [`uzor_urx_core::pipeline_cache::load_or_create`] (with
+    /// `config.pipeline_cache_dir.as_deref()` — the host-resolved
+    /// directory, `None` for no disk persistence) + [`Self::set_pipeline_cache`]
+    /// before first composite.
     pipeline_cache:  Option<wgpu::PipelineCache>,
     /// Atlas for small-region packing (Hybrid-P1). Lazily created on
     /// first eligible upsert when `config.hybrid_atlas_enabled` is
@@ -96,14 +98,18 @@ impl HybridBackend {
     ///
     /// Construct the cache via
     /// [`uzor_urx_core::pipeline_cache::load_or_create`] which reads
-    /// the on-disk blob (or creates an empty fallback).
+    /// the on-disk blob (or creates an empty fallback) from
+    /// `self.config.pipeline_cache_dir` — `None` there skips the disk
+    /// read entirely and yields an in-memory-only cache.
     pub fn set_pipeline_cache(&mut self, cache: Option<wgpu::PipelineCache>) {
         self.pipeline_cache = cache;
     }
 
     /// Returns a reference to the installed pipeline cache, if any.
     /// Useful for persisting back to disk on shutdown via
-    /// [`uzor_urx_core::pipeline_cache::save_to_disk`].
+    /// [`uzor_urx_core::pipeline_cache::save_to_disk`] (same
+    /// `self.config.pipeline_cache_dir` as [`Self::set_pipeline_cache`];
+    /// `None` there is a no-op write).
     pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
         self.pipeline_cache.as_ref()
     }

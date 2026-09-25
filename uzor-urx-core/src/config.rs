@@ -22,6 +22,8 @@
 //!   so the backend can panic at *config build* time instead of
 //!   silently corrupting tiles later.
 
+use std::path::PathBuf;
+
 /// SIMD aggressiveness level.
 ///
 /// `Native` (default) defers to the `multiversion`-dispatched routines:
@@ -195,6 +197,16 @@ pub struct UrxConfig {
     /// path-key + driver-string-keying means a stale blob silently
     /// falls back to cold compile (fallback: true in create_pipeline_cache).
     pub wgpu_pipeline_cache_enabled: bool,
+    /// Host-resolved base directory for `pipeline_cache`'s disk
+    /// persistence (`uzor_urx_core::pipeline_cache::{load_or_create,
+    /// save_to_disk}`). `urx-core` never picks this itself (plan rev 2
+    /// §2 — a library must not choose where it writes); the host
+    /// application resolves the platform cache directory (e.g.
+    /// `uzor-desktop`'s `window::creation::platform_pipeline_cache_dir`)
+    /// and sets it here. `None` (default) disables disk persistence —
+    /// the pipeline cache still works in-memory-only, just never
+    /// reads/writes a blob. Headless / test consumers leave this `None`.
+    pub pipeline_cache_dir: Option<PathBuf>,
     /// Pack RGBA into u32 in GPU vertex format (WGPU-P4). When `true`,
     /// the wgpu-instanced backend's vertex shaders consume `u32`
     /// colour fields via `unpack4x8unorm`, saving ~30% of per-instance
@@ -274,6 +286,10 @@ impl Default for UrxConfig {
             hybrid_atlas_enabled: false,
             hybrid_instanced_composite: false,
             wgpu_pipeline_cache_enabled: true,
+            // No disk persistence by default — the host must opt in by
+            // resolving + setting a real directory (see the field's own
+            // doc comment). Safe, side-effect-free default.
+            pipeline_cache_dir: None,
             wgpu_packed_color: false,
             wgpu_use_immediates_for_projection: false,
             wgpu_sort_by_pipeline: false,
@@ -404,6 +420,7 @@ impl UrxConfigBuilder {
     setter!(hybrid_atlas_enabled, bool);
     setter!(hybrid_instanced_composite, bool);
     setter!(wgpu_pipeline_cache_enabled, bool);
+    setter!(pipeline_cache_dir, Option<PathBuf>);
     setter!(wgpu_packed_color, bool);
     setter!(wgpu_use_immediates_for_projection, bool);
     setter!(wgpu_sort_by_pipeline, bool);
@@ -459,6 +476,7 @@ mod tests {
         assert!(!c.hybrid_atlas_enabled);
         assert!(!c.hybrid_instanced_composite);
         assert!( c.wgpu_pipeline_cache_enabled); // safe default ON — fallback:true
+        assert_eq!(c.pipeline_cache_dir, None); // host must opt in with a real dir
         assert!(!c.wgpu_packed_color);
         assert!(!c.wgpu_use_immediates_for_projection);
         assert!(!c.wgpu_sort_by_pipeline);
@@ -586,5 +604,12 @@ mod tests {
     fn builder_rejects_bad_config_on_build() {
         let r = UrxConfig::builder().tile_w(7).build();
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn pipeline_cache_dir_settable_via_builder() {
+        let dir = PathBuf::from("/host/resolved/cache/dir");
+        let c = UrxConfig::builder().pipeline_cache_dir(Some(dir.clone())).build().unwrap();
+        assert_eq!(c.pipeline_cache_dir, Some(dir));
     }
 }
