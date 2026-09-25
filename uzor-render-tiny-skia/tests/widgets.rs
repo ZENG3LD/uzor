@@ -27,6 +27,8 @@ mod close_button;
 mod color_swatch;
 #[path = "widgets/container.rs"]
 mod container;
+#[path = "widgets/context_menu.rs"]
+mod context_menu;
 #[path = "widgets/drag_handle.rs"]
 mod drag_handle;
 #[path = "widgets/dropdown_trigger.rs"]
