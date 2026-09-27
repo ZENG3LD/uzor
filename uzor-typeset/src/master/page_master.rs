@@ -65,11 +65,27 @@ pub struct PageNumberStyle {
     /// — lets a caller start numbering at `1` (the common case) or
     /// continue a running number from an earlier document section.
     pub start: u32,
+    /// When the finished document is a single page, paint no number.
+    /// The placement rect stays, so a later [`crate::slice::renumber_pages`]
+    /// can fill the text back in if concatenation makes the total grow.
+    pub suppress_if_single: bool,
+    /// The first page is the title. It carries no printed number.
+    pub suppress_title: bool,
 }
 
 impl PageNumberStyle {
     pub fn new(format: PageNumberFormat, start: u32) -> Self {
-        Self { format, start }
+        Self { format, start, suppress_if_single: false, suppress_title: false }
+    }
+
+    pub fn with_suppress_if_single(mut self, suppress_if_single: bool) -> Self {
+        self.suppress_if_single = suppress_if_single;
+        self
+    }
+
+    pub fn with_suppress_title(mut self, suppress_title: bool) -> Self {
+        self.suppress_title = suppress_title;
+        self
     }
 
     /// The formatted string for `page_index` (0-based, matches
@@ -84,6 +100,27 @@ impl PageNumberStyle {
             }
         }
     }
+
+    /// Empty when this style hides the number on a one-page document.
+    pub fn text_for(&self, page_index: u32, total_pages: u32) -> String {
+        if self.suppress_title && page_index == 0 {
+            String::new()
+        } else if self.suppress_if_single && total_pages <= 1 {
+            String::new()
+        } else {
+            self.format_for(page_index, total_pages)
+        }
+    }
+}
+
+/// Where margin-box content sits inside its band. [`MarginAlign::Top`] is
+/// the original pack-from-the-top behavior. [`MarginAlign::Bottom`] pins
+/// the line-box bottom to `footer_from_edge` above the page trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarginAlign {
+    #[default]
+    Top,
+    Bottom,
 }
 
 /// A token inside header/footer margin-box content, resolved PER PAGE at
@@ -159,6 +196,12 @@ pub struct PageMaster<'a> {
     /// `None` (the default) reserves nothing — [`PageMaster::body_rect`]
     /// is then BYTE-IDENTICAL to every pre-WAVE-3 caller.
     pub footnote_zone_height: Option<f64>,
+    /// Vertical placement of footer margin-box content. [`MarginAlign::Top`]
+    /// (the default) packs from the top of the band, which is the body edge.
+    pub footer_align: MarginAlign,
+    /// Distance from the page trim to the footer line-box bottom, used only
+    /// when [`PageMaster::footer_align`] is [`MarginAlign::Bottom`].
+    pub footer_from_edge: f64,
 }
 
 impl<'a> PageMaster<'a> {
@@ -176,6 +219,8 @@ impl<'a> PageMaster<'a> {
             columns: 1,
             column_gap: 0.0,
             footnote_zone_height: None,
+            footer_align: MarginAlign::Top,
+            footer_from_edge: 0.0,
         }
     }
 
@@ -194,6 +239,13 @@ impl<'a> PageMaster<'a> {
     /// Builder: attach a page-number token.
     pub fn with_page_number(mut self, token: PageNumberStyle) -> Self {
         self.page_number_token = Some(token);
+        self
+    }
+
+    /// Pin the footer line-box bottom `from_edge` points above the page trim.
+    pub fn with_footer_pin(mut self, from_edge: f64) -> Self {
+        self.footer_align = MarginAlign::Bottom;
+        self.footer_from_edge = from_edge.max(0.0);
         self
     }
 

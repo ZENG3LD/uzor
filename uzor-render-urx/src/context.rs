@@ -1022,6 +1022,7 @@ fn font_string(info: &FontInfo) -> String {
         FontFamily::Roboto        => "Roboto",
         FontFamily::PtRootUi      => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
     let mut parts: Vec<String> = Vec::with_capacity(4);
     if info.italic { parts.push("italic".into()); }

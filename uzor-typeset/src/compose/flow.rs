@@ -217,6 +217,7 @@ fn full_height_if_whole(kind: &Block<'_>, region_width: f64, remaining_height: f
         // `region_width`) — the side-strip content beside it is a
         // separate concern real placement handles, never this lookahead.
         Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height),
+        Block::IslandEnd => 0.0,
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
             table_total_height(&rows)
@@ -250,6 +251,7 @@ fn has_room_for_next(next: &Block<'_>, region_width: f64, remaining_height: f64,
         Block::Figure(fb) => fb.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
         Block::Image(ib) => ib.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
         Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height) <= remaining_height,
+        Block::IslandEnd => true,
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
             rows.first().map_or(true, |r| r.height <= remaining_height)
@@ -280,7 +282,8 @@ pub fn compose<'a>(flow: &'a [BlockNode<'a>], regions: &mut dyn RegionSequence, 
 
     while block_idx < flow.len() {
         let Some(region) = regions.next() else { break };
-        let (blocks, overflow) = place_into_region(flow, &ids, &mut block_idx, &mut progress, region.rect, style, shaper);
+        let mut island_closed = false;
+        let (blocks, overflow) = place_into_region(flow, &ids, &mut block_idx, &mut progress, region.rect, style, shaper, false, &mut island_closed);
         frames.push(Frame { region, blocks, overflow });
     }
 
@@ -308,6 +311,8 @@ fn place_into_region<'a>(
     region_rect: Rect,
     style: &ComposeStyle,
     shaper: &dyn LineShaper,
+    in_strip: bool,
+    island_closed: &mut bool,
 ) -> (Vec<PlacedBlock<'a>>, Option<&'a BlockNode<'a>>) {
     let region_bottom = region_rect.y + region_rect.height;
     let mut cursor_y = region_rect.y;
@@ -316,6 +321,16 @@ fn place_into_region<'a>(
 
     while *block_idx < flow.len() {
         let node = &flow[*block_idx];
+
+        if matches!(node.kind, Block::IslandEnd) {
+            *block_idx += 1;
+            *progress = InProgress::None;
+            if in_strip {
+                *island_closed = true;
+                break;
+            }
+            continue;
+        }
 
         // Baseline grid (typography track T2): a FRESH (non-continuation)
         // block's own grid-relevant edge is snapped forward BEFORE any
@@ -416,11 +431,13 @@ fn place_into_region<'a>(
                 *block_idx += 1;
                 *progress = InProgress::None;
 
+                let mut closed = false;
                 for strip in island_strip_rects(island, region_rect, island_rect, band_bottom) {
-                    if *block_idx >= flow.len() {
+                    if closed || *block_idx >= flow.len() {
                         break;
                     }
-                    let (strip_blocks, _strip_overflow) = place_into_region(flow, ids, block_idx, progress, strip, style, shaper);
+                    let (strip_blocks, _strip_overflow) =
+                        place_into_region(flow, ids, block_idx, progress, strip, style, shaper, true, &mut closed);
                     blocks.extend(strip_blocks);
                     // Whether or not THIS strip's own content overflowed,
                     // move on to the NEXT strip (if any) — an overflowing
@@ -621,6 +638,7 @@ fn place_into_region<'a>(
             }
             // Handled above, before this match — never reached.
             Block::Island(_) => unreachable!("Block::Island is handled before this match, via its own recursive strip-fill branch"),
+            Block::IslandEnd => unreachable!("Block::IslandEnd is consumed before this match"),
             Block::Table(table) => {
                 if !matches!(*progress, InProgress::Table { .. }) {
                     let (column_widths, rows) = measure_and_layout_table(table, region_rect.width, style, shaper);

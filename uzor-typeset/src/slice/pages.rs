@@ -39,7 +39,7 @@ use uzor::types::Rect;
 use uzor_text::{LineShaper, Paragraph, StyledRun};
 
 use crate::compose::{compose, ComposeStyle};
-use crate::master::{HeaderPlaceholder, PageMaster, PageNumberStyle};
+use crate::master::{HeaderPlaceholder, MarginAlign, PageMaster, PageNumberStyle};
 use crate::region::{FixedRegionSequence, Frame, PageRegionSequence, Region};
 use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode, Footnote, ListBlock, ListItem, MarkerStyle};
 
@@ -229,7 +229,13 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
     let header_has_placeholder = master.header.is_some_and(header_uses_placeholder);
     let footer_has_placeholder = master.footer.is_some_and(header_uses_placeholder);
     let header_frame = if header_has_placeholder { None } else { master.header.map(|content| compose_margin_box(content, master.header_rect(), style, shaper)) };
-    let footer_frame = if footer_has_placeholder { None } else { master.footer.map(|content| compose_margin_box(content, master.footer_content_rect(), style, shaper)) };
+    let mut footer_frame = if footer_has_placeholder { None } else { master.footer.map(|content| compose_margin_box(content, master.footer_content_rect(), style, shaper)) };
+    if master.footer_align == MarginAlign::Bottom {
+        if let Some(frame) = &mut footer_frame {
+            pin_frame_bottom(frame, master.height, master.footer_from_edge);
+        }
+    }
+    let number_rect = page_number_line_rect(master, footer_frame.as_ref());
 
     for page in &mut pages {
         page.total = total;
@@ -238,7 +244,7 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
         page.page_number = master
             .page_number_token
             .as_ref()
-            .map(|token| PageNumberPlacement { text: token.format_for(page.index, total), rect: master.page_number_rect() });
+            .map(|token| PageNumberPlacement { text: token.text_for(page.index, total), rect: number_rect });
     }
 
     attach_navigation_entries(flow, &mut pages);
@@ -253,7 +259,15 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
             }
             if footer_has_placeholder {
                 if let Some(content) = master.footer {
-                    page.footer = Some(compose_placeholder_margin_box(content, master.footer_content_rect(), style, shaper, title));
+                    let mut frame = compose_placeholder_margin_box(content, master.footer_content_rect(), style, shaper, title);
+                    if master.footer_align == MarginAlign::Bottom {
+                        pin_frame_bottom(&mut frame, master.height, master.footer_from_edge);
+                    }
+                    page.page_number = master.page_number_token.as_ref().map(|token| PageNumberPlacement {
+                        text: token.text_for(page.index, total),
+                        rect: page_number_line_rect(master, Some(&frame)),
+                    });
+                    page.footer = Some(frame);
                 }
             }
         }
@@ -433,7 +447,7 @@ pub fn renumber_pages<'a>(mut pages: Vec<Page<'a>>, page_number_style: Option<&P
         }
         if let Some(style) = page_number_style {
             if let Some(number) = &mut page.page_number {
-                number.text = style.format_for(page.index, total);
+                number.text = style.text_for(page.index, total);
             }
         }
     }
@@ -447,6 +461,23 @@ pub fn renumber_pages<'a>(mut pages: Vec<Page<'a>>, page_number_style: Option<&P
 /// own risk note): whatever fits is placed, the remainder is simply not
 /// represented (a margin box has no second region to spill into — a
 /// header/footer is expected to be a couple of short lines).
+fn pin_frame_bottom(frame: &mut Frame<'_>, page_height: f64, from_edge: f64) {
+    let Some(bottom) = frame.blocks.iter().map(|block| block.rect.max_y()).reduce(f64::max) else { return };
+    let delta = (page_height - from_edge) - bottom;
+    for block in &mut frame.blocks {
+        block.translate(0.0, delta);
+    }
+}
+
+fn page_number_line_rect(master: &PageMaster<'_>, footer: Option<&Frame<'_>>) -> Rect {
+    let full = master.page_number_rect();
+    if master.footer_align != MarginAlign::Bottom {
+        return full;
+    }
+    let Some(line) = footer.and_then(|frame| frame.blocks.first()) else { return full };
+    Rect::new(full.x, line.rect.y, full.width, line.rect.height)
+}
+
 fn compose_margin_box<'a>(content: &'a [BlockNode<'a>], rect: Rect, style: &ComposeStyle, shaper: &dyn LineShaper) -> Frame<'a> {
     let mut regions = FixedRegionSequence::new(rect);
     compose(content, &mut regions, style, shaper)

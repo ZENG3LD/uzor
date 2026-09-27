@@ -118,6 +118,16 @@ impl Default for CellPadding {
     }
 }
 
+/// How a table's grid is stroked. [`TableRules::Box`] is the original
+/// full cell rectangle. [`TableRules::Horizontal`] strokes the top of the
+/// first row and the bottom of every row, and paints no verticals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableRules {
+    #[default]
+    Box,
+    Horizontal,
+}
+
 /// A flow-participating table: two-pass column sizing (design doc §3.5),
 /// row-atomic splitting across regions (a row never splits mid-row; the
 /// table splits BETWEEN rows when it spans more than one region — see
@@ -137,11 +147,17 @@ pub struct TableBlock<'a> {
     /// overflow its region. Default `false` (additive — every pre-existing
     /// table is byte-identical). See [`TableBlock::with_header_repeat`].
     pub header_repeat: bool,
+    pub rules: TableRules,
 }
 
 impl<'a> TableBlock<'a> {
     pub fn new(columns: &'a [ColumnSpec], rows: &'a [TableRow<'a>]) -> Self {
-        Self { columns, rows, cell_padding: CellPadding::default(), header_repeat: false }
+        Self { columns, rows, cell_padding: CellPadding::default(), header_repeat: false, rules: TableRules::Box }
+    }
+
+    pub fn with_rules(mut self, rules: TableRules) -> Self {
+        self.rules = rules;
+        self
     }
 
     /// Builder: override the default per-cell content inset.

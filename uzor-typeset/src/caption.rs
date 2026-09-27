@@ -234,9 +234,16 @@ fn reborrow_block<'a>(kind: &Block<'a>) -> Block<'a> {
                 isl.margin,
             ))
         }
-        Block::Table(t) => Block::Table(crate::scene::TableBlock { columns: t.columns, rows: t.rows, cell_padding: t.cell_padding, header_repeat: t.header_repeat }),
+        Block::Table(t) => Block::Table(crate::scene::TableBlock {
+            columns: t.columns,
+            rows: t.rows,
+            cell_padding: t.cell_padding,
+            header_repeat: t.header_repeat,
+            rules: t.rules,
+        }),
         Block::List(l) => Block::List(crate::scene::ListBlock::new(l.items, l.marker.clone(), l.indent_px)),
         Block::Spacer(g) => Block::Spacer(*g),
+        Block::IslandEnd => Block::IslandEnd,
     }
 }
 

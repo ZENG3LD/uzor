@@ -64,8 +64,8 @@ pub use compose::{compose, BreakControl, ComposeStyle};
 pub use export::{pages_to_pdf, PdfExportOptions};
 pub use kinetics::{build_frame_morph, FrameBlockState, FrameMorph};
 pub use master::{
-    HeaderPlaceholder, LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat,
-    PageNumberStyle, SlideInstance, SlideLayout, SlideMaster,
+    HeaderPlaceholder, LayoutId, MarginAlign, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder,
+    PageNumberFormat, PageNumberStyle, SlideInstance, SlideLayout, SlideMaster,
 };
 pub use region::{
     CardRegionSequence, ColumnRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem,
@@ -75,7 +75,7 @@ pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_
 pub use scene::{
     resolve_block_ids, AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, Caption, CaptionKind, CellPadding, ColumnSpec, FigureBlock,
     Footnote, ImageBlock, ImageFit, IslandAnchor, ListBlock, ListItem, MarkerStyle, NumberScheme, OutlineTag, TableBlock, TableCell,
-    TableRow, TypesetFigure,
+    TableRow, TableRules, TypesetFigure,
 };
 pub use slice::{
     cards_to_slides, renumber_pages, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards,
