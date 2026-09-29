@@ -240,6 +240,7 @@ fn reborrow_block<'a>(kind: &Block<'a>) -> Block<'a> {
             cell_padding: t.cell_padding,
             header_repeat: t.header_repeat,
             rules: t.rules,
+            rule_style: t.rule_style,
         }),
         Block::List(l) => Block::List(crate::scene::ListBlock::new(l.items, l.marker.clone(), l.indent_px)),
         Block::Spacer(g) => Block::Spacer(*g),

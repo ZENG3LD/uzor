@@ -125,6 +125,8 @@ use crate::scene::{Block, BlockNode, CellPadding, ColumnSpec, TableBlock};
 pub(crate) struct ComposedRow<'a> {
     pub height: f64,
     pub cells: Vec<ComposedCell<'a>>,
+    /// The authored [`crate::scene::TableRow::fill`], carried to the placed row.
+    pub fill: Option<u32>,
 }
 
 /// One cell's already-placed content, positioned relative to the CELL's
@@ -393,6 +395,16 @@ pub(crate) fn header_group_height(rows: &[ComposedRow<'_>]) -> f64 {
     rows[..=end].iter().map(|r| r.height).sum()
 }
 
+/// How many rows row 0's own atomic rowspan group covers (`1` for every
+/// table whose header row spans no rows). `compose::flow`'s Table arm uses
+/// it to tell "only the header fits" from "header plus a body row fits".
+pub(crate) fn header_group_rows(rows: &[ComposedRow<'_>]) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    table_row_groups(rows)[0].1 + 1
+}
+
 /// Lay out every cell of `table` for real, at its own final SPANNED width
 /// (`column_widths[col_start..col_start+col_span]`'s own sum, minus `2 *
 /// padding.h`, matching Fix C's own "content is measured/wrapped at the
@@ -449,7 +461,8 @@ fn layout_table_rows<'a>(table: &'a TableBlock<'a>, grid: &[GridCell], column_wi
         }
     }
 
-    let mut rows: Vec<ComposedRow<'a>> = row_heights.into_iter().map(|height| ComposedRow { height, cells: Vec::new() }).collect();
+    let mut rows: Vec<ComposedRow<'a>> =
+        row_heights.into_iter().zip(table.rows.iter()).map(|(height, row)| ComposedRow { height, cells: Vec::new(), fill: row.fill }).collect();
     for c in all_cells {
         rows[c.row_index].cells.push(ComposedCell { column_index: c.col_start, col_span: c.col_span, row_span: c.row_span, blocks: c.blocks });
     }
@@ -576,7 +589,7 @@ fn place_one_row<'a>(rows: &[ComposedRow<'a>], row_index: usize, column_widths: 
         cells.push(PlacedTableCell { column_index: cell.column_index, col_span: cell.col_span, row_span: cell.row_span, rect: cell_rect, content });
     }
 
-    PlacedTableRow { rect: row_rect, cells, spans_row }
+    PlacedTableRow { rect: row_rect, cells, spans_row, fill: row.fill }
 }
 
 /// Translate rows `[from_row, from_row + count)` of the cached `rows` into
@@ -743,9 +756,9 @@ mod tests {
     #[test]
     fn rows_fitting_matches_the_paragraph_lines_fitting_budget_convention() {
         let rows = [
-            ComposedRow { height: 10.0, cells: vec![] },
-            ComposedRow { height: 10.0, cells: vec![] },
-            ComposedRow { height: 10.0, cells: vec![] },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
         ];
         assert_eq!(rows_fitting(&rows, 0, 25.0, false, 0.0), 2, "2.5 row-heights of budget fits exactly 2 whole rows");
         assert_eq!(rows_fitting(&rows, 0, 5.0, false, 0.0), 0, "nothing fits and the region already has content: defer whole");
@@ -755,9 +768,9 @@ mod tests {
     #[test]
     fn rows_fitting_subtracts_the_reserved_header_height_from_the_budget() {
         let rows = [
-            ComposedRow { height: 10.0, cells: vec![] },
-            ComposedRow { height: 10.0, cells: vec![] },
-            ComposedRow { height: 10.0, cells: vec![] },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
+            ComposedRow { height: 10.0, cells: vec![], fill: None },
         ];
         // Same 25.0 budget as above, but 10.0 reserved for a repeated
         // header row — only 1 whole body row fits, not 2.
@@ -1042,13 +1055,14 @@ mod tests {
     fn rows_fitting_never_splits_a_page_break_inside_an_active_rowspan() {
         let single_height = 10.0;
         let rows = [
-            ComposedRow { height: single_height, cells: vec![] }, // row 0: plain
+            ComposedRow { height: single_height, cells: vec![], fill: None }, // row 0: plain
             ComposedRow {
                 height: single_height,
                 cells: vec![ComposedCell { column_index: 0, col_span: 1, row_span: 2, blocks: vec![] }],
+                fill: None,
             }, // row 1: starts a rowspan reaching into row 2
-            ComposedRow { height: single_height, cells: vec![] }, // row 2: end of the rowspan
-            ComposedRow { height: single_height, cells: vec![] }, // row 3: plain
+            ComposedRow { height: single_height, cells: vec![], fill: None }, // row 2: end of the rowspan
+            ComposedRow { height: single_height, cells: vec![], fill: None }, // row 3: plain
         ];
 
         // A budget of 2.5 row-heights would naively fit rows [0, 1] (25

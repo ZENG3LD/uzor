@@ -81,11 +81,21 @@ impl<'a> TableCell<'a> {
 /// `categories`/`values` length mismatch).
 pub struct TableRow<'a> {
     pub cells: &'a [TableCell<'a>],
+    /// Solid `0xRRGGBB` fill painted under the whole row (cell content and
+    /// gridlines paint over it). `None` (the default) paints nothing, so
+    /// every table that never calls [`TableRow::with_fill`] is unchanged.
+    pub fill: Option<u32>,
 }
 
 impl<'a> TableRow<'a> {
     pub fn new(cells: &'a [TableCell<'a>]) -> Self {
-        Self { cells }
+        Self { cells, fill: None }
+    }
+
+    /// Builder: paint a solid `0xRRGGBB` fill under this row.
+    pub fn with_fill(mut self, fill: u32) -> Self {
+        self.fill = Some(fill);
+        self
     }
 }
 
@@ -148,11 +158,30 @@ pub struct TableBlock<'a> {
     /// table is byte-identical). See [`TableBlock::with_header_repeat`].
     pub header_repeat: bool,
     pub rules: TableRules,
+    /// Gridline colour (`0xRRGGBB`) and stroke width. `None` (the default)
+    /// strokes with the theme ink at 1.0 wide, as before. See
+    /// [`TableBlock::with_rule_style`].
+    pub rule_style: Option<TableRuleStyle>,
+}
+
+/// Gridline paint of one table: colour and stroke width, overriding the
+/// theme ink / 1.0 default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TableRuleStyle {
+    pub color: u32,
+    pub width: f64,
 }
 
 impl<'a> TableBlock<'a> {
     pub fn new(columns: &'a [ColumnSpec], rows: &'a [TableRow<'a>]) -> Self {
-        Self { columns, rows, cell_padding: CellPadding::default(), header_repeat: false, rules: TableRules::Box }
+        Self { columns, rows, cell_padding: CellPadding::default(), header_repeat: false, rules: TableRules::Box, rule_style: None }
+    }
+
+    /// Builder: stroke this table's gridlines with `color` (`0xRRGGBB`) at
+    /// `width` instead of the theme ink at 1.0.
+    pub fn with_rule_style(mut self, color: u32, width: f64) -> Self {
+        self.rule_style = Some(TableRuleStyle { color, width });
+        self
     }
 
     pub fn with_rules(mut self, rules: TableRules) -> Self {
@@ -186,5 +215,19 @@ mod tests {
         let table = TableBlock::new(&columns, &rows);
         assert_eq!(table.columns.len(), 3);
         assert_eq!(table.rows.len(), 1);
+    }
+
+    #[test]
+    fn row_fill_and_rule_style_default_to_none_and_are_set_by_their_builders() {
+        let cells: [TableCell<'_>; 0] = [];
+        let plain = TableRow::new(&cells);
+        assert_eq!(plain.fill, None);
+        assert_eq!(TableRow::new(&cells).with_fill(0xededed).fill, Some(0xededed));
+
+        let columns = [ColumnSpec::Auto];
+        let rows = [TableRow::new(&cells)];
+        assert_eq!(TableBlock::new(&columns, &rows).rule_style, None);
+        let styled = TableBlock::new(&columns, &rows).with_rule_style(0x808080, 0.5);
+        assert_eq!(styled.rule_style, Some(TableRuleStyle { color: 0x808080, width: 0.5 }));
     }
 }

@@ -329,7 +329,7 @@ pub(crate) fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBloc
         }
         Block::Table(table) => {
             if let Some(placement) = &placed.table_placement {
-                draw_table_placement(ctx, placement, table.rules, default_color, figure_theme, layers);
+                draw_table_placement(ctx, placement, table.rules, table.rule_style, default_color, figure_theme, layers);
             }
         }
         Block::List(_) => {
@@ -388,13 +388,20 @@ fn draw_table_placement(
     ctx: &mut dyn RenderContext,
     table: &TablePlacement<'_>,
     rules: crate::scene::TableRules,
+    rule_style: Option<crate::scene::TableRuleStyle>,
     default_color: &str,
     figure_theme: &FigureTheme,
     layers: DrawLayers,
 ) {
-    ctx.set_stroke_color(default_color);
-    ctx.set_stroke_width(1.0);
+    let rule_color = rule_style.map_or_else(|| default_color.to_owned(), |style| format!("#{:06x}", style.color & 0xff_ffff));
+    let rule_width = rule_style.map_or(1.0, |style| style.width);
+    ctx.set_stroke_color(&rule_color);
+    ctx.set_stroke_width(rule_width);
     for (index, row) in table.rows.iter().enumerate() {
+        if let Some(fill) = row.fill {
+            ctx.set_fill_color(&format!("#{:06x}", fill & 0xff_ffff));
+            ctx.fill_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+        }
         match rules {
             crate::scene::TableRules::Box => {
                 if !row.spans_row {
@@ -411,7 +418,7 @@ fn draw_table_placement(
                 }
                 let y = row.rect.y + row.rect.height - 0.75;
                 ctx.stroke_rect(row.rect.x, y, row.rect.width, 0.75);
-                ctx.set_stroke_width(1.0);
+                ctx.set_stroke_width(rule_width);
             }
         }
         for cell in &row.cells {

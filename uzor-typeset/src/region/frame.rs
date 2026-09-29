@@ -130,6 +130,9 @@ pub struct PlacedTableRow<'a> {
     /// that never uses `row_span > 1` anywhere — byte-identical gridline
     /// painting for every pre-T3 table.
     pub spans_row: bool,
+    /// Solid `0xRRGGBB` fill painted under this row, copied from
+    /// [`crate::scene::TableRow::fill`]. `None` for every table that sets none.
+    pub fill: Option<u32>,
 }
 
 /// A table's placement within ONE [`Frame`] — see [`PlacedBlock::table_placement`].
