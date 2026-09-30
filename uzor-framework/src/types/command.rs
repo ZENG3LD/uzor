@@ -9,12 +9,14 @@ use std::fmt;
 use std::sync::Arc;
 
 use uzor::input::KeyboardShortcut;
-use uzor::layout::docking::{BranchId, DropZone, FloatingWindowId, LeafId, WindowLayout};
+use uzor::layout::docking::{
+    BranchId, DropZone, FloatingWindowId, LeafId, SeparatorOrientation, WindowLayout,
+};
 use uzor::layout::{EdgeSide, EdgeSlot, OverlayKind, SlotId};
 use uzor::render::{InvalidateBits, TickRate};
 use uzor::tokens::Tokens;
-use uzor::widgets::composite::chrome::ChromeHit;
-use uzor::{Rect, ResizeDirection, RgbaIcon, WidgetId};
+use uzor::widgets::composite::chrome::{ChromeHit, ChromeLayoutConfig};
+use uzor::{CursorIcon, Rect, ResizeDirection, RgbaIcon, WidgetId};
 
 use crate::types::frame::RegionSpec;
 use crate::types::ids::{RegionId, Seconds, Ticket, WindowId};
@@ -244,6 +246,13 @@ pub enum LayoutCmd<P> {
         /// Strip height, logical pixels.
         height: f32,
     },
+    /// Replace what the chrome strip contains (kind, buttons, tabs).
+    SetChromeModel {
+        /// Target window.
+        win: WindowId,
+        /// The new model.
+        model: ChromeModel,
+    },
     /// Add an edge slot (toolbar, sidebar, status bar).
     AddEdgeSlot {
         /// Target window.
@@ -323,6 +332,18 @@ pub enum LayoutCmd<P> {
         /// One ratio per child, summing to 1.
         ratios: Vec<f64>,
     },
+    /// Make a branch a `rows × cols` grid of its children (the child count
+    /// must equal `rows * cols`; otherwise nothing changes).
+    SetGrid {
+        /// Target window.
+        win: WindowId,
+        /// The branch (`BranchId(0)` is the root).
+        branch: BranchId,
+        /// Rows.
+        rows: usize,
+        /// Columns.
+        cols: usize,
+    },
     /// Replace the layout policy (all windows).
     SetPolicy(LayoutPolicy),
     /// Ask for the window's layout blob; it arrives as `DockIntent::LayoutBlob`.
@@ -378,8 +399,12 @@ pub struct LayoutPolicy {
     /// Width of the edge gutter that triggers an outer expand, logical px.
     pub edge_expand_px: f64,
     /// Width of the uzor resize bezel, logical px; used only when the host
-    /// has no OS resize border.
+    /// has no OS resize border. Also the resize border of floating windows.
     pub bezel_px: f64,
+    /// Show a "+" button at the right end of every tab bar / panel header
+    /// (hit as [`LayoutHit::TabNew`], answered by
+    /// `DockIntent::NewPanelRequested`).
+    pub tab_new_button: bool,
 }
 
 impl Default for LayoutPolicy {
@@ -389,6 +414,7 @@ impl Default for LayoutPolicy {
             drag_out: DragOutPolicy::Disabled,
             edge_expand_px: 8.0,
             bezel_px: 6.0,
+            tab_new_button: false,
         }
     }
 }
@@ -425,44 +451,187 @@ pub enum DragOutPolicy {
 }
 
 /// What a window-level pointer position hits; a pure query result of the
-/// LayoutEngine, consumed by the kernel's pointer routing.
+/// LayoutEngine (`LayoutEngine::hit`), consumed by the kernel's pointer
+/// routing (step 4). Every point of a window maps to exactly one value; the
+/// precedence is fixed and documented on the engine. Indices are typed
+/// positions in the solved window, never parsed from widget ids.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LayoutHit {
-    /// A chrome strip element.
+    /// A chrome strip element (`ChromeHit::None` = inert chrome area).
     Chrome(ChromeHit),
-    /// The uzor resize bezel (only without an OS resize border).
+    /// The uzor resize bezel at the window border (only without an OS
+    /// resize border); the direction is the one the OS resize starts with.
     Bezel(ResizeDirection),
     /// A splitter between two dock children.
     Splitter {
         /// Separator index in the solved dock.
         sep: usize,
+        /// Vertical (`|`, drags left / right) or horizontal (`—`).
+        orientation: SeparatorOrientation,
     },
-    /// A corner where two splitters meet.
+    /// A point where a vertical and a horizontal splitter cross; dragging
+    /// it moves both.
     Corner {
-        /// First separator index.
-        a: usize,
-        /// Second separator index.
-        b: usize,
+        /// Index of the vertical separator.
+        vertical: usize,
+        /// Index of the horizontal separator.
+        horizontal: usize,
     },
-    /// A tab in a leaf's tab bar.
-    TabBar {
+    /// A tab chip in a multi-tab leaf's tab bar.
+    Tab {
         /// The leaf.
         leaf: LeafId,
         /// Tab index.
         tab: usize,
     },
-    /// A panel's header strip.
+    /// The close button of a tab chip.
+    TabClose {
+        /// The leaf.
+        leaf: LeafId,
+        /// Tab index.
+        tab: usize,
+    },
+    /// The "+" button at the right end of a leaf's tab bar / header (only
+    /// with `LayoutPolicy::tab_new_button`).
+    TabNew {
+        /// The leaf.
+        leaf: LeafId,
+    },
+    /// A single-tab panel's header strip (drag handle).
     PanelHeader(LeafId),
-    /// A panel's content area.
+    /// A panel's content area (belongs to the app's widgets).
     PanelBody(LeafId),
-    /// A floating window's header.
+    /// A floating window's header (drag handle).
     FloatingHeader(FloatingWindowId),
-    /// A floating window's content area.
+    /// A floating window's close button.
+    FloatingClose(FloatingWindowId),
+    /// A floating window's resize border.
+    FloatingResize {
+        /// The floating window.
+        id: FloatingWindowId,
+        /// Which edge / corner.
+        dir: ResizeDirection,
+    },
+    /// A floating window's content area (belongs to the app's widgets).
     FloatingBody(FloatingWindowId),
-    /// An expand gutter at a window edge.
+    /// An expand gutter at a window edge. Reserved for the expand brief:
+    /// the engine does not produce it yet.
     EdgeGutter(EdgeSide),
-    /// Nothing layout-owned.
+    /// Nothing layout-owned (edge slots, empty dock, outside the window).
     None,
+}
+
+impl LayoutHit {
+    /// Whether a primary-button press on this hit belongs to the
+    /// LayoutEngine (routing step 4) rather than to content widgets
+    /// (step 5). Bodies, edge slots and `None` go to content.
+    pub fn claims_press(&self) -> bool {
+        !matches!(
+            self,
+            LayoutHit::PanelBody(_)
+                | LayoutHit::FloatingBody(_)
+                | LayoutHit::EdgeGutter(_)
+                | LayoutHit::None
+        )
+    }
+
+    /// The cursor the hit suggests while hovered (`None` = no opinion:
+    /// content widgets decide).
+    pub fn cursor(&self) -> Option<CursorIcon> {
+        let resize = |d: ResizeDirection| match d {
+            ResizeDirection::North => CursorIcon::ResizeNorth,
+            ResizeDirection::South => CursorIcon::ResizeSouth,
+            ResizeDirection::East => CursorIcon::ResizeEast,
+            ResizeDirection::West => CursorIcon::ResizeWest,
+            ResizeDirection::NorthEast => CursorIcon::ResizeNorthEast,
+            ResizeDirection::NorthWest => CursorIcon::ResizeNorthWest,
+            ResizeDirection::SouthEast => CursorIcon::ResizeSouthEast,
+            ResizeDirection::SouthWest => CursorIcon::ResizeSouthWest,
+        };
+        match self {
+            LayoutHit::Bezel(d) | LayoutHit::FloatingResize { dir: d, .. } => Some(resize(*d)),
+            LayoutHit::Splitter {
+                orientation: SeparatorOrientation::Vertical,
+                ..
+            } => Some(CursorIcon::ResizeColumn),
+            LayoutHit::Splitter {
+                orientation: SeparatorOrientation::Horizontal,
+                ..
+            } => Some(CursorIcon::ResizeRow),
+            LayoutHit::Corner { .. } => Some(CursorIcon::AllScroll),
+            LayoutHit::Tab { .. }
+            | LayoutHit::TabClose { .. }
+            | LayoutHit::TabNew { .. }
+            | LayoutHit::FloatingClose(_) => Some(CursorIcon::PointingHand),
+            LayoutHit::PanelHeader(_) | LayoutHit::FloatingHeader(_) => Some(CursorIcon::Grab),
+            LayoutHit::Chrome(_) => Some(CursorIcon::Default),
+            LayoutHit::PanelBody(_)
+            | LayoutHit::FloatingBody(_)
+            | LayoutHit::EdgeGutter(_)
+            | LayoutHit::None => None,
+        }
+    }
+}
+
+/// Which chrome pipeline a window's strip uses (the library's
+/// `ChromeRenderKind` without its custom-draw escape hatch).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ChromeKind {
+    /// Tabs + drag zone + optional buttons + window controls.
+    #[default]
+    Default,
+    /// Tab strip only, no window controls.
+    Minimal,
+    /// Window controls only; everything else is the drag zone.
+    WindowControlsOnly,
+}
+
+/// One chrome tab as the hit-test sees it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ChromeTab {
+    /// Label (its length sizes the tab until measured widths exist).
+    pub label: String,
+    /// Shows a close button.
+    pub closable: bool,
+}
+
+/// What a window's chrome strip contains; set with
+/// [`LayoutCmd::SetChromeModel`], used by the LayoutEngine's chrome
+/// hit-test (and later by compose to draw the same strip).
+#[derive(Clone, Debug)]
+pub struct ChromeModel {
+    /// Pipeline.
+    pub kind: ChromeKind,
+    /// Which optional buttons are shown and where (library flags).
+    pub buttons: ChromeLayoutConfig,
+    /// Tabs, left to right.
+    pub tabs: Vec<ChromeTab>,
+}
+
+impl ChromeModel {
+    /// Field-wise equality (the library flags type has no `PartialEq`).
+    pub fn same_as(&self, other: &Self) -> bool {
+        let (a, b) = (&self.buttons, &other.buttons);
+        self.kind == other.kind
+            && self.tabs == other.tabs
+            && a.show_new_tab_btn == b.show_new_tab_btn
+            && a.show_menu_btn == b.show_menu_btn
+            && a.show_new_window_btn == b.show_new_window_btn
+            && a.show_close_window_btn == b.show_close_window_btn
+            && a.menu_left == b.menu_left
+            && a.show_maximize == b.show_maximize
+    }
+}
+
+impl Default for ChromeModel {
+    /// The default kind with the library's default button cluster, no tabs.
+    fn default() -> Self {
+        Self {
+            kind: ChromeKind::Default,
+            buttons: ChromeLayoutConfig::default(),
+            tabs: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -731,6 +900,7 @@ pub enum CadenceCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::spec::PanelHome;
     use uzor::input::{KeyCode, ModifierKeys};
     use uzor::layout::docking::DockPanel;
 
@@ -760,7 +930,7 @@ mod tests {
         type Panel = TestPanel;
         type Overlay = TestOverlay;
         type Action = TestAction;
-        fn decode_panel(_leaf: LeafId, type_id: &str) -> Option<TestPanel> {
+        fn decode_panel(_home: PanelHome, type_id: &str) -> Option<TestPanel> {
             (type_id == "test").then_some(TestPanel)
         }
     }
@@ -851,8 +1021,8 @@ mod tests {
 
     #[test]
     fn spec_decode_panel_is_the_factory() {
-        assert!(TestSpec::decode_panel(LeafId(1), "test").is_some());
-        assert!(TestSpec::decode_panel(LeafId(1), "other").is_none());
+        assert!(TestSpec::decode_panel(PanelHome::Leaf(LeafId(1)), "test").is_some());
+        assert!(TestSpec::decode_panel(PanelHome::Leaf(LeafId(1)), "other").is_none());
     }
 
     #[test]

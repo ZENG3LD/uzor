@@ -237,14 +237,17 @@ pub enum DockIntent {
     },
     /// A panel was dropped into another leaf (same or another window).
     PanelMoved {
-        /// Source window and leaf.
+        /// Source window and leaf (the leaf the drag started from; it may be
+        /// gone after the drop).
         from: (WindowId, LeafId),
-        /// Destination window and leaf.
+        /// Destination window and the leaf that holds the panel now.
         to: (WindowId, LeafId),
         /// Where it was dropped.
         zone: DropZone,
     },
-    /// A tab was torn off its leaf.
+    /// A panel was torn off its leaf: dropped where no dock target was, so
+    /// it now floats in-window (drag-out into its own OS window comes with
+    /// the drag-out brief).
     PanelTornOff {
         /// Its window.
         win: WindowId,
@@ -277,12 +280,21 @@ pub enum DockIntent {
         /// The serialized layout, for the app to store.
         blob: LayoutBlob,
     },
+    /// `LayoutCmd::RequestBlob` could not be answered.
+    LayoutBlobFailed {
+        /// Its window.
+        win: WindowId,
+        /// The request's ticket.
+        ticket: Ticket,
+        /// Why.
+        error: LayoutCodecError,
+    },
     /// `LayoutCmd::Restore` succeeded.
     LayoutRestored {
         /// Its window.
         win: WindowId,
     },
-    /// `LayoutCmd::Restore` failed; the window keeps its preset layout.
+    /// `LayoutCmd::Restore` failed; the window keeps the layout it had.
     LayoutRestoreFailed {
         /// Its window.
         win: WindowId,

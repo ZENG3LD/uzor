@@ -116,6 +116,10 @@ pub struct DockState<P: DockPanel> {
     /// How separator drags treat minimum sizes. Default
     /// [`SplitterPolicy::Cascade`] (today's behaviour).
     splitter_policy: SplitterPolicy,
+    /// Pixels kept free at the right end of every multi-tab chip bar
+    /// (room for a trailing "+" button the consumer draws). Default `0.0`:
+    /// chips share the full leaf width, as before.
+    tab_strip_reserve: f32,
 }
 
 /// Consumer drop-targeting policy. Arguments: the dragged panel, the
@@ -152,6 +156,7 @@ impl<P: DockPanel> DockState<P> {
             body_center_drop: true,
             drop_policy: None,
             splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -192,6 +197,7 @@ impl<P: DockPanel> DockState<P> {
             body_center_drop: true,
             drop_policy: None,
             splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -221,6 +227,7 @@ impl<P: DockPanel> DockState<P> {
             body_center_drop: true,
             drop_policy: None,
             splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -326,7 +333,7 @@ impl<P: DockPanel> DockState<P> {
         let tab_bar_height = self.header_height;
         let mut tab_items = Vec::new();
         let mut tab_x_offset = 0.0_f32;
-        let even_w = rect.width / leaf.panels.len().max(1) as f32;
+        let even_w = (rect.width - self.tab_strip_reserve).max(0.0) / leaf.panels.len().max(1) as f32;
 
         for (i, panel) in leaf.panels.iter().enumerate() {
             let title = panel.title();
@@ -694,6 +701,18 @@ impl<P: DockPanel> DockState<P> {
         // Commit new proportions.
         self.tree.set_branch_proportions(parent_id, new_props);
         true
+    }
+
+    /// Keep `px` free at the right end of every multi-tab chip bar (the
+    /// chips share the rest evenly); `0.0` (default) = full width. Takes
+    /// effect on the next [`layout`](Self::layout).
+    pub fn set_tab_strip_reserve(&mut self, px: f32) {
+        self.tab_strip_reserve = if px.is_finite() { px.max(0.0) } else { 0.0 };
+    }
+
+    /// Pixels kept free at the right end of multi-tab chip bars.
+    pub fn tab_strip_reserve(&self) -> f32 {
+        self.tab_strip_reserve
     }
 
     /// Current separator-drag policy.
@@ -1719,6 +1738,41 @@ impl<P: DockPanel> DockState<P> {
 
         // Apply drop
         self.apply_panel_drop(new_leaf_id, target_id, zone, is_window_edge);
+    }
+
+    /// The id the next floating window created by this state would get.
+    pub fn next_floating_id(&self) -> FloatingWindowId {
+        FloatingWindowId(self.next_floating_id)
+    }
+
+    /// Put a floating window built by the caller (a restored layout, a
+    /// panel opened straight into a float) above the layout, keeping its
+    /// id. Refused (`None`) when it has no panels or its id is already
+    /// used. Later ids are allocated past it; `active_tab` is clamped to
+    /// the panel count.
+    pub fn insert_floating(&mut self, mut window: FloatingWindow<P>) -> Option<FloatingWindowId> {
+        if window.panels.is_empty() || self.floating_windows.iter().any(|fw| fw.id == window.id) {
+            return None;
+        }
+        window.active_tab = window.active_tab.min(window.panels.len() - 1);
+        let id = window.id;
+        self.next_floating_id = self.next_floating_id.max(id.0.saturating_add(1));
+        self.floating_windows.push(window);
+        Some(id)
+    }
+
+    /// Move / resize a floating window. `false` when no window has this id.
+    pub fn set_floating_rect(&mut self, fw_id: FloatingWindowId, rect: PanelRect) -> bool {
+        match self.floating_windows.iter_mut().find(|fw| fw.id == fw_id) {
+            Some(fw) => {
+                fw.x = rect.x;
+                fw.y = rect.y;
+                fw.width = rect.width;
+                fw.height = rect.height;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Close floating window (removes it)
@@ -2915,6 +2969,68 @@ mod grid_policy_tests {
         assert!((f[0] - 450.0 / 900.0).abs() < 1e-6, "{f:?}");
         assert!((f[1] - 150.0 / 900.0).abs() < 1e-6, "{f:?}");
         assert!((f[2] - 300.0 / 900.0).abs() < 1e-6, "{f:?}");
+    }
+}
+
+#[cfg(test)]
+mod floating_and_strip_tests {
+    use super::*;
+    use crate::layout::docking::DockPanel;
+
+    #[derive(Clone)]
+    struct T(&'static str);
+    impl DockPanel for T {
+        fn title(&self) -> &str { self.0 }
+        fn type_id(&self) -> &'static str { self.0 }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    fn fw(id: u64, panels: Vec<T>, active_tab: usize) -> FloatingWindow<T> {
+        FloatingWindow::new(FloatingWindowId(id), panels, active_tab, 10.0, 20.0, 200.0, 100.0)
+    }
+
+    #[test]
+    fn insert_floating_keeps_the_id_and_allocates_past_it() {
+        let mut s = DockState::<T>::new();
+        assert_eq!(s.next_floating_id(), FloatingWindowId(1));
+        assert_eq!(s.insert_floating(fw(7, vec![T("a"), T("b")], 9)), Some(FloatingWindowId(7)));
+        assert_eq!(s.floating_windows()[0].active_tab, 1, "active tab clamped");
+        assert_eq!(s.next_floating_id(), FloatingWindowId(8));
+        // Duplicate id and empty windows are refused.
+        assert_eq!(s.insert_floating(fw(7, vec![T("c")], 0)), None);
+        assert_eq!(s.insert_floating(fw(9, vec![], 0)), None);
+        assert_eq!(s.floating_windows().len(), 1);
+        // A lower id does not move the counter back.
+        assert_eq!(s.insert_floating(fw(2, vec![T("c")], 0)), Some(FloatingWindowId(2)));
+        assert_eq!(s.next_floating_id(), FloatingWindowId(8));
+    }
+
+    #[test]
+    fn set_floating_rect_moves_and_resizes() {
+        let mut s = DockState::<T>::new();
+        s.insert_floating(fw(1, vec![T("a")], 0));
+        assert!(s.set_floating_rect(FloatingWindowId(1), PanelRect::new(1.0, 2.0, 3.0, 4.0)));
+        assert_eq!(s.floating_windows()[0].rect(), PanelRect::new(1.0, 2.0, 3.0, 4.0));
+        assert!(!s.set_floating_rect(FloatingWindowId(5), PanelRect::ZERO));
+    }
+
+    #[test]
+    fn tab_strip_reserve_leaves_room_right_of_the_chips() {
+        let mut s = DockState::<T>::with_panel(T("a"));
+        let leaf = s.tree().leaves()[0].id;
+        s.tree_mut().add_tab(leaf, T("b"));
+        s.layout(PanelRect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(s.tab_strip_reserve(), 0.0);
+        let last = &s.tab_bars()[0].tabs[1].rect;
+        assert_eq!(last.x + last.width, 400.0);
+
+        s.set_tab_strip_reserve(24.0);
+        s.layout(PanelRect::new(0.0, 0.0, 400.0, 300.0));
+        let bar = &s.tab_bars()[0];
+        assert_eq!(bar.tabs[0].rect.width, 188.0);
+        assert_eq!(bar.rect.width, 376.0);
+        s.set_tab_strip_reserve(f32::NAN);
+        assert_eq!(s.tab_strip_reserve(), 0.0);
     }
 }
 

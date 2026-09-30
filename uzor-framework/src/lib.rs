@@ -20,11 +20,11 @@
 //!
 //! ## Status
 //!
-//! Briefs F1-F4: the `types` role (the input bus, the command vocabulary,
+//! Briefs F1-F5: the `types` role (the input bus, the command vocabulary,
 //! intents, the visual snapshot, window commands, frame requests, the layout
-//! blob, the [`Spec`] vocabulary trait, engine ops / effects) and six
+//! blob, the [`Spec`] vocabulary trait, engine ops / effects) and seven
 //! engines in [`engine`] (windows, cadence + deadline wheel, animation,
-//! input, keymap, overlays). The remaining engines, kernel, handle, runtime and hosts
+//! input, keymap, overlays, layout part 1). The remaining engines, kernel, handle, runtime and hosts
 //! follow in later briefs; `Handle`, `App`, `Runtime` and the hosts named in
 //! the header above do not exist yet.
 //!
@@ -48,9 +48,10 @@ pub use types::bus::{
     WheelInput, WindowInput,
 };
 pub use types::command::{
-    AppCommand, Binding, CadenceCmd, ClipboardCmd, DockTarget, Domain, DragOutChrome,
-    DragOutPolicy, FocusCmd, KeymapCmd, KeymapScope, LayoutCmd, LayoutHit, LayoutPolicy,
-    OverlayCmd, OverlayPolicy, OverlaySize, SplitDir, SplitterPolicy, ThemeCmd, WindowCmd,
+    AppCommand, Binding, CadenceCmd, ChromeKind, ChromeModel, ChromeTab, ClipboardCmd, DockTarget,
+    Domain, DragOutChrome, DragOutPolicy, FocusCmd, KeymapCmd, KeymapScope, LayoutCmd, LayoutHit,
+    LayoutPolicy, OverlayCmd, OverlayPolicy, OverlaySize, SplitDir, SplitterPolicy, ThemeCmd,
+    WindowCmd,
 };
 pub use types::error::FrameworkError;
 pub use types::frame::{FrameRequest, RegionPlan, RegionSpec, TimerOwner, Wake, WindowSurface};
@@ -67,7 +68,7 @@ pub use types::snapshot::{
     CadenceView, ChromeView, DockView, EdgeSlotView, FloatingView, InputView, LeafView,
     OverlayView, PanelRef, SeparatorView, VisualSnapshot, WindowView,
 };
-pub use types::spec::Spec;
+pub use types::spec::{PanelHome, Spec};
 pub use types::window::{
     Attention, ClosePolicy, CursorMode, FullscreenMode, ImePurpose, Point, RenderCmd, SizePx,
     ThemeHint, WindowCommand, WindowGeometry, WindowSpec,

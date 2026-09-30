@@ -317,7 +317,7 @@ mod tests {
         type Panel = P;
         type Overlay = u8;
         type Action = u8;
-        fn decode_panel(_leaf: LeafId, _type_id: &str) -> Option<P> {
+        fn decode_panel(_home: crate::types::spec::PanelHome, _type_id: &str) -> Option<P> {
             None
         }
     }

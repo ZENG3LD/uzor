@@ -6,22 +6,25 @@
 //! These are kernel-facing, not app-facing: the app speaks
 //! [`AppCommand`](crate::AppCommand); the kernel translates it into ops.
 //! This module grows one op / effect pair per engine brief (F2: windows,
-//! cadence, animation; F3: input, keymap; F4: overlays).
+//! cadence, animation; F3: input, keymap; F4: overlays; F5: layout).
 
+use uzor::input::MouseButton;
 use uzor::layout::OverlayKind;
 use uzor::render::{InvalidateBits, TickRate};
+use uzor::widgets::composite::chrome::ChromeAction;
 use uzor::{Rect, WidgetId};
 
 use crate::types::anim::{AnimKey, AnimPolicy};
 use crate::types::bus::{
-    ClipboardResult, ImeInput, KeyInput, PointerInput, RenderInfo, WheelInput, WindowInput,
+    ClipboardResult, HostCaps, ImeInput, KeyInput, PointerInput, RenderInfo, WheelInput,
+    WindowInput,
 };
 use crate::types::command::{
-    CadenceCmd, ClipboardCmd, FocusCmd, KeymapCmd, OverlayCmd, ThemeCmd, WindowCmd,
+    CadenceCmd, ClipboardCmd, FocusCmd, KeymapCmd, LayoutCmd, OverlayCmd, ThemeCmd, WindowCmd,
 };
 use crate::types::frame::TimerOwner;
 use crate::types::ids::{OverlaySlot, RegionId, ScopeId, Seconds, Ticket, TimerToken, WindowId};
-use crate::types::intent::{CloseCause, OverlayIntent, TextIntent};
+use crate::types::intent::{CloseCause, DockIntent, OverlayIntent, TextIntent};
 use crate::types::window::{Point, RenderCmd, WindowCommand, WindowSpec};
 
 // ---------------------------------------------------------------------------
@@ -737,6 +740,113 @@ pub enum OverlayEffect<O> {
     },
     /// Repaint the window's overlay region (`GEOMETRY` after a move, resize
     /// or reclamp; `MATERIAL` after a body state change).
+    Invalidate {
+        /// The window.
+        win: WindowId,
+        /// What changed.
+        bits: InvalidateBits,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// LayoutEngine
+// ---------------------------------------------------------------------------
+
+/// A pointer event for the LayoutEngine (routing step 4 and, while the
+/// pointer is captured by `EngineTarget::Layout`, step 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DockPointer {
+    /// A press. The engine hit-tests `pos` itself (the same pure
+    /// `LayoutEngine::hit` the kernel asked to decide the routing) and
+    /// starts the session that hit implies; only the primary button starts
+    /// one.
+    Down {
+        /// Press position, window-local logical pixels.
+        pos: Point,
+        /// Which button.
+        button: MouseButton,
+    },
+    /// The pointer moved while a layout session holds it.
+    Move(Point),
+    /// The primary button was released.
+    Up(Point),
+    /// The OS took the gesture away (or the capture was lost): undo what
+    /// can be undone and end the session.
+    Cancel,
+}
+
+/// One mutation of the LayoutEngine. `P` is the app's panel type.
+#[derive(Clone, Debug)]
+pub enum LayoutOp<P> {
+    /// Start tracking a window (conducted from `WindowEffect::Created`):
+    /// empty dock, hidden chrome, no edge slots.
+    Open {
+        /// The window.
+        win: WindowId,
+        /// Host capabilities (the bezel exists only without an OS border).
+        caps: HostCaps,
+        /// The logical viewport, window-local (origin normally 0, 0).
+        viewport: Rect,
+    },
+    /// Forget a window (conducted from `WindowEffect::Closed`).
+    Close(WindowId),
+    /// A new viewport (conducted from `WindowEffect::GeometryChanged`);
+    /// the window is re-solved at once.
+    Solve {
+        /// The window.
+        win: WindowId,
+        /// The logical viewport, window-local.
+        viewport: Rect,
+    },
+    /// A pointer event (see [`DockPointer`]).
+    Pointer {
+        /// The window.
+        win: WindowId,
+        /// Host clock of the event.
+        now: Seconds,
+        /// The event.
+        event: DockPointer,
+    },
+    /// An app layout command.
+    Cmd(LayoutCmd<P>),
+}
+
+/// A consequence of a LayoutEngine op or tick.
+#[derive(Clone, Debug)]
+pub enum LayoutEffect {
+    /// A host command the kernel enqueues on the WindowEngine
+    /// (`DragWindow`, `DragResizeWindow`).
+    Window {
+        /// Target window.
+        win: WindowId,
+        /// The command.
+        cmd: WindowCommand,
+    },
+    /// A chrome control was clicked (press and release on the same
+    /// part). The kernel maps it: minimize / maximize-restore / close
+    /// window / close app to `WindowCmd`s (it reads the maximized flag from
+    /// the WindowEngine), new window to `WindowIntent::NewWindowRequested`,
+    /// menu and chrome tabs to `OverlayIntent::{ChromeControl, ChromeTab}`.
+    Chrome {
+        /// The window.
+        win: WindowId,
+        /// The library action of the clicked part.
+        action: ChromeAction,
+    },
+    /// Hold (`true`) or release the pointer for the LayoutEngine; the
+    /// kernel applies `InputOp::SetCapture` with
+    /// `Capture::Engine(EngineTarget::Layout)` (or `None`).
+    Capture {
+        /// The window.
+        win: WindowId,
+        /// Hold or release.
+        hold: bool,
+    },
+    /// A dock intent for the app (`LayoutChanged` only from `tick`,
+    /// coalesced to one per window per tick).
+    Intent(DockIntent),
+    /// Repaint the window (`GEOMETRY` for rect changes and snap-back
+    /// frames, `STRUCTURE` for tree changes, `MATERIAL` for chrome).
     Invalidate {
         /// The window.
         win: WindowId,

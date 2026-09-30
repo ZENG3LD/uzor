@@ -3,13 +3,13 @@
 //! The app asks for a blob (`LayoutCmd::RequestBlob`), receives it in
 //! `DockIntent::LayoutBlob`, stores the bytes wherever it likes and hands them
 //! back in `LayoutCmd::Restore`. The framework never writes a file. The
-//! encoder / decoder (a versioned envelope around the lib `LayoutSnapshot`)
-//! belongs to the LayoutEngine and lands with it; here the blob is only bytes.
+//! encoder / decoder (a versioned postcard envelope around the lib
+//! `LayoutSnapshot` structure plus floating windows) belongs to the
+//! LayoutEngine (`engine::layout`); here the blob is only bytes.
 
-use serde::{Deserialize, Serialize};
-use uzor::layout::docking::LeafId;
-
+use crate::types::spec::PanelHome;
 use crate::types::window::SizePx;
+use serde::{Deserialize, Serialize};
 
 /// Opaque serialized layout of one window.
 ///
@@ -71,8 +71,9 @@ pub struct WindowGeometrySnapshot {
 
 /// Why a layout blob could not be produced or restored.
 ///
-/// Carried by `DockIntent::LayoutRestoreFailed`; on failure the window keeps
-/// its preset layout, never a half-restored tree.
+/// Carried by `DockIntent::LayoutRestoreFailed` / `LayoutBlobFailed`; on a
+/// restore failure the window keeps the layout it had, never a half-restored
+/// tree.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LayoutCodecError {
     /// The blob was written by an unknown envelope version.
@@ -86,11 +87,11 @@ pub enum LayoutCodecError {
     /// The bytes are not a valid layout envelope.
     #[error("layout blob is malformed: {0}")]
     Malformed(String),
-    /// The app's panel factory returned no panel for a stored leaf.
-    #[error("no panel for leaf {leaf} with type id {type_id:?}")]
+    /// The app's panel factory returned no panel for a stored tab.
+    #[error("no panel for {home:?} with type id {type_id:?}")]
     Panel {
-        /// The leaf being restored.
-        leaf: LeafId,
+        /// Where the panel was going.
+        home: PanelHome,
         /// The stored panel type id.
         type_id: String,
     },
@@ -127,12 +128,12 @@ mod tests {
             "layout blob version 9 is not supported (expected 1)"
         );
         let e = LayoutCodecError::Panel {
-            leaf: LeafId(3),
+            home: PanelHome::Leaf(uzor::layout::docking::LeafId(3)),
             type_id: "chart".into(),
         };
         assert_eq!(
             e.to_string(),
-            "no panel for leaf Leaf(3) with type id \"chart\""
+            "no panel for Leaf(LeafId(3)) with type id \"chart\""
         );
     }
 }

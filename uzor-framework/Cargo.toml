@@ -17,6 +17,8 @@ readme = "../README.md"
 # needed by `types/` (uzor's serde derives are unconditional).
 uzor = { workspace = true }
 serde = { workspace = true }
+# Layout blob wire format (versioned envelope, §3.2.5).
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 smallvec = "1.10"
 thiserror = "1.0"
 

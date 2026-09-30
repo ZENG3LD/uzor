@@ -3,7 +3,17 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use uzor::layout::docking::{DockPanel, LeafId};
+use uzor::layout::docking::{DockPanel, FloatingWindowId, LeafId};
+
+/// Where a panel being restored from a layout blob will live: the value
+/// [`Spec::decode_panel`] is told, so the app can look up per-place state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PanelHome {
+    /// A tab of this dock leaf.
+    Leaf(LeafId),
+    /// A tab of this in-window floating window.
+    Floating(FloatingWindowId),
+}
 
 /// The three app-typed vocabularies the framework is generic over, so no
 /// string dispatch exists anywhere: dock panel values, overlay identities and
@@ -23,8 +33,9 @@ pub trait Spec: 'static {
     type Action: Copy + Eq + Hash + Debug + Send + Sync + 'static;
 
     /// Layout restore: the structure comes from the blob, the panel value from
-    /// the app. Called once per stored panel with the leaf it goes into and
-    /// the stored `DockPanel::type_id`; `None` fails the restore and the
-    /// window keeps its preset layout.
-    fn decode_panel(leaf: LeafId, type_id: &str) -> Option<Self::Panel>;
+    /// the app. Called once per stored panel with the place it goes into
+    /// (a dock leaf or a floating window) and the stored
+    /// `DockPanel::type_id`; `None` fails the restore and the window keeps
+    /// the layout it had.
+    fn decode_panel(home: PanelHome, type_id: &str) -> Option<Self::Panel>;
 }
