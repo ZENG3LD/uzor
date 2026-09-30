@@ -393,18 +393,10 @@ impl Default for LayoutPolicy {
     }
 }
 
-/// What a splitter drag does when it would violate a panel's minimum size.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum SplitterPolicy {
-    /// Reject the whole drag and spring back (today's behaviour).
-    #[default]
-    RejectSnapBack,
-    /// Stop at the limit; no child goes below `min_frac` of the branch.
-    Clamp {
-        /// Minimum child fraction of its branch, `0.0..0.5`.
-        min_frac: f64,
-    },
-}
+/// What a splitter drag does when it would violate a panel's minimum size —
+/// the library's own policy type, applied by the LayoutEngine to each
+/// window's `DockState`.
+pub use uzor::layout::docking::SplitterPolicy;
 
 /// Chrome a dragged-out panel window gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
