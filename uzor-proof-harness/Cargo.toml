@@ -38,3 +38,4 @@ metrics = "0.24"
 
 [dev-dependencies]
 uzor-figures = { workspace = true }
+uzor-graph = { workspace = true }

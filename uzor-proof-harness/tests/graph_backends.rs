@@ -30,7 +30,7 @@
 //! world-frame-vs-local-frame `then_*`/`pre_*` fix (see that test's own
 //! doc comment).
 //!
-//! Run: `cargo test -p uzor-graph --test five_leg_render -- --nocapture`
+//! Run: `cargo test -p uzor-proof-harness --test graph_backends -- --nocapture`
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -70,11 +70,7 @@ fn viewport() -> Rect {
 }
 
 fn out_dir() -> PathBuf {
-    // Fixed path (not CARGO_MANIFEST_DIR-relative) — `uzor/out/` is the
-    // shared human-eyeball drop point for every headless proof render in
-    // this workspace (same convention `uzor-figures`/`uzor-graph`'s own
-    // existing `proof_tests` modules use).
-    PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("graph-proof-out")
 }
 
 fn fill_background(ctx: &mut dyn RenderContext) {
