@@ -3,6 +3,7 @@ name        = "uzor-urx-cpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX CPU backend — own scanline rasteriser. Consumes urx-core DrawCommand, outputs premultiplied RGBA8 Pixmap. No tiny_skia/vello_cpu dep (math too buggy, write own)."
@@ -42,7 +43,6 @@ tiny-skia  = "0.11"
 
 [[bench]]
 name = "render"
-authors.workspace = true
 harness = false
 
 [[bench]]

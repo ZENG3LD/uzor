@@ -3,6 +3,7 @@ name        = "uzor-urx-wgpu-full"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX full-GPU compute pipeline backend — encodes scene to GPU buffer, tile-bins via compute dispatch, sorts per-tile, rasterises via PTCL fragment pass. Sibling to urx-cpu / urx-hybrid / urx-wgpu (instanced)."
@@ -24,7 +25,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 [[example]]
 name = "tile_bin_demo"
-authors.workspace = true
 
 [[example]]
 name = "pixel_render_demo"

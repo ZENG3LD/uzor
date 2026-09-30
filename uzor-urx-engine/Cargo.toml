@@ -3,6 +3,7 @@ name        = "uzor-urx-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX engine — cross-backend façade with per-region dirty tracking, needs_paint() cadence hook, RenderCadence policy. Consumes urx-core Scene + DirtyState; dispatches to urx-cpu / urx-wgpu / urx-hybrid."
@@ -43,7 +44,6 @@ serde_json = "1"
 
 [[example]]
 name = "backend_auto_demo"
-authors.workspace = true
 
 [[example]]
 name = "runtime_backend_switch"

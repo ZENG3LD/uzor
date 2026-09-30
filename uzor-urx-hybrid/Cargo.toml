@@ -3,6 +3,7 @@ name        = "uzor-urx-hybrid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX Hybrid backend — CPU rasterises static/cacheable regions to pixmaps, uploads to wgpu textures, GPU composites everything in one pass. Marries urx-cpu (rasteriser) + urx-wgpu (compositor)."
@@ -26,7 +27,6 @@ criterion = "0.5"
 
 [[bench]]
 name = "hybrid"
-authors.workspace = true
 harness = false
 
 [[bench]]

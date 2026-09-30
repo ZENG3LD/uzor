@@ -3,6 +3,7 @@ name        = "uzor-urx-3d"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX 3D rendering backend — native XYZ coordinate system, vertex/index buffers, perspective camera, depth-tested raster pipeline. Sibling to URX 2D (urx-wgpu-full); they coexist via off-screen render-to-texture bridges."
@@ -27,7 +28,6 @@ uzor-urx-physics = { workspace = true }
 
 [[example]]
 name = "spinning_cube_demo"
-authors.workspace = true
 
 [[example]]
 name = "studio_demo"
