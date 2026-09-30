@@ -144,7 +144,7 @@ mod proof_tests {
         // Fixed path per task spec (not CARGO_MANIFEST_DIR-relative) —
         // `uzor/out/` is the shared human-eyeball drop point for every
         // headless proof render in this workspace.
-        PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+        PathBuf::from(std::env::var_os("UZOR_PROOF_OUT").unwrap_or_else(|| std::env::temp_dir().join("uzor-proof-out").into_os_string()))
     }
 
     fn write_proof_png(name: &str, bytes: &[u8]) {

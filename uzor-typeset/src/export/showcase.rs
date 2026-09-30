@@ -76,7 +76,7 @@ const TABLE_HEADER_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_
 const TABLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 12.0, bold: false, italic: false };
 
 fn out_dir() -> PathBuf {
-    PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+    PathBuf::from(std::env::var_os("UZOR_PROOF_OUT").unwrap_or_else(|| std::env::temp_dir().join("uzor-proof-out").into_os_string()))
 }
 
 fn write_proof(name: &str, bytes: &[u8]) {

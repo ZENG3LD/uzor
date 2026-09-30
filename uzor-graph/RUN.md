@@ -12,7 +12,7 @@ the owner runs/visually verifies the desktop app.
 ## Launch
 
 ```
-cd "C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor"
+cd <uzor repo root>
 cargo run -p uzor-examples --bin force-graph-demo
 ```
 
