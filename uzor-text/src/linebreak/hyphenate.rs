@@ -8,8 +8,7 @@
 //! superseded now by [`hypher`], Typst's own hyphenator: a byte-trie finite
 //! automaton compiled at hypher's OWN build time from the real hyph-utf8
 //! pattern corpus, covering ~48 permissively-licensed languages (English,
-//! Russian, German, ... — see `nemo/docs/uzor-engines/
-//! research_typesetting_sota_2026.md` §2/§8). `ru`/`en`/`de` are all present
+//! Russian, German, ...). `ru`/`en`/`de` are all present
 //! in hypher's own shipped feature set (confirmed directly against its
 //! `Cargo.toml` — no fallback vendoring needed, no missing-language gap).
 //! No hand-rolled pattern table remains in this file.

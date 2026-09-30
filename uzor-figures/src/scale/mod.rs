@@ -195,8 +195,7 @@ pub trait Scale {
     /// it.
     ///
     /// This is also the seam a future `ScaleMode` (Manual/Auto/Focus
-    /// runtime auto-range policy — `nemo/docs/uzor-engines/plans/
-    /// engine-strengthening-arc-2026-07-24.md` Wave 3, NOT built yet) is
+    /// runtime auto-range policy — NOT built yet) is
     /// expected to reuse: resolving "what scale should this frame actually
     /// render with" is the SAME "rebuild this scale's own kind over a
     /// different `(min, max)`" operation whether the new bounds came from

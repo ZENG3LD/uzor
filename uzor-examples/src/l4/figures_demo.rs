@@ -3,8 +3,7 @@
 //! Renders three deterministic, seeded synthetic datasets through the
 //! three `uzor-figures` figures (`BarFigure`, `CurveFigure`,
 //! `HistogramFigure`) inside a real uzor window, and wires the V2
-//! interaction plane (`nemo/docs/uzor-engines/uzor_figures_engine_architecture.md`
-//! §3 `interact/` block): hover a bar or a point on the curve for a
+//! interaction plane (the `uzor_figures::interact` module): hover a bar or a point on the curve for a
 //! tooltip, drag on the curve panel to brush an X range — the brush
 //! interval LINKS to the histogram panel, which highlights bins whose
 //! domain-X overlaps it (a miniature of the report's #2<->#5 shared-

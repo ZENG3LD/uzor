@@ -11,12 +11,12 @@
 //! continuous-[`crate::scale::color::ColorScale`] counterpart of `legend`
 //! — same measure-before-layout discipline, a gradient swatch instead of
 //! a discrete list. `labeler` is the harvested bitmap-occupancy 2D label
-//! placer (research doc §2, arXiv 2405.10953) — a generalization of
+//! placer (arXiv 2405.10953) — a generalization of
 //! `axis`'s own 1D skip-only greedy collision to arbitrary screen-space
 //! label rects, used by [`crate::figure::TimelineFigure`]'s point labels
 //! and exposed generically for future figures. `wrap` is a small, pure,
-//! measure-fn-driven word-wrap + ellipsis-truncate utility lifted from
-//! `foxhound-app-shell-native` (see that module's own doc comment) --
+//! measure-fn-driven word-wrap + ellipsis-truncate utility (see that
+//! module's own doc comment) --
 //! feeds pre-wrapped lines to `tooltip::draw_tooltip` or any other
 //! multi-line text layout. `text_protect` is the small `plate`/`halo`
 //! label-readability primitive pair (typography-gap follow-up, see that

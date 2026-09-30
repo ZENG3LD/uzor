@@ -3,7 +3,7 @@
 //! actually wired to the widget's input registration
 //! (`register_context_manager_tooltip` calls it directly, `input.rs`) — the
 //! other two entry points, `draw_chrome_tooltip` and `draw_crosshair_tooltip`,
-//! are separate mlc-parity variants used by other call sites (`uzor-figures`
+//! are separate MLC parity variants used by other call sites (`uzor-figures`
 //! guides), not this atomic widget's own registered path.
 //!
 //! `draw_tooltip` draws bg + text always, plus a border stroke whenever

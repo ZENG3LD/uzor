@@ -7,7 +7,7 @@
 //! sparkline convention). Sized to sit in a dashboard grid — a caller
 //! composes a "KPI row" by placing several `KpiFigure`s at their own
 //! sub-rects (this crate's own figures are always single-widget; see
-//! `nemo/uzor-typeset`'s showcase for a real multi-tile row via a table of
+//! `uzor-typeset`'s showcase for a real multi-tile row via a table of
 //! `Block::Figure` cells).
 
 use uzor::render::{RenderContext, TextAlign, TextBaseline};

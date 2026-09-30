@@ -3,8 +3,7 @@
 //!
 //! A scene of [`Block`]s is composed (flow layout through
 //! [`RegionSequence`]s) and then sliced into pages | slides | frames — a
-//! deck is a slicing target, not a sibling engine
-//! (`nemo/docs/uzor-engines/uzor_typeset_arc4_design.md` §1). This crate
+//! deck is a slicing target, not a sibling engine. This crate
 //! owns composition and slicing only: it does not shape glyphs (that's
 //! `uzor-text`), does not compute scales/marks (`uzor-figures`), does not
 //! rasterize or assemble files (`uzor-export`), and holds no

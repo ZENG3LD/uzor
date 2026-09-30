@@ -4,8 +4,7 @@
 //! instead of rasterizing draw calls into a pixmap, it SERIALIZES them into
 //! a standalone, portable SVG document string ([`SvgRenderContext::finish`])
 //! — real vector paths, outlined text (via [`uzor::shaper::text_to_path`],
-//! fidelity-first per `nemo/docs/uzor-engines/research_export_sota_2026.md`
-//! §6's own verdict) plus an invisible companion `<text>` element so the
+//! fidelity-first: glyph outlines render identically everywhere) plus an invisible companion `<text>` element so the
 //! document stays searchable/selectable, and raster images embedded as
 //! base64 PNG `<image>` elements.
 //!

@@ -1,6 +1,5 @@
 //! Table-of-contents generation — document-navigation feature pass
-//! (`nemo/docs/uzor-engines/research_typesetting_sota_2026.md`'s
-//! counter-introspection item, §1/top-10 #9: "counter introspection as
+//! ("counter introspection as
 //! multi-pass fixpoint over a location index ... powers counters/TOC/
 //! cross-refs uniformly"). This module owns exactly the TOC half of that
 //! item: [`OutlineEntry`](crate::slice::OutlineEntry) collection already

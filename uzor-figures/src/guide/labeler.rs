@@ -1,7 +1,6 @@
 //! Bitmap-occupancy label placement — port of the "Legible Label Layout"
 //! algorithm (arXiv 2405.10953, integrated as Vega-Lite's `label`
-//! encoding channel; see
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §2). A coarse
+//! encoding channel). A coarse
 //! occupancy grid over a plot rect tracks which screen-space cells are
 //! already claimed (by marks, or by previously-placed labels); each
 //! label tries an ordered list of candidate rects and claims the FIRST

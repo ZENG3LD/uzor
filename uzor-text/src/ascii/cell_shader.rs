@@ -5,7 +5,6 @@
 //! Ported from **ertdfgcvb/play.core** (the engine model: boot/pre/main/post,
 //! SDF shapes → character density), with the glitch / hover-radius patterns from
 //! **hsrambo07/hover-effects** (sine-glitch + stochastic swaps + cursor mask).
-//! See `nemo/docs/mirage/research/pretext-canvas-text-engine.md`.
 //!
 //! Rendering: `AsciiGrid::step` runs the shader into a flat buffer; `render`
 //! draws the buffer through any [`RenderContext`]. Shapes are signed-distance
@@ -14,8 +13,7 @@
 //! filled with characters this way — letters (the menu "M"), the bloom, etc.
 //!
 //! Moved verbatim from `uzor` core (`uzor::ui::effects::text::cell_shader`)
-//! as Arc 2 Phase 4's hard cutover
-//! (`nemo/docs/uzor-engines/uzor_text_arc2_design.md` §4) — algorithm unchanged,
+//! as Arc 2 Phase 4's hard cutover — algorithm unchanged,
 //! only the `RenderContext`/`TextAlign`/`TextBaseline` import moved from
 //! `crate::render` (uzor core, in-crate) to `uzor::render` (this crate
 //! consumes uzor core as a dependency). [`super::ParagraphAsciiShader`] is

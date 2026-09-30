@@ -1283,9 +1283,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     /// once focus returns AND the app still requests `LockedHidden`.
     /// Every uzor app that requests `LockedHidden` gets this guarantee
     /// for free instead of having to reimplement its own focus-tracking
-    /// release dance (see `nemo/docs/uzor-engines/research_foxhound_lift_candidates.md`
-    /// §4 — `foxhound-app-shell-native`'s own `ViewportCursorState` did
-    /// exactly this app-side, by omission rather than by design).
+    /// release dance (apps that track cursor-lock state themselves tend to
+    /// get this right only by omission rather than by design).
     #[cfg(not(target_arch = "wasm32"))]
     fn sync_cursor_capture(&mut self, id: winit::window::WindowId) {
         use winit::window::CursorGrabMode;

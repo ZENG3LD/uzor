@@ -4,7 +4,7 @@
 //! headless discipline `uzor-figures`' own `proof_tests` module uses
 //! (deterministic fixtures, `uzor-export` for headless rasterization),
 //! plus a "not just a flat background" pixel check this task's own gate
-//! asks for. Every PNG is ALSO written to `nemo/uzor/out/registry_
+//! asks for. Every PNG is ALSO written to `$UZOR_PROOF_OUT/registry_
 //! <kind>.png` for a human to eyeball.
 
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ fn assert_non_blank_png(bytes: &[u8], expected_dims: (u32, u32)) {
 }
 
 /// Parse `json`, render it at the shared proof resolution, assert a
-/// non-blank PNG, and write it to `nemo/uzor/out/<name>`.
+/// non-blank PNG, and write it to `$UZOR_PROOF_OUT/<name>`.
 fn parse_render_and_prove(json: &str, name: &str) {
     let spec = parse_spec(json).expect("authored spec JSON must parse");
     let theme = FigureTheme::dark();

@@ -1,11 +1,9 @@
-//! Neutral PDF assembly — Arc 4 Phase P5 (`nemo/docs/uzor-engines/
-//! uzor_typeset_arc4_design.md` §6), overhauled per the export SOTA
-//! research pass (`nemo/docs/uzor-engines/research_export_sota_2026.md`,
-//! items 1-4). This module defines an **engine-agnostic** content model +
+//! Neutral PDF assembly — Arc 4 Phase P5, overhauled per an export SOTA
+//! research pass. This module defines an **engine-agnostic** content model +
 //! builder for a hybrid-fidelity PDF (real, selectable/searchable/
 //! **full-Unicode** vector text + one full-page raster background per
 //! page); it holds no `uzor-text`/`uzor-figures`/`uzor-typeset` knowledge
-//! whatsoever (design law 9 / §6.1's dependency-boundary constraint) — the
+//! whatsoever (dependency-boundary constraint) — the
 //! adapter that knows `Page`/`ParagraphLayout` lives in
 //! `uzor-typeset::export` instead, and calls exactly the same public
 //! surface as before this pass (this rewrite is a drop-in replacement:

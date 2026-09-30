@@ -1,9 +1,6 @@
 //! Interaction plane — V2 milestone. Harvested from `mylittlechart`'s
-//! input pipeline (`engine/input/**`, `nemo/docs/uzor-engines/
-//! mlc_harvest_inventory.md` §4) and `uzor-graph`'s `FocusSet`
-//! (`uzor-graph/src/interaction/focus.rs`), generalized: see
-//! `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (`interact/`
-//! block) and §4 (design laws).
+//! input pipeline and `uzor-graph`'s `FocusSet`
+//! (`uzor-graph/src/interaction/focus.rs`), generalized.
 //!
 //! Shape kept from mlc: **input action (semantic) -> small per-concern
 //! handler -> output action**. Dropped: one monolithic

@@ -1,12 +1,10 @@
-//! ASCII cell-shader mode (Arc 2 Phase 4 of
-//! `nemo/docs/uzor-engines/uzor_text_arc2_design.md`) — a character-grid
+//! ASCII cell-shader mode (Arc 2 Phase 4) — a character-grid
 //! per-cell-shader engine, absorbed **verbatim** from `uzor` core
-//! (`uzor::ui::effects::text::cell_shader`, hard cutover, §4 Phase 4: no
+//! (`uzor::ui::effects::text::cell_shader`, hard cutover: no
 //! compat shim left behind in core).
 //!
 //! Re-exports the identical public surface `cell_shader.rs` shipped in
-//! core, unchanged down to symbol names (this phase's two live consumers,
-//! `mirage2app`'s `AuroraSkin`/`RadarSkin` centerpiece scenes, only needed a
+//! core, unchanged down to symbol names (existing consumers only needed a
 //! `use` path change, never a rename): [`AsciiGrid`], [`CellShader`],
 //! [`Cell`], [`Coord`], [`Cursor`], [`GridContext`], [`GlitchLetter`],
 //! [`density_char`], [`hsl`], [`sd_box`], [`sd_circle`], [`DENSITY`].

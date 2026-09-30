@@ -3,8 +3,7 @@
 //!
 //! Reuses `uzor::ui::animation::math::color::Color` verbatim — this OKLCH
 //! lerp machinery already exists in uzor core (`Color::lerp_oklch`,
-//! `Color::to_hex`/`Color::from_hex`), per
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §5: interpolating
+//! `Color::to_hex`/`Color::from_hex`): interpolating
 //! straight-line in `L`/`C`/`H` avoids the classic "muddy midpoint" RGB
 //! gradients produce (e.g. red->green through RGB passes through a dull
 //! brown; through OKLCH it stays a clean, evenly-bright arc). No color math

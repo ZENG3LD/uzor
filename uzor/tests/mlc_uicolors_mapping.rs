@@ -3,7 +3,7 @@
 //! the `UIColors` → token path table in the design doc's §4.
 //!
 //! Source of truth is MLC's `UIColors` AT A COMMIT, never MLC's working
-//! copy: `git -C mylittlechart show <commit>:crates/mlc-core/src/theme/preset.rs`,
+//! copy: MLC's theme `preset.rs` at
 //! commit `05b0e1cf6776e9ea8941337bbffbdada65ee7728` (`main`, read
 //! 2026-09-24). `UIColors` struct: `preset.rs:872-907`. Constructors:
 //! `UITheme::dark()` `preset.rs:989`, `::light()` `:1067`,

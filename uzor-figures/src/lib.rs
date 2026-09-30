@@ -9,18 +9,15 @@
 //! semantic input/output actions, hit-testing, hover/selection state, a 1D
 //! brush, and a cross-figure selection bus.
 //!
-//! See `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (crate
-//! layout) and §4 (design laws). V1 harvested scales/coord/marks/axes from
-//! `mylittlechart`'s chart-engine machinery per
-//! `nemo/docs/uzor-engines/mlc_harvest_inventory.md` §2; V2 harvests the input
-//! pipeline (§4) and promotes `uzor-graph`'s `FocusSet` — see
+//! V1 harvested scales/coord/marks/axes from
+//! `mylittlechart`'s chart-engine machinery; V2 harvests the input
+//! pipeline and promotes `uzor-graph`'s `FocusSet` — see
 //! [`mod@interact`]'s module docs for exactly what was generalized/dropped.
 //! V4 (`scale::color`, `figure::{pie, waterfall, heatmap}`,
 //! `guide::colorbar`) is the business-chart set — reuses
 //! `uzor::ui::animation::math::color::Color`'s existing OKLCH lerp
 //! machinery verbatim (no color math reimplemented) and bakes in the FT/
-//! Economist chart-hygiene defaults from
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6.
+//! Economist chart-hygiene defaults.
 //!
 //! **NOT in this crate yet** (later milestones — do not add here without a
 //! plan doc):

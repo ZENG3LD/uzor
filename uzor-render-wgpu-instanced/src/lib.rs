@@ -28,9 +28,9 @@
 //! - `uzor-examples::urx-smoke-instanced` — A/B/C/D backend-bench demo.
 //! - `uzor-tessera::stage2-demo` — same backend-bench pattern
 //!   (`canvas2d_instanced_wgpu` button).
-//! - `mylittlechart::mlc-app-render-context-instanced` (+ direct usage in
-//!   `mlc-app-shell-vello`'s own GPU-thread render path) — a real product
-//!   consumer, external to this workspace.
+//! - `mylittlechart` (an instanced render context + direct usage in its
+//!   GPU-thread render path) — a real product consumer, external to this
+//!   workspace.
 //!
 //! ## Usage
 //!

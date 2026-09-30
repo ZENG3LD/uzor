@@ -187,7 +187,7 @@ re-settle around it, then freeze again on release.
 
 ## What's explicitly deferred (see in-tree comments)
 
-- **Porting the Foxhound transaction-flow app onto this engine** — separate
+- **Porting a domain-specific consumer app onto this engine** — separate
   consumer work; this crate has zero forensic/case-specific types by
   design.
 - **3D** — 2D only, per the engine design doc.

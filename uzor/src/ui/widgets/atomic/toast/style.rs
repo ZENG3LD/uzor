@@ -51,7 +51,7 @@ pub trait ToastStyle {
     fn radius(&self) -> f64;
     fn icon_size(&self) -> f64;
     fn font_size(&self) -> f64;
-    /// Kept for API compatibility; unused by the mlc-parity render path.
+    /// Kept for API compatibility; unused by the MLC parity render path.
     fn fade_duration_ms(&self) -> u32;
 }
 
@@ -76,7 +76,7 @@ impl ToastStyle for DefaultToastStyle {
     fn font_size(&self) -> f64 {
         11.0
     }
-    /// Not used by the mlc-parity fade path. Kept for settings compatibility.
+    /// Not used by the MLC parity fade path. Kept for settings compatibility.
     fn fade_duration_ms(&self) -> u32 {
         0
     }

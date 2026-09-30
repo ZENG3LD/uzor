@@ -1,5 +1,4 @@
-//! Per-font glyph-set collection + subsetting (research doc §1/§3,
-//! `nemo/docs/uzor-engines/research_export_sota_2026.md`). `subsetter`
+//! Per-font glyph-set collection + subsetting. `subsetter`
 //! (`typst/subsetter`, same author/lineage as `pdf-writer` itself) takes an
 //! ALREADY-KNOWN glyph-id set — [`super::ttf::TtfMetrics`] is what actually
 //! discovers that set from the document's own text (its `cmap` reader now

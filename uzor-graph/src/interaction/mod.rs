@@ -1,7 +1,7 @@
 //! Interaction layer — node pick/drag, hover-neighborhood focus, and
 //! [`fly::FlyController`] (generic WASD/arrow-key + captured-mouse fly
-//! navigation over [`crate::camera3d::Camera3D`], lifted from
-//! `foxhound-app-shell-native` — see that module's own doc comment).
+//! navigation over [`crate::camera3d::Camera3D`] — see that module's own
+//! doc comment).
 //!
 //! `FocusSet` is re-pointed onto `uzor_figures::interact::FocusSet`
 //! (Phase D, 2026-07-17) — this crate no longer owns a fork. `NodeIndex`/

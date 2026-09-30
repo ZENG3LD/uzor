@@ -1,12 +1,9 @@
 //! Generic named-stage frame profiler + the shared EMA helper it (and
 //! `uzor-desktop::Manager`'s own whole-frame `fps_ema`) build on.
 //!
-//! Lifted from `foxhound-app-shell-native`'s own `FrameProfile`
-//! (`nemo/foxhound/crates/foxhound-app-shell-native/src/main.rs` —
-//! per-frame `Instant`-bracketed stage timings, EMA-smoothed, published
-//! as JSON over its own `BlackboxAgentSurface::agent_state()` at
-//! `"frame_profile_ema_ms"`; see
-//! `nemo/docs/uzor-engines/research_foxhound_lift_candidates.md` §1). The
+//! Lifted from an app-side `FrameProfile` (per-frame
+//! `Instant`-bracketed stage timings, EMA-smoothed, published as JSON
+//! over the app's agent surface at `"frame_profile_ema_ms"`). The
 //! *stage names* there (`snapshot_sync`, `grid`, `guides`, ...) were
 //! 100% app-specific; the *mechanism* — bracket named stages, EMA-smooth
 //! each one independently, publish as a map — is fully generic, so stage

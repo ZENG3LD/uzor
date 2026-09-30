@@ -554,8 +554,7 @@ impl NavModeState {
 }
 
 /// Fly-mode mouse-look sub-state (owner order 2026-07-19: "прицел и
-/// сброс прицела по МКМ") — the foxhound source app's own "MMB CLICK:
-/// CURSOR / LOOK" toggle, which the original lift skipped. While ON (the
+/// сброс прицела по МКМ") — a "MMB CLICK: CURSOR / LOOK" toggle. While ON (the
 /// default whenever fly mode is entered) the app requests
 /// `CursorCaptureMode::LockedHidden`, `PointerDelta` drives free look,
 /// and the overlay paints a center crosshair; a middle-click flips it
@@ -679,8 +678,7 @@ impl SurfaceSizeState {
 
 /// Center crosshair painted into the 3D overlay while fly-mode
 /// mouse-look is active (owner order 2026-07-19) — the captured-cursor
-/// aim marker, the foxhound source app's own convention (its HUD's
-/// "MMB CLICK: CURSOR / LOOK" pairing). Four short bars around a small
+/// aim marker (paired with the "MMB CLICK: CURSOR / LOOK" toggle). Four short bars around a small
 /// center gap plus a center dot, drawn with plain `fill_rect` (no
 /// stroke-path machinery needed for axis-aligned bars); light gray at
 /// partial alpha so it reads over both the dark background and a bright
@@ -701,11 +699,11 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
     ctx.set_global_alpha(1.0);
 }
 
-// ── Control HUD (owner defect fix — foxhound-style control panel) ───────
+// ── Control HUD (owner defect fix — control panel) ──────────────────────
 //
 // Owner report: this demo was an agent-api test stand with nothing for a
 // human — no dimension hotkey, no toggles/menu. This section builds a
-// left/sidebar control panel mirroring `foxhound-app-shell-native`'s own
+// left/sidebar control panel with a conventional
 // HUD structure (title, FIXTURE/NAVIGATION button rows, SENSITIVITY
 // sliders, MOUSE legend, STATUS line) at the APP level — `uzor-graph`
 // itself gains no new API.
@@ -853,9 +851,8 @@ struct HudButtonRect {
 }
 
 /// One laid-out sensitivity slider — `track` is the thin visual bar,
-/// `hit` a taller (18px) surrounding hit-test band around it (matching
-/// the foxhound reference app's own `TOOLBAR_SLIDER_HIT_HEIGHT`
-/// convention — a bare 4px track would be nearly unclickable).
+/// `hit` a taller (18px) surrounding hit-test band around it (a bare 4px
+/// track would be nearly unclickable).
 struct HudSliderRect {
     id: HudSliderId,
     track: Rect,
@@ -875,8 +872,7 @@ struct HudLayout {
     headings: Vec<(&'static str, f64)>,
     buttons: Vec<HudButtonRect>,
     sliders: Vec<HudSliderRect>,
-    /// `(input label, action label, y)` — mirrors the foxhound
-    /// reference app's own two-column `draw_toolbar_hint` convention.
+    /// `(input label, action label, y)` — a two-column input/action hint.
     legend: Vec<(&'static str, &'static str, f64)>,
     /// y of the FIRST status text line; each subsequent line advances by
     /// [`HUD_TEXT_LINE_H`]. Exactly [`HUD_STATUS_LINE_COUNT`] lines are
@@ -922,8 +918,8 @@ struct HudSnapshot {
 /// Build the panel's full layout at `(origin_x, origin_y)` with content
 /// `width` — the ONE function both painting (`draw_hud_static`/
 /// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
-/// drawn and clickable geometry can never drift apart. Section order
-/// mirrors the foxhound reference app's own HUD: FIXTURE (4
+/// drawn and clickable geometry can never drift apart. Section order:
+/// FIXTURE (4
 /// buttons, always), LAYOUT (ONLY [`available_layout_kinds`]'s modes for
 /// the current fixture — tree/hierarchy get FORCE/LAYERED/RADIAL,
 /// clusters/sparse get FORCE alone; re-clicking the ACTIVE button
@@ -1544,8 +1540,7 @@ struct DemoApp {
     /// doc comment already established for the 3D viewport case.
     last_sidebar_body: Rect,
     /// Which HUD button is currently pressed (`PointerDown` matched, not
-    /// yet released) — mirrors the foxhound reference app's own
-    /// press-then-release-confirm button convention (`pressed_control`):
+    /// yet released) — press-then-release-confirm button convention:
     /// the action only actually fires on `PointerUp` if the cursor is
     /// STILL over the same button, so a drag-off cancels the click.
     hud_pressed_button: Option<HudControl>,
@@ -1805,9 +1800,8 @@ impl DemoApp {
                     return true;
                 }
             }
-            // Owner order 2026-07-19 — the foxhound source app's own
-            // "MMB CLICK: CURSOR / LOOK" mechanic the original lift
-            // skipped: a middle-click toggles mouse-look (crosshair +
+            // Owner order 2026-07-19 — the "MMB CLICK: CURSOR / LOOK"
+            // mechanic: a middle-click toggles mouse-look (crosshair +
             // captured cursor <-> ordinary free cursor). Both halves of
             // the click are consumed so the middle-drag PAN gesture the
             // 3D engine would otherwise start can never fire while
@@ -1982,10 +1976,9 @@ impl DemoApp {
     /// from box-select origination" as the exact SAME mechanism — a
     /// box-select can only ever START from a `PointerDown` the graph
     /// engine actually sees, which a panel-consumed `PointerDown` never
-    /// reaches). Mirrors the foxhound reference app's own press-then-
-    /// release-confirm button convention (a drag-off before release
-    /// cancels the click) and its own live slider-drag-follows-the-
-    /// cursor convention. Returns `Some(consumed)` once this event is
+    /// reaches). Uses a press-then-release-confirm button convention (a
+    /// drag-off before release cancels the click) and a live
+    /// slider-drag-follows-the-cursor convention. Returns `Some(consumed)` once this event is
     /// fully handled by the HUD; `None` means "not the HUD's concern,
     /// let the caller's existing dispatch run."
     fn on_event_hud(&mut self, event: &PlatformEvent) -> Option<bool> {
@@ -2043,8 +2036,7 @@ impl DemoApp {
     }
 
     /// Drive a sensitivity slider from a pointer x position (start-drag
-    /// or continued-drag alike) — mirrors the foxhound reference app's
-    /// own `apply_slider_at`.
+    /// or continued-drag alike).
     fn apply_hud_slider(&mut self, id: HudSliderId, x: f64, track: Rect) {
         let t = (((x - track.x) / track.width) as f32).clamp(0.0, 1.0);
         let mut fly = Self::lock_fly(&self.fly);
@@ -2233,8 +2225,8 @@ impl BlackboxAgentSurface for DemoBlackbox {
                     }),
                 );
             }
-            // 2026-07-22 (3D-parity-arc tail) — same field name the
-            // foxhound source app's own `FrameProfile` publishes under
+            // 2026-07-22 (3D-parity-arc tail) — same field name
+            // `FrameProfiler` publishes under
             // (`uzor::framework::frame_profiler::FrameProfiler::to_json`'s
             // own doc comment), reported unconditionally like `fixture`/
             // `nav_mode`/`grid` above: `scene3d()` only ever records into
@@ -2914,7 +2906,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let mut engine3d = Self::lock3d(&self.engine3d);
         // 2026-07-22 (3D-parity-arc tail) — `Instant`-bracket `tick`/
         // `build_scene` independently and feed both into `frame_profiler`,
-        // mirroring foxhound's own `FrameProfile` stage-naming
+        // using `FrameProfiler`'s stage-naming
         // (`uzor::framework::frame_profiler`'s own module doc).
         let tick_started = std::time::Instant::now();
         engine3d.tick(dt);

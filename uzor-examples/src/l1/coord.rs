@@ -280,7 +280,7 @@ impl AppState {
         self.button.update_from_responses(&responses);
         self.button.set_pressed(self.button_down);
 
-        // ── 6. Submit to GPU via vello (mlc-style two-step) ───────────────────
+        // ── 6. Submit to GPU via vello (two-step) ────────────────────────────
         //
         // Step A: render scene → off-screen Rgba8Unorm `target_view` (owned
         //         by RenderSurface, format matches vello's compute shaders).
