@@ -3,6 +3,7 @@ name        = "uzor-urx-wgpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX WGPU backend — consumes urx-core DrawCommand, dispatches to instanced-WGPU primitive pipelines (Quad SDF + Line capsule + Triangle + Text atlas). Wraps uzor-render-wgpu-instanced (the existing well-tested primitive crate) with the URX scene-consumer API + URX metrics."

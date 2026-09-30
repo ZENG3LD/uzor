@@ -3,6 +3,7 @@ name        = "uzor-urx-image"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX image registry — opaque ImageId -> decoded premul RGBA8 bytes, shared canonical store consumed by every URX backend. No per-backend fork of ID allocation."

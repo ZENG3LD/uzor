@@ -42,6 +42,7 @@ tiny-skia  = "0.11"
 
 [[bench]]
 name = "render"
+authors.workspace = true
 harness = false
 
 [[bench]]

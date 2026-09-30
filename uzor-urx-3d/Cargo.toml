@@ -27,6 +27,7 @@ uzor-urx-physics = { workspace = true }
 
 [[example]]
 name = "spinning_cube_demo"
+authors.workspace = true
 
 [[example]]
 name = "studio_demo"

@@ -43,6 +43,7 @@ serde_json = "1"
 
 [[example]]
 name = "backend_auto_demo"
+authors.workspace = true
 
 [[example]]
 name = "runtime_backend_switch"

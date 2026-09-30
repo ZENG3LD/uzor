@@ -3,6 +3,7 @@ name        = "uzor-urx-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX render-family core types: DrawCommand scene, DirtyState, CacheKey, SkeletonFrame, metrics facade. Shared by uzor-urx-wgpu, uzor-urx-cpu, uzor-urx-hybrid."

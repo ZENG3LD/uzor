@@ -1,10 +1,11 @@
 [package]
 name = "uzor-urx-physics"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Lightweight 3D physics (AABB/sphere colliders + simple Verlet rigid bodies) for the URX render family."
-repository = "https://github.com/uzor-team/uzor"
+repository.workspace = true
 keywords = ["physics", "collision", "3d", "uzor", "urx"]
 categories = ["game-development", "graphics"]
 

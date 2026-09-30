@@ -26,6 +26,7 @@ criterion = "0.5"
 
 [[bench]]
 name = "hybrid"
+authors.workspace = true
 harness = false
 
 [[bench]]

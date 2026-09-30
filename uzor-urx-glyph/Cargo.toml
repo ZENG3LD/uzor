@@ -3,6 +3,7 @@ name        = "uzor-urx-glyph"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "URX glyph atlas + rasteriser. swash-based monochrome (R8) and colour (RGBA8) glyph caches keyed by (FontId, glyph_id, px_size_x64, subpx_bin). No cosmic-text dep — caller pre-shapes; this crate only rasterises."

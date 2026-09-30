@@ -1,5 +1,6 @@
 [package]
 name = "uzor-render-vello-gpu"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true

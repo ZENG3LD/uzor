@@ -1,5 +1,6 @@
 [package]
 name = "uzor-window-desktop"
+authors.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
