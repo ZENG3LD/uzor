@@ -413,6 +413,7 @@ mod tests {
             proportions: vec![0.3, 0.3, 0.2, 0.2],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         }
     }
 
@@ -472,6 +473,7 @@ mod tests {
             // 40% left / 60% right,  30% top / 70% bottom
             cross_ratio: Some((0.4, 0.3)),
             preserve_if_empty: false,
+            magnetic: true,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
@@ -511,6 +513,7 @@ mod tests {
             proportions: vec![0.75, 0.25],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 600.0);
@@ -536,6 +539,7 @@ mod tests {
             proportions: vec![0.5, 0.25, 0.25],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 800.0, 600.0);
@@ -651,6 +655,7 @@ mod tests {
             // 70% left column, 40% top in right column
             cross_ratio: Some((0.7, 0.4)),
             preserve_if_empty: false,
+            magnetic: true,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
@@ -710,6 +715,7 @@ mod tests {
             // 60% left in top row, 30% top row height
             cross_ratio: Some((0.6, 0.3)),
             preserve_if_empty: false,
+            magnetic: true,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);

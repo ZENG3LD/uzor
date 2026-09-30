@@ -970,8 +970,18 @@ impl<P: DockPanel> DockState<P> {
     // Panel Drag-and-Drop
     // =============================================================================
 
-    /// Start panel drag (called when mouse down on panel header)
+    /// Start panel drag (called when mouse down on panel header). The leaf
+    /// travels with all its tabs, so a drag never arms while any of them
+    /// is pinned ([`crate::layout::docking::Pin::locks_tear_off`]).
     pub fn start_panel_drag(&mut self, leaf_id: LeafId, x: f32, y: f32) {
+        let pinned = self
+            .tree
+            .leaf(leaf_id)
+            .map(|l| l.panels.iter().any(|p| p.pin().locks_tear_off()))
+            .unwrap_or(false);
+        if pinned {
+            return;
+        }
         self.panel_drag = Some(PanelDragState {
             dragged_leaf_id: leaf_id,
             payload: DragPayload::Leaf,
@@ -995,7 +1005,11 @@ impl<P: DockPanel> DockState<P> {
         let valid = self
             .tree
             .leaf(leaf_id)
-            .map(|l| l.panels.len() > 1 && tab_idx < l.panels.len())
+            .map(|l| {
+                l.panels.len() > 1
+                    && tab_idx < l.panels.len()
+                    && !l.panels[tab_idx].pin().locks_tear_off()
+            })
             .unwrap_or(false);
         if !valid {
             return;
@@ -2344,4 +2358,39 @@ mod center_drop_tests {
         ds.end_panel_drag(1000.0, 800.0);
         assert_eq!(ds.tree().leaf(a).unwrap().panels.len(), 2);
     }
+
+    #[derive(Clone)]
+    struct Pinned(crate::layout::docking::Pin);
+    impl DockPanel for Pinned {
+        fn title(&self) -> &str { "pinned" }
+        fn type_id(&self) -> &'static str { "pinned" }
+        fn pin(&self) -> crate::layout::docking::Pin { self.0 }
+    }
+
+    #[test]
+    fn a_system_pinned_panel_never_arms_a_header_or_tab_drag() {
+        use crate::layout::docking::Pin;
+        let mut state = DockState::<Pinned>::new();
+        let leaf = state.tree_mut().add_leaf(Pinned(Pin::System));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "System pin: header drag must not arm");
+
+        state.tree_mut().add_tab(leaf, Pinned(Pin::Free));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "a leaf with any pinned tab travels nowhere");
+        state.start_tab_drag(leaf, 0, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "the pinned tab itself cannot tear off");
+        state.start_tab_drag(leaf, 1, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_some(), "a free tab in the same stack still tears off");
+    }
+
+    #[test]
+    fn free_and_unpinned_panels_arm_as_before() {
+        use crate::layout::docking::Pin;
+        let mut state = DockState::<Pinned>::new();
+        let leaf = state.tree_mut().add_leaf(Pinned(Pin::User { pinned: false }));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_some());
+    }
 }
+

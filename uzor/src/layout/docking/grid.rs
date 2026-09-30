@@ -84,6 +84,12 @@ pub struct Branch<P: DockPanel> {
     /// Default: `false` — backwards-compatible with existing callers
     /// that expect aggressive single-child collapse.
     pub preserve_if_empty: bool,
+    /// What happens to the siblings' sizes when a child is removed.
+    /// `true` (default, today's behaviour): the branch re-equalizes — its
+    /// proportions and custom rects are cleared. `false`: the siblings keep
+    /// their proportions (the removed child's entry is dropped and the rest
+    /// share its space in the same ratio to each other).
+    pub magnetic: bool,
 }
 
 /// A node in the recursive panel tree
@@ -139,6 +145,7 @@ impl<P: DockPanel> DockingTree<P> {
                 proportions: Vec::new(),
                 cross_ratio: None,
                 preserve_if_empty: false,
+                magnetic: true,
             },
             active_leaf: None,
             next_id: 1,
@@ -347,8 +354,19 @@ impl<P: DockPanel> DockingTree<P> {
             let old_count = root.children.len();
 
             root.children.remove(pos);
-            root.custom_rects.clear();
-            root.proportions.clear();
+            if root.magnetic {
+                root.custom_rects.clear();
+                root.proportions.clear();
+            } else {
+                // Siblings keep their sizes: drop only the removed child's
+                // entry; a mismatched vec is cleared by `fix_branch_layouts`.
+                if root.proportions.len() == old_count {
+                    root.proportions.remove(pos);
+                }
+                if root.custom_rects.len() == old_count {
+                    root.custom_rects.remove(pos);
+                }
+            }
 
             // Smart layout transition based on spatial analysis
             let new_count = root.children.len();
@@ -471,6 +489,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: Vec::new(),
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
 
         // Replace the original leaf-node in its parent with the new branch
@@ -555,6 +574,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: Vec::new(),
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
 
         // 5. Replace old leaf with new branch in parent
@@ -996,6 +1016,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: vec![0.5, 0.5],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
         // The original target leaf lives on INSIDE the branch (same id) —
         // exactly the `split_leaf` replacement pattern.
@@ -1037,6 +1058,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: vec![0.5, 0.5],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
         self.replace_node_leaf(leaf_id, new_branch);
         Some(new_id)
@@ -1065,6 +1087,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: Vec::new(),
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
         let new_node = PanelNode::Leaf(Leaf::new(new_id, panel));
         let old_root_node = PanelNode::Branch(old_root);
@@ -1082,6 +1105,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: vec![0.5, 0.5],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         };
         Some(new_id)
     }
@@ -1116,6 +1140,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: Vec::new(),
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         });
 
         let branch_id = self.next_branch_id();
@@ -1136,6 +1161,7 @@ impl<P: DockPanel> DockingTree<P> {
             proportions: vec![0.5, 0.5],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
         };
     }
 
@@ -1265,3 +1291,56 @@ mod reorder_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod magnetic_tests {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct StubPanel(&'static str);
+    impl DockPanel for StubPanel {
+        fn title(&self) -> &str { self.0 }
+        fn type_id(&self) -> &'static str { "stub" }
+    }
+
+    /// Root branch with three leaves and proportions 0.2 / 0.3 / 0.5.
+    fn three_with_proportions(magnetic: bool) -> (DockingTree<StubPanel>, [LeafId; 3]) {
+        let mut t: DockingTree<StubPanel> = DockingTree::new();
+        let a = t.add_leaf(StubPanel("A"));
+        let b = t.add_leaf(StubPanel("B"));
+        let c = t.add_leaf(StubPanel("C"));
+        assert_eq!(t.root().children.len(), 3, "precondition: three leaves under the root");
+        let root_id = t.root().id;
+        let root = t.find_branch_mut(root_id).unwrap();
+        root.proportions = vec![0.2, 0.3, 0.5];
+        root.magnetic = magnetic;
+        (t, [a, b, c])
+    }
+
+    #[test]
+    fn a_new_branch_is_magnetic() {
+        let t: DockingTree<StubPanel> = DockingTree::new();
+        assert!(t.root().magnetic);
+    }
+
+    #[test]
+    fn non_magnetic_removal_keeps_sibling_proportions() {
+        let (mut t, [_, _, c]) = three_with_proportions(false);
+        t.remove_leaf(c);
+        assert_eq!(t.root().children.len(), 2);
+        assert_eq!(t.root().proportions, vec![0.2, 0.3]);
+
+        let (mut t, [a, _, _]) = three_with_proportions(false);
+        t.remove_leaf(a);
+        assert_eq!(t.root().proportions, vec![0.3, 0.5]);
+    }
+
+    #[test]
+    fn magnetic_removal_re_equalizes_as_before() {
+        let (mut t, [_, _, c]) = three_with_proportions(true);
+        t.remove_leaf(c);
+        assert_eq!(t.root().children.len(), 2);
+        assert!(t.root().proportions.is_empty(), "magnetic branch clears proportions (equal split)");
+    }
+}
+

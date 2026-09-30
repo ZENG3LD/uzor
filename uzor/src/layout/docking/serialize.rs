@@ -36,7 +36,15 @@ pub enum SerializedNodeType {
         layout: String,      // WindowLayout name (serialized)
         proportions: Vec<f64>,
         cross_ratio: Option<(f64, f64)>,
+        /// Absent in snapshots written before the field existed; those load
+        /// as `true`, the behaviour they were saved with.
+        #[serde(default = "default_magnetic")]
+        magnetic: bool,
     },
+}
+
+fn default_magnetic() -> bool {
+    true
 }
 
 impl LayoutSnapshot {
@@ -69,6 +77,7 @@ impl LayoutSnapshot {
                 layout: Self::layout_to_string(branch.layout),
                 proportions: branch.proportions.clone(),
                 cross_ratio: branch.cross_ratio,
+                magnetic: branch.magnetic,
             },
         });
 
@@ -210,7 +219,7 @@ impl LayoutSnapshot {
         F: FnMut(u64, &str) -> Option<P>,
     {
         match &node.node_type {
-            SerializedNodeType::Branch { children, layout, proportions, cross_ratio } => {
+            SerializedNodeType::Branch { children, layout, proportions, cross_ratio, magnetic } => {
                 let layout_enum = Self::string_to_layout(layout)?;
 
                 // Restore children
@@ -242,6 +251,7 @@ impl LayoutSnapshot {
                     // tree-walk hook.  Defaulting to false matches the
                     // pre-existing aggressive-collapse behavior.
                     preserve_if_empty: false,
+                    magnetic: *magnetic,
                 })
             }
             _ => Err(format!("Expected branch node, got leaf for id {}", node.id)),
@@ -341,4 +351,43 @@ mod tests {
         assert_eq!(restored_tree.leaf_count(), 1);
         assert_eq!(restored_tree.layout(), WindowLayout::Single);
     }
+
+    #[test]
+    fn magnetic_round_trips_and_old_snapshots_load_as_magnetic() {
+        let panel = TestPanel { title: "T".to_string(), type_id: "test" };
+        let mut tree = DockingTree::with_single_leaf(panel.clone());
+        tree.add_leaf(panel.clone());
+        let root_id = tree.root().id;
+        tree.find_branch_mut(root_id).unwrap().magnetic = false;
+
+        let json = LayoutSnapshot::from_tree(&tree, "m").to_json().unwrap();
+        let restored = LayoutSnapshot::from_json(&json)
+            .unwrap()
+            .restore_tree(|_| Some(panel.clone()))
+            .unwrap();
+        assert!(!restored.root().magnetic);
+
+        // A snapshot written before the field existed: drop every "magnetic" key.
+        fn strip(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    map.remove("magnetic");
+                    map.values_mut().for_each(strip);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(json.contains("magnetic"), "the field is written: {json}");
+        strip(&mut value);
+        let old = value.to_string();
+        assert!(!old.contains("magnetic"));
+        let restored = LayoutSnapshot::from_json(&old)
+            .unwrap()
+            .restore_tree(|_| Some(panel.clone()))
+            .unwrap();
+        assert!(restored.root().magnetic);
+    }
 }
+

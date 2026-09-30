@@ -21,6 +21,7 @@ pub mod grid;
 pub mod layout;
 pub mod lib;
 pub mod serialize;
+pub mod pin;
 // `manager` module dissolved — its impl moved to `uzor::layout::dock_state`
 // (`DockState<P>`).  This module now only exports panel-tree primitives.
 
@@ -38,6 +39,7 @@ pub use hit_test::{HitResult, CornerHandle};
 pub use presets::{WindowLayout, SplitKind, PANEL_GAP};
 pub use grid::{DockingTree, Leaf, Branch, PanelNode};
 pub use serialize::{LayoutSnapshot, SerializedNode, SerializedNodeType};
+pub use pin::Pin;
 
 /// Trait for panel types stored in the docking tree.
 ///
@@ -69,5 +71,11 @@ pub trait DockPanel: Clone + Send + Sync {
     /// height wherever they dock). `None` (default) → equal split.
     fn preferred_strip_height(&self) -> Option<f32> {
         None
+    }
+
+    /// Tear-off lock: a panel whose pin [`Pin::locks_tear_off`] cannot be
+    /// dragged out by its header or tab. Default [`Pin::Free`].
+    fn pin(&self) -> Pin {
+        Pin::Free
     }
 }
