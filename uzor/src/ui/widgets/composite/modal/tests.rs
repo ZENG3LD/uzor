@@ -7,7 +7,7 @@ use crate::layout::docking::DockPanel;
 use crate::input::{InputCoordinator, WidgetKind};
 use crate::input::core::coordinator::LayerId;
 use crate::layout::{LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};
-use crate::render::{RenderContext, TextAlign, TextBaseline};
+use crate::testing::NullRenderContext;
 use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::input::{register_input_coordinator_modal, register_layout_manager_modal};
@@ -25,46 +25,6 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
     Rect::new(x, y, w, h)
 }
 
-/// Minimal no-op render context for tests.  All draw calls are discarded.
-struct NoopRender;
-
-impl crate::render::Painter for NoopRender {
-    fn save(&mut self) {} fn restore(&mut self) {}
-    fn translate(&mut self, _x: f64, _y: f64) {} fn rotate(&mut self, _angle: f64) {} fn scale(&mut self, _x: f64, _y: f64) {}
-    fn set_fill_color(&mut self, _color: &str) {} fn set_global_alpha(&mut self, _alpha: f64) {}
-    fn set_stroke_color(&mut self, _color: &str) {} fn set_stroke_width(&mut self, _width: f64) {}
-    fn set_line_dash(&mut self, _pattern: &[f64]) {} fn set_line_cap(&mut self, _cap: &str) {} fn set_line_join(&mut self, _join: &str) {}
-    fn begin_path(&mut self) {} fn move_to(&mut self, _x: f64, _y: f64) {} fn line_to(&mut self, _x: f64, _y: f64) {} fn close_path(&mut self) {}
-    fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
-    fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
-    fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
-    fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
-    fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
-    fn stroke(&mut self) {} fn fill(&mut self) {}
-}
-impl crate::render::TextRenderer for NoopRender {
-    fn set_font(&mut self, _font: &str) {}
-    fn set_text_align(&mut self, _align: TextAlign) {}
-    fn set_text_baseline(&mut self, _baseline: TextBaseline) {}
-    fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
-    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
-}
-impl crate::render::TextMetrics for NoopRender {
-    fn measure_text(&self, _text: &str) -> f64 { 0.0 }
-    fn text_bounds(&self, _text: &str, _font: &str) -> crate::render::TextBounds {
-        crate::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
-    }
-}
-impl crate::render::Masking for NoopRender { fn clip(&mut self) {} }
-impl crate::render::Effects for NoopRender {}
-impl crate::render::ShapeHelpers for NoopRender {
-    fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
-    fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
-}
-impl crate::render::GradientPainter for NoopRender {}
-impl crate::render::UiEffectHelpers for NoopRender {}
-impl crate::render::BatchPainter for NoopRender {}
-impl RenderContext for NoopRender { fn dpr(&self) -> f64 { 1.0 } }
 
 /// Minimal DockPanel for LayoutManager<P>.
 #[derive(Clone, Debug)]
@@ -152,7 +112,7 @@ fn modal_l2_registers_via_context_manager() {
     use crate::app_context::layout::types::LayoutNode;
 
     let mut ctx      = ContextManager::new(LayoutNode::new("test-root"));
-    let mut render   = NoopRender;
+    let mut render   = NullRenderContext;
     let mut state    = ModalState::default();
     let mut view     = plain_view();
     let     settings = ModalSettings::default();
@@ -200,7 +160,7 @@ fn modal_l2_registers_via_context_manager() {
             covered end-to-end by integration tests"]
 fn modal_l3_resolves_rect_from_layout_manager() {
     let mut layout = LayoutManager::<DummyPanel>::new();
-    let mut render = NoopRender;
+    let mut render = NullRenderContext;
     let     settings = ModalSettings::default();
     let     kind   = ModalRenderKind::Plain;
     // Solve first so the layout is initialised (not strictly required for

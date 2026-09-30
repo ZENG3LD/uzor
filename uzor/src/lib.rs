@@ -62,7 +62,7 @@ pub mod shaper;
 /// Headless event-synthesis + a11y-tree query test harness. Enable only in
 /// a test crate's `[dev-dependencies]` (feature-unified automatically for
 /// `cargo test`) — never in a shipped app's `[dependencies]`.
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 // Re-export key types

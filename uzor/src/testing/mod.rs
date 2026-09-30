@@ -12,7 +12,9 @@
 mod a11y_query;
 mod events;
 mod harness;
+mod render;
 
 pub use a11y_query::{A11yQuery, A11yQueryError};
 pub use events::EventSynthesizer;
 pub use harness::{FrameOutcome, TestHarness};
+pub use render::{DrawOp, NullRenderContext, RecordingRenderContext};
