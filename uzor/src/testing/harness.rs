@@ -98,7 +98,7 @@ impl TestHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::pointer::state::MouseButton;
+    use crate::input::pointer::state::{InputState, MouseButton};
     use crate::input::Sense;
     use crate::types::{Rect, WidgetState};
 
@@ -164,6 +164,103 @@ mod tests {
             "press-origin widget A must not transfer Pressed onto B on drag-in"
         );
         assert_eq!(harness.coordinator.widget_state(&widget_a), WidgetState::Normal);
+        assert!(
+            harness.coordinator.cook_state().drag_armed,
+            "a held press that travelled past DRAG_THRESHOLD_PX is armed as a drag"
+        );
+    }
+
+    fn response_for<'a>(outcome: &'a FrameOutcome, id: &WidgetId) -> Option<&'a WidgetResponse> {
+        outcome.responses.iter().find(|(wid, _)| wid == id).map(|(_, r)| r)
+    }
+
+    #[test]
+    fn quick_clicks_report_double_then_triple_and_a_slow_one_resets() {
+        let id = WidgetId::from("multi-click");
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let mut harness = TestHarness::new();
+        let build = |coord: &mut InputCoordinator, _: &mut A11yTree| register(coord, id.clone(), rect);
+        harness.frame(build);
+
+        let click_at = |harness: &mut TestHarness, dt: f64, x: f64| {
+            harness.events.tick(dt);
+            harness.events.click(x, 10.0);
+            let (_, outcome) = harness.frame(build);
+            let r = response_for(&outcome, &id).expect("clicked response").clone();
+            assert!(r.clicked);
+            (r.double_clicked, r.triple_clicked, harness.coordinator.cook_state().click_count)
+        };
+
+        assert_eq!(click_at(&mut harness, 1.0, 10.0), (false, false, 1));
+        assert_eq!(click_at(&mut harness, 0.1, 11.0), (true, false, 2));
+        assert_eq!(click_at(&mut harness, 0.1, 11.0), (false, true, 3));
+        // outside DOUBLE_CLICK_WINDOW_S
+        assert_eq!(click_at(&mut harness, 1.0, 11.0), (false, false, 1));
+        // inside the window but farther than MULTI_CLICK_MAX_DIST_PX
+        assert_eq!(click_at(&mut harness, 0.1, 30.0), (false, false, 1));
+    }
+
+    #[test]
+    fn a_host_that_stamps_no_time_never_reports_a_double_click() {
+        let id = WidgetId::from("unstamped");
+        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let mut coord = InputCoordinator::new();
+        let mut input = InputState::new();
+        input.pointer.pos = Some((10.0, 10.0));
+        for _ in 0..3 {
+            input.pointer.clicked = Some(MouseButton::Left);
+            coord.begin_frame(input.clone());
+            register(&mut coord, id.clone(), rect);
+            let responses = coord.end_frame();
+            let (_, r) = responses.iter().find(|(wid, _)| wid == &id).expect("response");
+            assert!(r.clicked && !r.double_clicked && !r.triple_clicked);
+            assert_eq!(coord.cook_state().click_count, 1);
+        }
+    }
+
+    #[test]
+    fn a_pointer_grab_keeps_input_on_the_grabbing_widget_until_release() {
+        let handle = WidgetId::from("splitter");
+        let other = WidgetId::from("other");
+        let rect_h = Rect::new(0.0, 0.0, 10.0, 100.0);
+        let rect_o = Rect::new(50.0, 0.0, 100.0, 100.0);
+        let mut harness = TestHarness::new();
+        let build = |coord: &mut InputCoordinator, _: &mut A11yTree| {
+            register(coord, handle.clone(), rect_h);
+            register(coord, other.clone(), rect_o);
+        };
+        harness.frame(build);
+
+        harness.events.tick(0.5).pointer_down(5.0, 50.0, MouseButton::Left);
+        harness.frame(build);
+        harness.coordinator.grab_pointer(handle.clone());
+
+        // pointer travels over the other widget while held
+        harness.events.pointer_move(100.0, 50.0);
+        let (_, outcome) = harness.frame(build);
+        assert!(response_for(&outcome, &handle).is_some_and(|r| r.hovered), "grab keeps the handle hovered");
+        assert!(response_for(&outcome, &other).is_none_or(|r| !r.hovered), "the widget under the cursor is not hovered");
+
+        // release over the other widget: the click lands on the grabber, and the grab ends
+        harness.events.pointer_up(100.0, 50.0, MouseButton::Left);
+        let (_, outcome) = harness.frame(build);
+        assert!(response_for(&outcome, &handle).is_some_and(|r| r.clicked));
+        assert!(response_for(&outcome, &other).is_none_or(|r| !r.clicked));
+        assert_eq!(harness.coordinator.cook_state().grabbed, None);
+
+        // next motion follows the hit test again
+        harness.events.pointer_move(101.0, 50.0);
+        let (_, outcome) = harness.frame(build);
+        assert!(response_for(&outcome, &other).is_some_and(|r| r.hovered));
+    }
+
+    #[test]
+    fn release_pointer_ends_a_grab_early() {
+        let mut coord = InputCoordinator::new();
+        coord.grab_pointer("h");
+        assert_eq!(coord.cook_state().grabbed, Some(WidgetId::from("h")));
+        coord.release_pointer();
+        assert_eq!(coord.cook_state().grabbed, None);
     }
 
     #[test]

@@ -13,6 +13,7 @@ use crate::input::core::response::WidgetResponse;
 use crate::input::core::widget_kind::WidgetKind;
 use crate::input::pointer::state::{InputState, MouseButton};
 use crate::input::core::widget_state::WidgetInputState;
+use crate::input::core::cook::CookState;
 use crate::input::text::store::{TextFieldStore, TextFieldConfig, TextAction};
 
 /// Layer ID for z-order management
@@ -158,6 +159,11 @@ pub struct InputCoordinator {
     /// plain registrations join the modal's layer instead of leaking to
     /// the base layer under the modal barrier. Reset every frame.
     default_layer: Option<LayerId>,
+    /// Click count, drag arm and pointer grab, fed from each frame's
+    /// pointer snapshot in `end_frame`.
+    cook: CookState,
+    /// `pointer.button_down` of the previous `end_frame`, for press edges.
+    cook_prev_down: Option<MouseButton>,
 }
 
 impl InputCoordinator {
@@ -178,6 +184,8 @@ impl InputCoordinator {
             text_fields: TextFieldStore::new(),
             hover_prev: None,
             default_layer: None,
+            cook: CookState::default(),
+            cook_prev_down: None,
         }
     }
 
@@ -202,10 +210,7 @@ impl InputCoordinator {
         // it) had registered — so widgets under an open popup kept
         // reporting `is_hovered() == true` (systemic z-order leak,
         // 2026-07-28). Baking here sees every layer of the finished frame.
-        let hovered = input
-            .pointer
-            .pos
-            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        let hovered = self.pointer_target(input.pointer.pos);
         self.bake_pressed(&hovered, input.pointer.button_down);
         self.widget_state.hover.set_hovered(hovered);
 
@@ -255,11 +260,7 @@ impl InputCoordinator {
     pub fn begin_frame_widgets_only(&mut self) {
         // Same complete-frame hover bake as `begin_frame` (see its comment),
         // at the retained pointer position.
-        let hovered = self
-            .input
-            .pointer
-            .pos
-            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        let hovered = self.pointer_target(self.input.pointer.pos);
         let button_down = self.input.pointer.button_down;
         self.bake_pressed(&hovered, button_down);
         self.widget_state.hover.set_hovered(hovered);
@@ -586,12 +587,13 @@ impl InputCoordinator {
         let clicked = self.input.pointer.clicked;
         let button_down = self.input.pointer.button_down;
 
-        // 1. Determine hovered widget (Z-order aware hit test)
-        let hovered_id = if let Some((mx, my)) = mouse_pos {
-            self.hit_test_at(mx, my).map(|w| w.id.clone())
-        } else {
-            None
-        };
+        // 0. Cook this frame's pointer edges (press / motion / release):
+        // click count, drag arm.
+        self.feed_cook();
+
+        // 1. Determine hovered widget (Z-order aware hit test; a pointer
+        // grab wins over the hit test)
+        let hovered_id = self.pointer_target(mouse_pos);
 
         // Track if we already generated a response for drag start
         let mut drag_started_this_frame = false;
@@ -616,6 +618,8 @@ impl InputCoordinator {
                     // Check click
                     if is_hovered && clicked.is_some() && widget.sense.click {
                         response.clicked = true;
+                        response.double_clicked = self.cook.click_count == 2;
+                        response.triple_clicked = self.cook.click_count >= 3;
                         if widget.sense.text {
                             // Place the caret at the hit character instead of
                             // only arming focus — the coordinator already
@@ -699,7 +703,74 @@ impl InputCoordinator {
         // stashed as the NEXT end_frame's hover-transition baseline.
         self.hover_prev = hovered_id;
 
+        // A grab lasts one press: the release that ends it ends the grab.
+        if clicked.is_some() {
+            self.cook.release_grab();
+        }
+
         responses
+    }
+
+    /// Feed this frame's pointer snapshot into the cook state. A press and
+    /// its release inside one frame (`clicked` set, button already up)
+    /// count as both edges.
+    ///
+    /// Multi-click needs `InputState::time` (monotonic seconds) stamped by
+    /// the host; while it is `0.0` every press counts as a single click, so
+    /// an unstamped host never reports a spurious double click.
+    fn feed_cook(&mut self) {
+        let now = self.input.time;
+        let down = self.input.pointer.button_down;
+        let clicked = self.input.pointer.clicked;
+        if let Some((x, y)) = self.input.pointer.pos {
+            let pressed_now = match (down, clicked) {
+                (Some(button), _) | (None, Some(button)) if self.cook_prev_down.is_none() => Some(button),
+                _ => None,
+            };
+            match pressed_now {
+                Some(button) => {
+                    self.cook.press(x, y, button, now);
+                    if now <= 0.0 {
+                        self.cook.click_count = 1;
+                    }
+                }
+                None => {
+                    self.cook.motion(x, y);
+                }
+            }
+            if let (None, Some(button)) = (down, clicked) {
+                self.cook.release(x, y, button, now);
+            }
+        }
+        self.cook_prev_down = down;
+    }
+
+    /// The widget pointer input goes to at `pos`: the grabbing widget while
+    /// a grab is held and that widget is registered, else the topmost hit.
+    fn pointer_target(&self, pos: Option<(f64, f64)>) -> Option<WidgetId> {
+        if let Some(grabbed) = &self.cook.grabbed {
+            if self.widgets.iter().any(|w| &w.id == grabbed) {
+                return Some(grabbed.clone());
+            }
+        }
+        pos.and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()))
+    }
+
+    /// Click count, drag arm and grab state as of the last `end_frame`.
+    pub fn cook_state(&self) -> &CookState {
+        &self.cook
+    }
+
+    /// Route pointer input to `id` regardless of what is under the cursor,
+    /// until [`Self::release_pointer`] or the release of the current press.
+    /// Use on press for splitters, resize handles, scrollbar thumbs.
+    pub fn grab_pointer(&mut self, id: impl Into<WidgetId>) {
+        self.cook.grab(id.into());
+    }
+
+    /// End a pointer grab early.
+    pub fn release_pointer(&mut self) {
+        self.cook.release_grab();
     }
 
     /// Hit test at point (Z-order aware)
