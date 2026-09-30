@@ -12,7 +12,7 @@ description = "Layered demos for uzor — L1 (raw input coordinator), L2 (contex
 path = "src/lib.rs"
 
 [dependencies]
-uzor                  = { workspace = true }
+uzor                  = { workspace = true, features = ["framework-png"] }
 uzor-desktop          = { workspace = true }
 uzor-framework-macros = { workspace = true }
 uzor-graph            = { workspace = true, features = ["render3d"] }

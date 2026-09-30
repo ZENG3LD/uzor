@@ -73,6 +73,15 @@ members = [
     # Layered demos
     "uzor-examples",
 ]
+# A bare `cargo build` / `cargo test` at the root builds the light core only
+# (no GPU, no windowing, no engines). Everything else is reached with `-p`.
+default-members = [
+    "uzor-fonts",
+    "uzor",
+    "uzor-text",
+    "uzor-render-tiny-skia",
+    "uzor-render-svg",
+]
 resolver = "2"
 
 [workspace.package]
@@ -86,7 +95,10 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.6.0-dev", path = "./uzor" }
+# default-features = false: every member names the uzor features it uses
+# (`shaper`, `serde`, `framework-png`, `testing`), so no member silently
+# builds `image` just because it sits in this workspace.
+uzor = { version = "1.6.0-dev", path = "./uzor", default-features = false }
 uzor-fonts = { version = "1.6.0-dev", path = "./uzor-fonts" }
 uzor-render-hub = { version = "1.6.0-dev", path = "./uzor-render-hub" }
 uzor-render-vello-gpu = { version = "1.6.0-dev", path = "./uzor-render-vello-gpu" }
