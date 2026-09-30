@@ -12,5 +12,4 @@ uzor = { workspace = true }
 
 [dev-dependencies]
 uzor-export = { workspace = true }
-uzor-proof-harness = { workspace = true }
 png = "0.17"

@@ -34,3 +34,6 @@ pollster = "0.4"
 # `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`) — same version
 # `uzor-urx-core`/`uzor-urx-wgpu` already pin.
 metrics = "0.24"
+
+[dev-dependencies]
+uzor-figures = { workspace = true }
