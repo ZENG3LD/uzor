@@ -195,8 +195,8 @@ fn build_clusters_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
     (graph, positions, cluster_members)
 }
 
-// ── Wave (owner order: "хочу более древовидные визуализации, не только
-// пятиугольник") — 3 additional deterministic fixtures ──────────────────
+// ── Wave (owner order: "more tree-like visualizations, not only
+// the pentagon") — 3 additional deterministic fixtures ──────────────────
 
 const TREE_NODE_BUDGET: usize = 300;
 /// Every node below this depth always branches — guarantees the tree
@@ -204,7 +204,7 @@ const TREE_NODE_BUDGET: usize = 300;
 /// it off early (a "few hundred nodes, deep" shape, not a shallow bush).
 const TREE_MIN_BRANCH_DEPTH: u32 = 4;
 /// Hard depth cap — with `TREE_MIN_BRANCH_DEPTH` this produces 5-6
-/// branching levels beneath the root ("хочу более древовидные... branching
+/// branching levels beneath the root ("more tree-like... branching
 /// 4-5 levels").
 const TREE_MAX_DEPTH: u32 = 6;
 
@@ -349,8 +349,8 @@ fn build_sparse_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
 }
 
 /// Which deterministic demo graph shape is currently loaded — the
-/// owner's own live-verdict order ("хочу более древовидные
-/// визуализации, не только пятиугольник"). `Clusters` is the ORIGINAL
+/// owner's own live-verdict order ("more tree-like
+/// visualizations, not only the pentagon"). `Clusters` is the ORIGINAL
 /// ~534-node fixture (unchanged) and stays the default at launch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fixture {
@@ -553,8 +553,8 @@ impl NavModeState {
     }
 }
 
-/// Fly-mode mouse-look sub-state (owner order 2026-07-19: "прицел и
-/// сброс прицела по МКМ") — a "MMB CLICK: CURSOR / LOOK" toggle. While ON (the
+/// Fly-mode mouse-look sub-state (owner order 2026-07-19: "aim and
+/// reset aim with MMB") — a "MMB CLICK: CURSOR / LOOK" toggle. While ON (the
 /// default whenever fly mode is entered) the app requests
 /// `CursorCaptureMode::LockedHidden`, `PointerDelta` drives free look,
 /// and the overlay paints a center crosshair; a middle-click flips it
@@ -709,7 +709,7 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
 // itself gains no new API.
 //
 // **Placement, ONE consistent position — owner defect fix (2026-07-23):
-// "тут слева, тут справа — что за хуйня"**. The panel used to float at a
+// "left here, right there — makes no sense"**. The panel used to float at a
 // fixed top-LEFT origin in 3D while 2D extended the pre-existing
 // RIGHT-docked sidebar (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`) — a real,
 // reported left/right inconsistency, not a deliberate design choice
@@ -839,8 +839,8 @@ enum HudSliderId {
 /// One laid-out, clickable button row — geometry (`rect`, LOGICAL px),
 /// what it does (`control`), its drawn label, and whether it should
 /// paint in the "active" highlighted style. `paused` is a further,
-/// LAYOUT-section-only refinement of `active` (owner rule «если 1
-/// вариант — должен тоглиться», generalized to re-click-toggles-pause for
+/// LAYOUT-section-only refinement of `active` (owner rule «a single
+/// option must toggle», generalized to re-click-toggles-pause for
 /// FORCE) — always `false` for every other button.
 struct HudButtonRect {
     control: HudControl,
@@ -956,7 +956,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
 
     // LAYOUT — ONLY the modes that genuinely exist for the current
     // fixture's data shape ([`available_layout_kinds`]'s own doc — the
-    // owner rule «показывать только те режимы которые там есть»):
+    // owner rule «show only the modes that exist there»):
     // tree/hierarchy show FORCE/LAYERED/RADIAL, clusters/sparse show
     // FORCE alone (which still acts — re-clicking it toggles pause). A
     // button whose kind is already active AND is FORCE AND is currently
@@ -1110,8 +1110,8 @@ fn scaled_rect(r: Rect, scale: f64) -> Rect {
 /// fixture/layout/navigation buttons (with active-state highlight),
 /// sensitivity sliders, and the mouse legend. Painted fresh every frame
 /// in BOTH dimensions (the former 3D `CachedOverlayJob` static/dynamic
-/// split is gone — owner z-order rule 2026-07-24, «менюшка всегда выше
-/// сцены»: render-hub blits a cached job UNDER the plain overlay, which
+/// split is gone — owner z-order rule 2026-07-24, «the menu is always above
+/// the scene»: render-hub blits a cached job UNDER the plain overlay, which
 /// put scene labels above the card; see `DemoApp::scene3d`'s own
 /// z-order comment). Does NOT draw the STATUS/SELECTION line content —
 /// [`draw_hud_status`] paints those after this, above the card bg.
@@ -1325,8 +1325,8 @@ fn default_layout_kind_for_fixture(fixture: Fixture) -> LayoutKind {
 }
 
 /// Which layout modes genuinely EXIST for a fixture's data shape — the
-/// owner's HUD rule («показывать только те режимы которые там есть, чужие
-/// не показывать»): `tree`/`hierarchy` are rooted hierarchical data, so
+/// owner's HUD rule («show only the modes that exist there, never
+/// foreign ones»): `tree`/`hierarchy` are rooted hierarchical data, so
 /// Layered/Radial are real modes for them; `clusters`/`sparse` are
 /// mesh-shaped (cyclic, no root, no levels), so a layered/radial pass
 /// over them isn't a mode that exists, just garbage rows — those
@@ -2058,10 +2058,10 @@ impl DemoApp {
                 rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
             }
             // Owner defect fix 2026-07-23 — re-click semantics generalize
-            // the owner's own rule «если 1 вариант — должен тоглиться»:
+            // the owner's own rule «a single option must toggle»:
             // clicking the ALREADY-active mode toggles instead of being a
-            // silent no-op (the exact "зажат форс, нихуя не
-            // переключается" defect — FORCE was hardcoded active in 3D
+            // silent no-op (the exact "FORCE stuck on, does not
+            // switch" defect — FORCE was hardcoded active in 3D
             // and its own button click did nothing at all). FORCE
             // pauses/resumes the sim IN PLACE (no camera jump — nothing
             // actually moved); LAYERED/RADIAL (one-shot) re-run their
@@ -2640,8 +2640,8 @@ impl DemoBlackbox {
 impl App<NoPanel> for DemoApp {
     fn init(&mut self, key: &WindowKey, layout: &mut LayoutManager<NoPanel>) {
         // Kill the LayoutManager's DEFAULT chrome strip (owner defect
-        // report 2026-07-24: «невидимая полоска за которую я могу
-        // драгать» — `ChromeSlot::default()` is `visible: true`, so the
+        // report 2026-07-24: «an invisible strip I can
+        // drag» — `ChromeSlot::default()` is `visible: true`, so the
         // solver reserved an unpainted 32px band under the REAL OS
         // titlebar this window already has, and `Manager`'s
         // `handle_chrome_press` hit-tested its caption zone into
@@ -2987,8 +2987,8 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // `Copy` so capturing it here doesn't disturb the `camera` value
         // returned below in `Scene3DFrame`.
         //
-        // Z-ORDER RULE (owner defect fix 2026-07-24: «менюшка всегда
-        // выше сцены» — node labels used to leak straight through the
+        // Z-ORDER RULE (owner defect fix 2026-07-24: «the menu always
+        // above the scene» — node labels used to leak straight through the
         // HUD card): EVERYTHING scene-space (engine overlay labels,
         // rings, grid ticks, hover card, crosshair) paints FIRST, the
         // WHOLE HUD card (static chrome + dynamic status/selection
@@ -3554,7 +3554,7 @@ mod tests {
     /// Owner defect fix 2026-07-23 — the exact defect report: the LAYOUT
     /// section's FORCE button in 3D used to be a single, hardcoded,
     /// always-active, ALWAYS-DEAD button — clicking it did nothing at
-    /// all («зажат форс, нихуя не переключается, не отключается»). Now
+    /// all («FORCE stuck on, does not switch, does not turn off»). Now
     /// it toggles pause/resume in place.
     #[test]
     fn re_clicking_the_active_force_button_pauses_and_resumes_in_place_in_3d() {
