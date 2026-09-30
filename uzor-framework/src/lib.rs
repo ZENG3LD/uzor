@@ -20,11 +20,13 @@
 //!
 //! ## Status
 //!
-//! Only the `types` role exists so far (brief F1): the input bus, the command
-//! vocabulary, intents, the visual snapshot, window commands, frame requests,
-//! the layout blob and the [`Spec`] vocabulary trait. Engines, kernel, handle,
-//! runtime and hosts follow in later briefs; `Handle`, `App`, `Runtime` and the
-//! hosts named in the header above do not exist yet.
+//! Briefs F1-F2: the `types` role (the input bus, the command vocabulary,
+//! intents, the visual snapshot, window commands, frame requests, the layout
+//! blob, the [`Spec`] vocabulary trait, engine ops / effects) and the first
+//! three engines in [`engine`] (windows, cadence + deadline wheel,
+//! animation). The remaining engines, kernel, handle, runtime and hosts
+//! follow in later briefs; `Handle`, `App`, `Runtime` and the hosts named in
+//! the header above do not exist yet.
 //!
 //! ## Data flow
 //!
@@ -35,7 +37,10 @@
 
 #![deny(missing_docs)]
 
+pub mod engine;
 pub mod types;
+
+pub use types::anim::{AnimKey, AnimPolicy, ExpandKind};
 
 pub use types::bus::{
     ClipboardResult, DropInput, DroppedFile, HostCaps, HostEvent, ImeInput, InputEnvelope,
@@ -48,9 +53,10 @@ pub use types::command::{
     OverlayCmd, OverlayPolicy, OverlaySize, SplitDir, SplitterPolicy, ThemeCmd, WindowCmd,
 };
 pub use types::error::FrameworkError;
-pub use types::frame::{FrameRequest, RegionPlan, RegionSpec, TimerOwner, Wake};
+pub use types::frame::{FrameRequest, RegionPlan, RegionSpec, TimerOwner, Wake, WindowSurface};
 pub use types::ids::{
-    OverlaySlot, RegionId, Revision, ScopeId, Seconds, Ticket, TimerToken, TrayItemId, WindowId,
+    OrderedSeconds, OverlaySlot, RegionId, Revision, ScopeId, Seconds, Ticket, TimerToken,
+    TrayItemId, WindowId,
 };
 pub use types::intent::{
     CloseCause, DockIntent, DropIntent, Intent, OverlayIntent, TextIntent, UnhandledInput,
@@ -63,6 +69,6 @@ pub use types::snapshot::{
 };
 pub use types::spec::Spec;
 pub use types::window::{
-    Attention, CursorMode, FullscreenMode, ImePurpose, Point, RenderCmd, SizePx, ThemeHint,
-    WindowCommand, WindowGeometry, WindowSpec,
+    Attention, ClosePolicy, CursorMode, FullscreenMode, ImePurpose, Point, RenderCmd, SizePx,
+    ThemeHint, WindowCommand, WindowGeometry, WindowSpec,
 };

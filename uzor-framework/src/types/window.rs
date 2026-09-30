@@ -124,6 +124,20 @@ pub enum RenderCmd {
     SetVsync(bool),
 }
 
+/// What happens when the user asks the OS to close a window.
+///
+/// Part of the runtime configuration; applied by the WindowEngine when the
+/// host reports `WindowInput::CloseRequested`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ClosePolicy {
+    /// Close at once: the WindowEngine enqueues `WindowCommand::Close`.
+    #[default]
+    Auto,
+    /// Ask the app: the kernel delivers `WindowIntent::CloseRequested` and the
+    /// window closes only when the app answers with `WindowCmd::Close`.
+    AskApp,
+}
+
 /// How to create one window.
 ///
 /// Produced by the app (`WindowCmd::Open`, runtime config) or the LayoutEngine

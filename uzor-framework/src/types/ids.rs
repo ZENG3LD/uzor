@@ -98,6 +98,54 @@ impl Seconds {
     }
 }
 
+/// A [`Seconds`] instant with a total order, usable as a sorted-map key.
+///
+/// [`Seconds`] wraps an `f64` and is only `PartialOrd`; the CadenceEngine's
+/// deadline wheel keys its entries by this newtype instead. Ordering is
+/// IEEE 754 `totalOrder` (`f64::total_cmp`), so the order is total and
+/// deterministic. Constructing one from NaN is refused ([`OrderedSeconds::new`]
+/// returns `None`), so every stored key is a real (possibly infinite) instant
+/// and the `total_cmp` order agrees with the numeric order except that
+/// `-0.0 < +0.0`.
+#[derive(Clone, Copy, Debug)]
+pub struct OrderedSeconds(f64);
+
+impl OrderedSeconds {
+    /// Wrap an instant; `None` when it is NaN.
+    pub fn new(t: Seconds) -> Option<Self> {
+        if t.0.is_nan() {
+            None
+        } else {
+            Some(Self(t.0))
+        }
+    }
+
+    /// The instant as plain [`Seconds`].
+    pub const fn seconds(self) -> Seconds {
+        Seconds(self.0)
+    }
+}
+
+impl PartialEq for OrderedSeconds {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for OrderedSeconds {}
+
+impl PartialOrd for OrderedSeconds {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedSeconds {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
 /// Handle of one armed deadline on the cadence engine's deadline wheel.
 ///
 /// Produced by the CadenceEngine when a deadline is armed; consumed when it
@@ -182,5 +230,23 @@ mod tests {
         assert_eq!(t.since(Seconds(1.0)), Seconds(0.5));
         assert_eq!(Seconds(1.0).since(t), Seconds::ZERO);
         assert!(Seconds(1.0) < t);
+    }
+
+    #[test]
+    fn ordered_seconds_total_order() {
+        assert!(OrderedSeconds::new(Seconds(f64::NAN)).is_none());
+        let a = OrderedSeconds::new(Seconds(1.0)).map(OrderedSeconds::seconds);
+        assert_eq!(a, Some(Seconds(1.0)));
+        let mut v: Vec<OrderedSeconds> = [3.0, -1.0, f64::INFINITY, 0.5]
+            .iter()
+            .filter_map(|&x| OrderedSeconds::new(Seconds(x)))
+            .collect();
+        v.sort();
+        let got: Vec<f64> = v.iter().map(|k| k.seconds().get()).collect();
+        assert_eq!(got, vec![-1.0, 0.5, 3.0, f64::INFINITY]);
+        assert_eq!(
+            OrderedSeconds::new(Seconds(2.0)),
+            OrderedSeconds::new(Seconds(2.0))
+        );
     }
 }

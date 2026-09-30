@@ -93,3 +93,18 @@ pub enum TimerOwner {
         win: WindowId,
     },
 }
+
+/// The paintable surface of one window, as the WindowEngine knows it.
+///
+/// Produced from the WindowEngine's view (open, non-minimized windows only)
+/// and handed by the kernel to the CadenceEngine, which copies size and DPR
+/// into each [`FrameRequest`]. A window without a surface gets no frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowSurface {
+    /// The window.
+    pub win: WindowId,
+    /// Inner size, physical pixels.
+    pub size: SizePx,
+    /// Device pixel ratio.
+    pub dpr: f64,
+}
