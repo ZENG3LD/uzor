@@ -8,6 +8,8 @@ members = [
     "uzor-window-desktop",
     "uzor-desktop",
     "uzor-framework-macros",
+    # App engine: kernel + single-writer engines + handle + hosts
+    "uzor-framework",
     "uzor-window-web",
     "uzor-window-mobile",
     "uzor-tui",
@@ -115,6 +117,7 @@ uzor-vectorize = { version = "1.6.0-dev", path = "./uzor-vectorize" }
 uzor-window-web = { version = "1.6.0-dev", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.6.0-dev", path = "./uzor-window-mobile" }
 uzor-framework-macros = { version = "1.6.0-dev", path = "./uzor-framework-macros" }
+uzor-framework = { version = "1.6.0-dev", path = "./uzor-framework" }
 uzor-desktop = { version = "1.6.0-dev", path = "./uzor-desktop" }
 uzor-agent-api = { version = "1.6.0-dev", path = "./uzor-agent-api" }
 uzor-graph = { version = "1.6.0-dev", path = "./uzor-graph" }

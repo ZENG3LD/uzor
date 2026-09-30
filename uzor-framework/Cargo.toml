@@ -1,0 +1,27 @@
+[package]
+name = "uzor-framework"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "uzor app engine: one kernel of single-writer engines driven by a typed input bus"
+readme = "../README.md"
+
+[dependencies]
+# Leaf types only (Rect, WidgetId, KeyCode, docking ids, tokens, cadence types).
+# `default-features = false` is the workspace default; no uzor feature is
+# needed by `types/` (uzor's serde derives are unconditional).
+uzor = { workspace = true }
+serde = { workspace = true }
+smallvec = "1.10"
+thiserror = "1.0"
+
+[features]
+# Host placeholders. The native (winit) host lands in F9, the web
+# (browser RAF) host in F10; neither pulls a dependency yet.
+native = []
+web = []
