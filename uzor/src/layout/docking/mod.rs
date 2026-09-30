@@ -31,14 +31,14 @@ pub use rect::PanelRect;
 pub use tree::{PanelTree, PanelStore, Tile, Container, Tabs, Linear, Grid, Shares, LinearDirection, GridLayout};
 pub use drop_zone::{DropZone, DropZoneDetector, CompassZone};
 pub use drag::{DragDropState, LockState, DragSource, HoverTarget, PanelDragState, DragPayload};
-pub use separator::{Separator, SeparatorOrientation, SeparatorState, SeparatorLevel, SeparatorController};
+pub use separator::{Separator, SeparatorOrientation, SeparatorState, SeparatorLevel, SeparatorController, GridAxis, GridLine};
 pub use snap_back::SnapBackAnimation;
 pub use tabs::{TabBar, TabInfo, TabHit, TabDragController, TabDragState, TabReorderState, TabBarInfo, TabItem};
 pub use floating::{FloatingWindow, FloatingWindowId, FloatingDragState};
 pub use hit_test::{HitResult, CornerHandle};
-pub use presets::{WindowLayout, SplitKind, PANEL_GAP};
+pub use presets::{WindowLayout, SplitKind, PANEL_GAP, GridSpec, SplitterPolicy};
 pub use grid::{DockingTree, Leaf, Branch, PanelNode};
-pub use serialize::{LayoutSnapshot, SerializedNode, SerializedNodeType};
+pub use serialize::{LayoutSnapshot, SerializedNode, SerializedNodeType, SerializedGrid};
 pub use pin::Pin;
 
 /// Trait for panel types stored in the docking tree.

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use super::{
     DockPanel, DockingTree, Branch, PanelNode, LeafId, PanelRect,
     DropZone, Separator, SeparatorOrientation, SeparatorLevel,
-    CornerHandle,
+    CornerHandle, GridSpec, GridAxis, GridLine, PANEL_GAP,
 };
 
 /// Compute the rect of every visible leaf in the tree, given the
@@ -64,7 +64,10 @@ pub fn generate_separators<P: DockPanel>(
 ) {
     let child_rects = DockingTree::<P>::compute_child_rects(branch, branch_rect);
 
-    if child_rects.len() >= 2 {
+    let grid = branch.grid.as_ref().filter(|g| g.cell_count() == branch.children.len());
+    if let Some(grid) = grid {
+        generate_grid_separators(branch, grid, branch_rect, out);
+    } else if child_rects.len() >= 2 {
         let child_panel_rects: Vec<(u64, PanelRect)> = branch.children.iter()
             .zip(child_rects.iter())
             .filter(|(node, _)| !node.is_hidden())
@@ -126,6 +129,38 @@ pub fn generate_separators<P: DockPanel>(
         if let PanelNode::Branch(b) = child {
             generate_separators(b, *rect, out);
         }
+    }
+}
+
+/// One separator per interior row boundary (spanning the grid's width) and
+/// one per interior column boundary (spanning its height).
+fn generate_grid_separators<P: DockPanel>(
+    branch:      &Branch<P>,
+    grid:        &GridSpec,
+    branch_rect: PanelRect,
+    out:         &mut Vec<Separator>,
+) {
+    let gap = PANEL_GAP;
+    let raw = |row: usize, col: usize| branch.children[grid.cell_index(row, col)].raw_id();
+
+    let (ys, hs) = GridSpec::tracks(&grid.normalized_rows(), branch_rect.y, branch_rect.height, gap);
+    for r in 0..grid.rows.saturating_sub(1) {
+        let pos = ys[r] + hs[r] + gap / 2.0;
+        out.push(Separator::new(
+            SeparatorOrientation::Horizontal,
+            pos, branch_rect.x, branch_rect.width,
+            SeparatorLevel::Node { parent_id: branch.id, child_a: raw(r, 0), child_b: raw(r + 1, 0) },
+        ).with_grid_line(GridLine { axis: GridAxis::Row, index: r }));
+    }
+
+    let (xs, ws) = GridSpec::tracks(&grid.normalized_cols(), branch_rect.x, branch_rect.width, gap);
+    for c in 0..grid.cols.saturating_sub(1) {
+        let pos = xs[c] + ws[c] + gap / 2.0;
+        out.push(Separator::new(
+            SeparatorOrientation::Vertical,
+            pos, branch_rect.y, branch_rect.height,
+            SeparatorLevel::Node { parent_id: branch.id, child_a: raw(0, c), child_b: raw(0, c + 1) },
+        ).with_grid_line(GridLine { axis: GridAxis::Col, index: c }));
     }
 }
 

@@ -4,7 +4,7 @@
 //! panel layouts with tabs, splits, and grids. It's agnostic to the actual
 //! panel content type (defined by the `DockPanel` trait).
 
-use super::{LeafId, BranchId, PanelRect, WindowLayout, SplitKind, DropZone, DockPanel};
+use super::{LeafId, BranchId, PanelRect, WindowLayout, SplitKind, DropZone, DockPanel, GridSpec};
 
 /// Leaf node — actual panel container with tabs
 #[derive(Clone, Debug)]
@@ -90,6 +90,15 @@ pub struct Branch<P: DockPanel> {
     /// their proportions (the removed child's entry is dropped and the rest
     /// share its space in the same ratio to each other).
     pub magnetic: bool,
+    /// `Some` makes this branch a `rows × cols` grid: children are cells in
+    /// row-major order and are sized by the grid's independent row and
+    /// column ratios instead of `layout` / `proportions` / `cross_ratio`
+    /// (`layout` stays `WindowLayout::Custom`). Only honoured while
+    /// `children.len() == rows * cols`; any operation that changes the
+    /// child count drops the grid and re-infers a preset layout.
+    ///
+    /// Default: `None` — the branch uses its preset layout as before.
+    pub grid: Option<GridSpec>,
 }
 
 /// A node in the recursive panel tree
@@ -146,6 +155,7 @@ impl<P: DockPanel> DockingTree<P> {
                 cross_ratio: None,
                 preserve_if_empty: false,
                 magnetic: true,
+                grid: None,
             },
             active_leaf: None,
             next_id: 1,
@@ -207,6 +217,7 @@ impl<P: DockPanel> DockingTree<P> {
 
         self.root.children.push(leaf);
         self.root.custom_rects.clear();
+        self.root.grid = None;
         self.root.layout = Self::infer_layout(self.root.children.len());
 
         if self.active_leaf.is_none() {
@@ -228,6 +239,7 @@ impl<P: DockPanel> DockingTree<P> {
         });
         self.root.children.push(leaf);
         self.root.custom_rects.clear();
+        self.root.grid = None;
         self.root.layout = Self::infer_layout(self.root.children.len());
         if self.active_leaf.is_none() {
             self.active_leaf = Some(id);
@@ -253,6 +265,7 @@ impl<P: DockPanel> DockingTree<P> {
                 }
                 branch.custom_rects.clear();
                 branch.proportions.clear();
+                branch.grid = None;
                 branch.layout = Self::infer_layout(branch.children.len());
 
                 if self.active_leaf.is_none() {
@@ -335,7 +348,12 @@ impl<P: DockPanel> DockingTree<P> {
             WindowLayout::TwoLeftOneRight | WindowLayout::TwoTopOneBottom => branch.children.len() == 3,
             WindowLayout::Custom => true, // Custom always valid
         };
-        if !layout_compatible {
+        // A grid whose cell count no longer matches its children is dropped
+        // (the branch falls back to a count-inferred preset).
+        let grid_stale = branch.grid.as_ref()
+            .is_some_and(|g| g.cell_count() != branch.children.len());
+        if !layout_compatible || grid_stale {
+            branch.grid = None;
             branch.layout = Self::infer_layout(branch.children.len());
         }
 
@@ -354,6 +372,10 @@ impl<P: DockPanel> DockingTree<P> {
             let old_count = root.children.len();
 
             root.children.remove(pos);
+            // A rows × cols grid cannot keep its shape with a cell missing,
+            // magnetic or not: drop it and re-infer below (its `layout` is
+            // `Custom`, so the generic count-based fallback applies).
+            root.grid = None;
             if root.magnetic {
                 root.custom_rects.clear();
                 root.proportions.clear();
@@ -490,6 +512,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
 
         // Replace the original leaf-node in its parent with the new branch
@@ -575,6 +598,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
 
         // 5. Replace old leaf with new branch in parent
@@ -792,6 +816,7 @@ impl<P: DockPanel> DockingTree<P> {
     }
 
     pub fn set_layout(&mut self, layout: WindowLayout) {
+        self.root.grid = None;
         self.root.layout = layout;
         self.root.proportions.clear();
         self.root.cross_ratio = None;
@@ -848,6 +873,10 @@ impl<P: DockPanel> DockingTree<P> {
         branch.proportions.clear();
         branch.custom_rects.clear();
         branch.cross_ratio = None;
+        if let Some(g) = branch.grid.as_mut() {
+            g.row_ratios = vec![1.0 / g.rows as f64; g.rows];
+            g.col_ratios = vec![1.0 / g.cols as f64; g.cols];
+        }
         for child in &mut branch.children {
             if let PanelNode::Branch(b) = child {
                 Self::reset_branch_proportions(b);
@@ -908,6 +937,129 @@ impl<P: DockPanel> DockingTree<P> {
             branch.cross_ratio = Some((x_ratio.clamp(0.05, 0.95), y_ratio.clamp(0.05, 0.95)));
             branch.custom_rects.clear();
         }
+    }
+
+    // --- Rows × cols grid ---
+
+    /// Tree whose root is a `rows × cols` grid of single-panel leaves, one
+    /// per panel in row-major order, with equal row and column ratios.
+    /// `None` unless `panels.len() == rows * cols` and both are ≥ 1.
+    pub fn with_grid(rows: usize, cols: usize, panels: Vec<P>) -> Option<Self> {
+        let spec = GridSpec::new(rows, cols)?;
+        if panels.len() != spec.cell_count() {
+            return None;
+        }
+        let mut tree = Self::new();
+        for panel in panels {
+            tree.add_leaf(panel);
+        }
+        tree.root.layout = WindowLayout::Custom;
+        tree.root.grid = Some(spec);
+        Some(tree)
+    }
+
+    /// Lay out an existing branch as a `rows × cols` grid (children in
+    /// row-major order) with equal ratios. Clears the branch's
+    /// `proportions`, `cross_ratio` and custom rects and sets its layout to
+    /// `Custom`. Returns `false` (and changes nothing) unless the branch
+    /// exists and has exactly `rows * cols` children.
+    pub fn set_branch_grid(&mut self, branch_id: BranchId, rows: usize, cols: usize) -> bool {
+        let Some(spec) = GridSpec::new(rows, cols) else { return false };
+        let Some(branch) = self.find_branch_mut(branch_id) else { return false };
+        if branch.children.len() != spec.cell_count() {
+            return false;
+        }
+        branch.layout = WindowLayout::Custom;
+        branch.proportions.clear();
+        branch.custom_rects.clear();
+        branch.cross_ratio = None;
+        branch.grid = Some(spec);
+        true
+    }
+
+    /// Replace leaf `leaf_id` with a new `rows × cols` grid branch: the leaf
+    /// becomes cell 0 and one new leaf per panel in `panels` fills cells
+    /// `1..rows*cols` in row-major order. Returns the new branch id and the
+    /// ids of all cells (row-major, the original leaf first), or `None` (tree
+    /// unchanged) if the leaf is missing or `panels.len() != rows*cols - 1`.
+    pub fn wrap_leaf_in_grid(
+        &mut self,
+        leaf_id: LeafId,
+        rows: usize,
+        cols: usize,
+        panels: Vec<P>,
+    ) -> Option<(BranchId, Vec<LeafId>)> {
+        let spec = GridSpec::new(rows, cols)?;
+        if panels.len() + 1 != spec.cell_count() {
+            return None;
+        }
+        let original = self.find_leaf(leaf_id)?.clone();
+        let mut ids = vec![leaf_id];
+        let mut children = vec![PanelNode::Leaf(original)];
+        for panel in panels {
+            let id = self.next_leaf_id();
+            ids.push(id);
+            children.push(PanelNode::Leaf(Leaf::new(id, panel)));
+        }
+        let branch_id = self.next_branch_id();
+        let branch = PanelNode::Branch(Branch {
+            id: branch_id,
+            children,
+            layout: WindowLayout::Custom,
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            cross_ratio: None,
+            preserve_if_empty: false,
+            magnetic: true,
+            grid: Some(spec),
+        });
+        self.replace_node_leaf(leaf_id, branch);
+        Some((branch_id, ids))
+    }
+
+    /// Stop laying out `branch_id` as a grid: drops the grid and re-infers a
+    /// preset layout from the child count. Returns `false` if the branch is
+    /// missing or was not a grid.
+    pub fn clear_branch_grid(&mut self, branch_id: BranchId) -> bool {
+        let Some(branch) = self.find_branch_mut(branch_id) else { return false };
+        if branch.grid.take().is_none() {
+            return false;
+        }
+        branch.layout = Self::infer_layout(branch.children.len());
+        true
+    }
+
+    /// The grid spec of `branch_id`, if it is a grid branch.
+    pub fn branch_grid(&self, branch_id: BranchId) -> Option<&GridSpec> {
+        self.find_branch(branch_id)?.grid.as_ref()
+    }
+
+    /// Set the row weights of grid branch `branch_id` (columns untouched).
+    /// `false` unless the branch is a grid, `ratios.len() == rows` and every
+    /// weight is finite and positive.
+    pub fn set_grid_row_ratios(&mut self, branch_id: BranchId, ratios: Vec<f64>) -> bool {
+        let Some(g) = self.find_branch_mut(branch_id).and_then(|b| b.grid.as_mut()) else {
+            return false;
+        };
+        if ratios.len() != g.rows || !GridSpec::valid_block(&ratios) {
+            return false;
+        }
+        g.row_ratios = ratios;
+        true
+    }
+
+    /// Set the column weights of grid branch `branch_id` (rows untouched).
+    /// `false` unless the branch is a grid, `ratios.len() == cols` and every
+    /// weight is finite and positive.
+    pub fn set_grid_col_ratios(&mut self, branch_id: BranchId, ratios: Vec<f64>) -> bool {
+        let Some(g) = self.find_branch_mut(branch_id).and_then(|b| b.grid.as_mut()) else {
+            return false;
+        };
+        if ratios.len() != g.cols || !GridSpec::valid_block(&ratios) {
+            return false;
+        }
+        g.col_ratios = ratios;
+        true
     }
 
     // --- Custom Rects ---
@@ -1017,6 +1169,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
         // The original target leaf lives on INSIDE the branch (same id) —
         // exactly the `split_leaf` replacement pattern.
@@ -1059,6 +1212,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
         self.replace_node_leaf(leaf_id, new_branch);
         Some(new_id)
@@ -1088,6 +1242,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
         let new_node = PanelNode::Leaf(Leaf::new(new_id, panel));
         let old_root_node = PanelNode::Branch(old_root);
@@ -1106,6 +1261,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         };
         Some(new_id)
     }
@@ -1141,6 +1297,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         });
 
         let branch_id = self.next_branch_id();
@@ -1162,6 +1319,7 @@ impl<P: DockPanel> DockingTree<P> {
             cross_ratio: None,
             preserve_if_empty: false,
             magnetic: true,
+            grid: None,
         };
     }
 
