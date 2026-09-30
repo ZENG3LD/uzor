@@ -1,3 +1,4 @@
+pub mod cook;
 pub mod coordinator;
 pub mod event_processor;
 pub mod response;

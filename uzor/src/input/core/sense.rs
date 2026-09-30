@@ -26,6 +26,14 @@ pub struct Sense {
     pub double_click: bool,
     /// Widget receives non-text keyboard events (arrows, escape, shortcuts) when focused
     pub keyboard: bool,
+    /// Widget takes IME composition (preedit / commit) while focused
+    pub ime: bool,
+    /// Widget is a drop target for file / drag-and-drop payloads
+    pub drop: bool,
+    /// Widget responds to multi-finger gestures (pinch, rotate, two-finger pan)
+    pub gesture: bool,
+    /// Widget responds to raw touch contacts
+    pub touch: bool,
 }
 
 // Predefined constants
@@ -41,6 +49,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Only hover detection
@@ -54,6 +66,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Click and hover (for buttons, checkboxes)
@@ -67,6 +83,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Drag and hover (for sliders, scrollbars)
@@ -80,6 +100,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Both click and drag (introduces latency)
@@ -93,6 +117,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Can receive keyboard focus but no mouse interaction
@@ -106,6 +134,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Scroll-sensitive (for scrollable container viewports)
@@ -119,6 +151,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Full interaction - click, drag, hover, focus, scroll, right_click, double_click, keyboard
@@ -132,6 +168,10 @@ impl Sense {
         right_click: true,
         double_click: true,
         keyboard: true,
+        ime: true,
+        drop: true,
+        gesture: true,
+        touch: true,
     };
 
     /// Text input — click, drag, hover, focus, and text
@@ -145,6 +185,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Right-click and hover (for context menus)
@@ -158,6 +202,10 @@ impl Sense {
         right_click: true,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Double-click and hover
@@ -171,6 +219,10 @@ impl Sense {
         right_click: false,
         double_click: true,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 
     /// Keyboard events when focused (arrows, escape, shortcuts), includes hover and focus
@@ -184,6 +236,10 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: true,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
     };
 }
 
@@ -259,6 +315,10 @@ impl Sense {
             right_click: self.right_click || other.right_click,
             double_click: self.double_click || other.double_click,
             keyboard: self.keyboard || other.keyboard,
+            ime: self.ime || other.ime,
+            drop: self.drop || other.drop,
+            gesture: self.gesture || other.gesture,
+            touch: self.touch || other.touch,
         }
     }
 
@@ -275,6 +335,10 @@ impl Sense {
             right_click: self.right_click && other.right_click,
             double_click: self.double_click && other.double_click,
             keyboard: self.keyboard && other.keyboard,
+            ime: self.ime && other.ime,
+            drop: self.drop && other.drop,
+            gesture: self.gesture && other.gesture,
+            touch: self.touch && other.touch,
         }
     }
 
@@ -342,11 +406,44 @@ impl Sense {
         self.hover = true;
         self
     }
+    /// Add IME composition sensing (also adds focus and hover — IME text
+    /// only ever reaches the focused widget)
+    #[inline]
+    pub fn with_ime(mut self) -> Self {
+        self.ime = true;
+        self.focus = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add drop-target sensing (also adds hover)
+    #[inline]
+    pub fn with_drop(mut self) -> Self {
+        self.drop = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add multi-finger gesture sensing (also adds hover)
+    #[inline]
+    pub fn with_gesture(mut self) -> Self {
+        self.gesture = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add raw touch sensing (also adds hover)
+    #[inline]
+    pub fn with_touch(mut self) -> Self {
+        self.touch = true;
+        self.hover = true;
+        self
+    }
 }
 
 // Query methods
 impl Sense {
-    /// Check if any interaction is sensed (click, drag, focus, scroll, text, right_click, double_click, or keyboard)
+    /// Check if any interaction is sensed (everything except bare hover)
     #[inline]
     pub fn interactive(&self) -> bool {
         self.click
@@ -357,6 +454,10 @@ impl Sense {
             || self.right_click
             || self.double_click
             || self.keyboard
+            || self.ime
+            || self.drop
+            || self.gesture
+            || self.touch
     }
 
     /// Check if both click and drag are sensed (has latency)
@@ -376,6 +477,10 @@ impl Sense {
             && !self.right_click
             && !self.double_click
             && !self.keyboard
+            && !self.ime
+            && !self.drop
+            && !self.gesture
+            && !self.touch
     }
 }
 
@@ -774,5 +879,38 @@ mod tests {
 
         assert_eq!(original, cloned);
         assert_eq!(original, copied);
+    }
+
+    #[test]
+    fn new_bits_are_off_in_named_senses_and_on_in_all() {
+        for sense in [Sense::NONE, Sense::HOVER, Sense::CLICK, Sense::DRAG, Sense::TEXT_INPUT, Sense::KEYBOARD] {
+            assert!(!sense.ime && !sense.drop && !sense.gesture && !sense.touch, "{sense:?}");
+        }
+        let all = Sense::ALL;
+        assert!(all.ime && all.drop && all.gesture && all.touch);
+    }
+
+    #[test]
+    fn new_builders_set_their_bit_and_hover_and_count_as_interactive() {
+        let ime = Sense::NONE.with_ime();
+        assert!(ime.ime && ime.focus && ime.hover);
+        for sense in [Sense::NONE.with_drop(), Sense::NONE.with_gesture(), Sense::NONE.with_touch()] {
+            assert!(sense.hover);
+            assert!(sense.interactive());
+            assert!(!sense.is_passive());
+        }
+        assert!(Sense::NONE.with_drop().drop);
+        assert!(Sense::NONE.with_gesture().gesture);
+        assert!(Sense::NONE.with_touch().touch);
+    }
+
+    #[test]
+    fn union_and_intersection_carry_the_new_bits() {
+        let a = Sense::NONE.with_touch().with_ime();
+        let b = Sense::NONE.with_touch().with_drop();
+        let u = a.union(b);
+        assert!(u.touch && u.ime && u.drop && !u.gesture);
+        let i = a.intersection(b);
+        assert!(i.touch && !i.ime && !i.drop);
     }
 }

@@ -197,31 +197,11 @@ pub struct WidgetInputState {
     pub drag: DragState,
     /// Active widget (pressed but not yet released)
     pub active: Option<WidgetId>,
-    /// Last click time for double-click detection
-    pub last_click_time: f64,
-    /// Last click position
-    pub last_click_pos: (f64, f64),
-    /// Last clicked widget
-    pub last_click_widget: Option<WidgetId>,
-    /// Double-click threshold in milliseconds
-    pub double_click_threshold_ms: f64,
-    /// Double-click distance threshold in pixels
-    pub double_click_distance: f64,
-    /// Click count for multi-click detection (1 = single, 2 = double, 3 = triple)
-    pub click_count: u8,
-    /// Triple-click threshold in milliseconds
-    pub triple_click_threshold_ms: f64,
 }
 
 impl WidgetInputState {
     pub fn new() -> Self {
-        Self {
-            double_click_threshold_ms: 500.0,
-            double_click_distance: 5.0,
-            click_count: 0,
-            triple_click_threshold_ms: 300.0,
-            ..Default::default()
-        }
+        Self::default()
     }
 
     /// Update mouse position
@@ -230,58 +210,6 @@ impl WidgetInputState {
         if self.drag.dragging.is_some() {
             self.drag.update(x, y);
         }
-    }
-
-    /// Handle mouse press
-    pub fn mouse_press(&mut self, _x: f64, _y: f64, widget_id: Option<WidgetId>) {
-        self.hover.set_pressed(true);
-        self.active = widget_id;
-    }
-
-    /// Handle mouse release with click/double-click/triple-click detection
-    pub fn mouse_release(&mut self, x: f64, y: f64, now: f64) -> WidgetInteraction {
-        self.hover.set_pressed(false);
-
-        let was_dragging = self.drag.dragging.is_some();
-        self.drag.end();
-
-        if was_dragging {
-            self.active = None;
-            return WidgetInteraction::None;
-        }
-
-        if let Some(ref active_id) = self.active {
-            let is_same_widget = self.last_click_widget.as_ref() == Some(active_id);
-            let time_since_last = now - self.last_click_time;
-            let dist = ((x - self.last_click_pos.0).powi(2) + (y - self.last_click_pos.1).powi(2)).sqrt();
-            let dist_ok = dist < self.double_click_distance;
-
-            let interaction = if is_same_widget && dist_ok {
-                if time_since_last < self.triple_click_threshold_ms && self.click_count == 2 {
-                    self.click_count = 3;
-                    WidgetInteraction::TripleClick
-                } else if time_since_last < self.double_click_threshold_ms && self.click_count == 1 {
-                    self.click_count = 2;
-                    WidgetInteraction::DoubleClick
-                } else {
-                    self.click_count = 1;
-                    WidgetInteraction::Click
-                }
-            } else {
-                self.click_count = 1;
-                WidgetInteraction::Click
-            };
-
-            self.last_click_time = now;
-            self.last_click_pos = (x, y);
-            self.last_click_widget = Some(active_id.clone());
-
-            self.active = None;
-            return interaction;
-        }
-
-        self.active = None;
-        WidgetInteraction::None
     }
 
     /// Start dragging a widget
@@ -353,113 +281,5 @@ mod tests {
 
         drag.end();
         assert!(!drag.is_dragging(&id));
-    }
-
-    #[test]
-    fn test_click_detection() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction = state.mouse_release(100.0, 50.0, 1000.0);
-        assert_eq!(interaction, WidgetInteraction::Click);
-    }
-
-    #[test]
-    fn test_double_click_detection() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        state.mouse_release(100.0, 50.0, 1000.0);
-
-        state.mouse_press(101.0, 51.0, Some(id.clone()));
-        let interaction = state.mouse_release(101.0, 51.0, 1200.0);
-        assert_eq!(interaction, WidgetInteraction::DoubleClick);
-    }
-
-    #[test]
-    fn test_triple_click_detection() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction1 = state.mouse_release(100.0, 50.0, 1000.0);
-        assert_eq!(interaction1, WidgetInteraction::Click);
-
-        state.mouse_press(101.0, 51.0, Some(id.clone()));
-        let interaction2 = state.mouse_release(101.0, 51.0, 1200.0);
-        assert_eq!(interaction2, WidgetInteraction::DoubleClick);
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction3 = state.mouse_release(100.0, 50.0, 1400.0);
-        assert_eq!(interaction3, WidgetInteraction::TripleClick);
-    }
-
-    #[test]
-    fn test_triple_click_timeout() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        state.mouse_release(100.0, 50.0, 1000.0);
-
-        state.mouse_press(101.0, 51.0, Some(id.clone()));
-        state.mouse_release(101.0, 51.0, 1200.0);
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction = state.mouse_release(100.0, 50.0, 2000.0);
-        assert_eq!(interaction, WidgetInteraction::Click);
-    }
-
-    #[test]
-    fn test_triple_click_different_widget() {
-        let mut state = WidgetInputState::new();
-        let id1 = WidgetId::new("button1");
-        let id2 = WidgetId::new("button2");
-
-        state.mouse_press(100.0, 50.0, Some(id1.clone()));
-        state.mouse_release(100.0, 50.0, 1000.0);
-
-        state.mouse_press(101.0, 51.0, Some(id1.clone()));
-        state.mouse_release(101.0, 51.0, 1200.0);
-
-        state.mouse_press(200.0, 50.0, Some(id2.clone()));
-        let interaction = state.mouse_release(200.0, 50.0, 1400.0);
-        assert_eq!(interaction, WidgetInteraction::Click);
-    }
-
-    #[test]
-    fn test_triple_click_too_far() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        state.mouse_release(100.0, 50.0, 1000.0);
-
-        state.mouse_press(101.0, 51.0, Some(id.clone()));
-        state.mouse_release(101.0, 51.0, 1200.0);
-
-        state.mouse_press(200.0, 50.0, Some(id.clone()));
-        let interaction = state.mouse_release(200.0, 50.0, 1400.0);
-        assert_eq!(interaction, WidgetInteraction::Click);
-    }
-
-    #[test]
-    fn test_click_count_reset_after_triple() {
-        let mut state = WidgetInputState::new();
-        let id = WidgetId::new("button1");
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        state.mouse_release(100.0, 50.0, 1000.0);
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        state.mouse_release(100.0, 50.0, 1200.0);
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction = state.mouse_release(100.0, 50.0, 1400.0);
-        assert_eq!(interaction, WidgetInteraction::TripleClick);
-
-        state.mouse_press(100.0, 50.0, Some(id.clone()));
-        let interaction = state.mouse_release(100.0, 50.0, 1600.0);
-        assert_eq!(interaction, WidgetInteraction::Click);
     }
 }

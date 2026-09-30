@@ -8,7 +8,6 @@
 use uzor::input::{
     handle_button_input, handle_checkbox_input,
     handle_slider_input, FocusState, WidgetInputState,
-    WidgetInteraction,
 };
 use uzor::types::unsafe_widget_id;
 use uzor::types::{ScrollState, WidgetRect};
@@ -41,17 +40,15 @@ fn test_button_press_and_release() {
     let id = unsafe_widget_id("btn1");
     let rect = WidgetRect::new(10.0, 10.0, 100.0, 40.0);
 
-    // Mouse press on button
+    // Mouse press on button: pressed flag + press-origin widget, the two
+    // fields the coordinator bakes each frame.
     state.update_mouse(50.0, 30.0);
-    state.mouse_press(50.0, 30.0, Some(id.clone()));
+    state.hover.set_pressed(true);
+    state.active = Some(id.clone());
     let result = handle_button_input(&state, &id, &rect, false);
     assert!(result.hovered);
     assert!(result.pressed);
     assert!(!result.clicked);
-
-    // Mouse release (generates click)
-    state.mouse_release(50.0, 30.0, 1000.0);
-    // After release, active is cleared - that's the expected behavior
 }
 
 // =============================================================================
@@ -209,68 +206,6 @@ fn test_focus_multiple_requests() {
     assert!(!focus.is_focused(&input1));
     assert!(!focus.is_focused(&input2));
     assert!(focus.is_focused(&input3));
-}
-
-// =============================================================================
-// Double-Click / Triple-Click Detection Tests
-// =============================================================================
-
-#[test]
-fn test_double_click_detection_timing() {
-    let mut state = WidgetInputState::new();
-    let button_id = unsafe_widget_id("button1");
-
-    state.mouse_press(100.0, 50.0, Some(button_id.clone()));
-    let result1 = state.mouse_release(100.0, 50.0, 1000.0);
-    assert_eq!(result1, WidgetInteraction::Click);
-
-    state.mouse_press(101.0, 51.0, Some(button_id.clone()));
-    let result2 = state.mouse_release(101.0, 51.0, 1200.0);
-    assert_eq!(result2, WidgetInteraction::DoubleClick);
-
-    // Too late for triple click
-    state.mouse_press(100.0, 50.0, Some(button_id.clone()));
-    let result3 = state.mouse_release(100.0, 50.0, 2000.0);
-    assert_eq!(result3, WidgetInteraction::Click);
-}
-
-#[test]
-fn test_double_click_distance_threshold() {
-    let mut state = WidgetInputState::new();
-    let button_id = unsafe_widget_id("button1");
-
-    state.mouse_press(100.0, 50.0, Some(button_id.clone()));
-    state.mouse_release(100.0, 50.0, 1000.0);
-
-    // Within distance
-    state.mouse_press(101.0, 51.0, Some(button_id.clone()));
-    let result = state.mouse_release(101.0, 51.0, 1200.0);
-    assert_eq!(result, WidgetInteraction::DoubleClick);
-
-    // Reset
-    state = WidgetInputState::new();
-
-    state.mouse_press(100.0, 50.0, Some(button_id.clone()));
-    state.mouse_release(100.0, 50.0, 1000.0);
-
-    // Too far away
-    state.mouse_press(110.0, 60.0, Some(button_id.clone()));
-    let result = state.mouse_release(110.0, 60.0, 1200.0);
-    assert_eq!(result, WidgetInteraction::Click);
-}
-
-#[test]
-fn test_double_click_different_widgets() {
-    let mut state = WidgetInputState::new();
-    let button1 = unsafe_widget_id("button1");
-    let button2 = unsafe_widget_id("button2");
-
-    state.mouse_press(100.0, 50.0, Some(button1.clone()));
-    state.mouse_release(100.0, 50.0, 1000.0);
-
-    state.mouse_press(100.0, 50.0, Some(button2.clone()));
-    let result = state.mouse_release(100.0, 50.0, 1200.0);
-    assert_eq!(result, WidgetInteraction::Click);
 }
 
 // =============================================================================
