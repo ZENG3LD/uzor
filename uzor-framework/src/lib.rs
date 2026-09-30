@@ -20,11 +20,11 @@
 //!
 //! ## Status
 //!
-//! Briefs F1-F2: the `types` role (the input bus, the command vocabulary,
+//! Briefs F1-F3: the `types` role (the input bus, the command vocabulary,
 //! intents, the visual snapshot, window commands, frame requests, the layout
-//! blob, the [`Spec`] vocabulary trait, engine ops / effects) and the first
-//! three engines in [`engine`] (windows, cadence + deadline wheel,
-//! animation). The remaining engines, kernel, handle, runtime and hosts
+//! blob, the [`Spec`] vocabulary trait, engine ops / effects) and five
+//! engines in [`engine`] (windows, cadence + deadline wheel, animation,
+//! input, keymap). The remaining engines, kernel, handle, runtime and hosts
 //! follow in later briefs; `Handle`, `App`, `Runtime` and the hosts named in
 //! the header above do not exist yet.
 //!

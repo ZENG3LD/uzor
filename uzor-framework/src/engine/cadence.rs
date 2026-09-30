@@ -52,6 +52,7 @@ use std::collections::BTreeMap;
 
 use smallvec::SmallVec;
 use uzor::render::{InvalidateBits, RetainedScope, TickRate, UNCAPPED_FPS};
+use uzor::Rect;
 
 use crate::types::command::CadenceCmd;
 use crate::types::frame::{FrameRequest, RegionPlan, RegionSpec, TimerOwner, Wake, WindowSurface};
@@ -73,7 +74,9 @@ pub type Fired = SmallVec<[(TimerToken, TimerOwner); 4]>;
 fn owner_window(owner: TimerOwner) -> Option<WindowId> {
     match owner {
         TimerOwner::App(_) => None,
-        TimerOwner::OverlayAutoClose { win, .. } | TimerOwner::Tooltip { win } => Some(win),
+        TimerOwner::OverlayAutoClose { win, .. }
+        | TimerOwner::Tooltip { win }
+        | TimerOwner::CaretBlink { win } => Some(win),
     }
 }
 
@@ -604,6 +607,25 @@ impl<'a> CadenceEngineView<'a> {
         self.e.windows.get(&win).map(|wc| wc.tick)
     }
 
+    /// The declared region of `win` that contains the centre of `rect`
+    /// (the last declared one when regions overlap), or `None` when no
+    /// region does or the window declares none. The kernel uses it to turn
+    /// a widget rect (e.g. a blinking caret's field) into the narrowest
+    /// invalidation the cadence model has; `None` then means "the whole
+    /// window".
+    pub fn region_containing(&self, win: WindowId, rect: Rect) -> Option<RegionId> {
+        let cx = rect.x + rect.width / 2.0;
+        let cy = rect.y + rect.height / 2.0;
+        self.e
+            .windows
+            .get(&win)?
+            .regions
+            .iter()
+            .rev()
+            .find(|s| s.spec.rect.contains(cx, cy))
+            .map(|s| s.spec.id)
+    }
+
     /// Something of the window waits for a repaint.
     pub fn is_dirty(&self, win: WindowId) -> bool {
         self.e.windows.get(&win).is_some_and(WindowCadence::dirty)
@@ -1104,5 +1126,37 @@ mod tests {
             frames[0].invalidations.as_slice(),
             &[(RetainedScope::Region(3), InvalidateBits::ALL)]
         );
+    }
+
+    #[test]
+    fn region_containing_maps_a_widget_rect_to_its_region() {
+        let mut e = CadenceEngine::new();
+        open(&mut e, W1, TickRate::Dirty);
+        let field = Rect::new(10.0, 21.0, 30.0, 6.0);
+        // No regions declared: the window is one implicit region.
+        assert_eq!(e.view().region_containing(W1, field), None);
+        e.apply(CadenceOp::Cmd(CadenceCmd::SetRegions {
+            win: W1,
+            regions: vec![region(1, 0), region(2, 0), region(3, 0)],
+        }));
+        // Region n spans y in [10n, 10n + 10); the field centre is y = 24.
+        assert_eq!(e.view().region_containing(W1, field), Some(RegionId(2)));
+        assert_eq!(
+            e.view()
+                .region_containing(W1, Rect::new(500.0, 500.0, 1.0, 1.0)),
+            None
+        );
+        assert_eq!(e.view().region_containing(W2, field), None);
+        // Invalidating just that region leaves the other regions clean.
+        let surfaces = [surface(W1)];
+        let view = CadenceTickView::new(&surfaces, BG, false);
+        e.frames(s(0.0), &view);
+        e.apply(CadenceOp::Invalidate {
+            win: W1,
+            region: e.view().region_containing(W1, field),
+            bits: InvalidateBits::MATERIAL,
+        });
+        let frames = e.frames(s(0.1), &view);
+        assert_eq!(region_ids(&frames[0]), vec![Some(2)]);
     }
 }

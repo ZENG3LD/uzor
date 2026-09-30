@@ -21,6 +21,8 @@
 //! | [`windows`] | [`WindowEngine`](windows::WindowEngine) | per-window OS-facing state, theme tokens, the output command queue |
 //! | [`cadence`] | [`CadenceEngine`](cadence::CadenceEngine) | tick rates, regions, invalidation bits, the [`DeadlineWheel`](cadence::DeadlineWheel) |
 //! | [`anim`] | [`AnimationEngine`](anim::AnimationEngine) | typed linear animators (expand, overlay fade) |
+//! | [`input`] | [`InputEngine`](input::InputEngine) | per-window coordinator, cook, focus scopes, capture, hover / press / click, text / IME, caret blink |
+//! | [`keymap`] | [`KeymapEngine`](keymap::KeymapEngine) | key bindings per scope (global / overlay / focused widget) |
 //!
 //! ## Visibility
 //!
@@ -32,4 +34,6 @@
 
 pub mod anim;
 pub mod cadence;
+pub mod input;
+pub mod keymap;
 pub mod windows;

@@ -75,7 +75,8 @@ pub struct RegionSpec {
 /// owner replaces its previous deadline.
 ///
 /// The kernel converts fired owners: `App(n)` becomes `Intent::Timer(n)`,
-/// `OverlayAutoClose` closes that overlay, `Tooltip` shows / hides a tooltip.
+/// `OverlayAutoClose` closes that overlay, `Tooltip` shows / hides a tooltip,
+/// `CaretBlink` goes back to the InputEngine's tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TimerOwner {
     /// An app timer (`CadenceCmd::WakeAt`) with the app's token.
@@ -89,6 +90,12 @@ pub enum TimerOwner {
     },
     /// Tooltip delay of one window.
     Tooltip {
+        /// The window.
+        win: WindowId,
+    },
+    /// Next caret blink edge of the focused text field of one window
+    /// (armed and disarmed by the InputEngine through the kernel).
+    CaretBlink {
         /// The window.
         win: WindowId,
     },
