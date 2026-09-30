@@ -24,14 +24,22 @@
 //! | `VelloCpu` | Full (Gpu surface) — write_texture → blit → present; stub (Software) |
 //! | `TinySkia` | Full (Gpu surface) — write_texture → blit → present; stub (Software) |
 
-use vello::peniko::color::{AlphaColor, Srgb};
-use vello::{wgpu, AaConfig, RenderParams};
+// `color` is the crate vello re-exports as `vello::peniko::color`, so
+// `AlphaColor<Srgb>` here is the same type with or without the GPU stack.
+use color::{AlphaColor, Srgb};
+#[cfg(feature = "gpu")]
+use vello::wgpu;
+#[cfg(feature = "vello-gpu")]
+use vello::{AaConfig, RenderParams};
 
 use crate::backend::RenderBackend;
-use crate::factory::{SurfaceMode, WindowRenderState};
+#[cfg(any(feature = "tiny-skia", feature = "vello-cpu", feature = "vello-gpu", feature = "vello-hybrid", feature = "wgpu-instanced"))]
+use crate::factory::SurfaceMode;
+use crate::factory::WindowRenderState;
 use crate::metrics::RenderMetrics;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg(feature = "vello-gpu")]
 struct VelloSceneStats {
     paths: u32,
     path_segments: u32,
@@ -49,6 +57,7 @@ struct VelloSceneStats {
     reserved_bytes: usize,
 }
 
+#[cfg(feature = "vello-gpu")]
 impl VelloSceneStats {
     fn capture(scene: &vello::Scene) -> Self {
         let encoding = scene.encoding();
@@ -93,15 +102,18 @@ impl VelloSceneStats {
     }
 }
 
+#[cfg(feature = "vello-gpu")]
 fn vec_len_bytes<T>(values: &Vec<T>) -> usize {
     values.len().saturating_mul(std::mem::size_of::<T>())
 }
 
+#[cfg(feature = "vello-gpu")]
 fn vec_capacity_bytes<T>(values: &Vec<T>) -> usize {
     values.capacity().saturating_mul(std::mem::size_of::<T>())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "vello-gpu")]
 struct VelloGpuErrorScopes {
     out_of_memory: wgpu::ErrorScopeGuard,
     internal: wgpu::ErrorScopeGuard,
@@ -109,6 +121,7 @@ struct VelloGpuErrorScopes {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "vello-gpu")]
 impl VelloGpuErrorScopes {
     fn push(device: &wgpu::Device) -> Self {
         Self {
@@ -129,6 +142,7 @@ impl VelloGpuErrorScopes {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Default)]
+#[cfg(feature = "vello-gpu")]
 struct VelloGpuScopedErrors {
     validation: Option<wgpu::Error>,
     internal: Option<wgpu::Error>,
@@ -185,6 +199,7 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
     // Channels co-exist; this dispatch picks which one paints the
     // swapchain THIS frame. The other channel's last buffered content
     // is preserved but not presented.
+    #[cfg(feature = "urx")]
     if let Some(urx) = state.active_urx {
         let surface_lost = match urx {
             uzor::UrxBackend::Cpu      => crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics),
@@ -213,10 +228,15 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
     }
 
     let surface_lost = match state.active {
+        #[cfg(feature = "vello-gpu")]
         RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut frame_metrics, total_t0),
+        #[cfg(feature = "vello-hybrid")]
         RenderBackend::VelloHybrid   => submit_vello_hybrid(state, &params, &mut frame_metrics),
+        #[cfg(feature = "wgpu-instanced")]
         RenderBackend::InstancedWgpu => submit_instanced(state, &params, &mut frame_metrics),
+        #[cfg(feature = "vello-cpu")]
         RenderBackend::VelloCpu      => submit_cpu_vello(state, &mut frame_metrics),
+        #[cfg(feature = "tiny-skia")]
         RenderBackend::TinySkia      => submit_cpu_tinyskia(state, &mut frame_metrics),
         RenderBackend::Canvas2d      => {
             // DOM canvas auto-presents — all draw calls were issued synchronously
@@ -228,10 +248,23 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
         // Reached via `canvas2d_urx_*` labels — consumer used the legacy
         // Canvas2D vocabulary with a URX rasterizer underneath. Same
         // submit functions as the dedicated URX channel above.
+        #[cfg(feature = "urx")]
         RenderBackend::UrxCpu        => crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics),
+        #[cfg(feature = "urx")]
         RenderBackend::UrxWgpu       => crate::submit_urx::submit_urx_wgpu(state, &params, &mut frame_metrics),
+        #[cfg(feature = "urx")]
         RenderBackend::UrxHybrid     => crate::submit_urx::submit_urx_hybrid(state, &params, &mut frame_metrics),
+        #[cfg(feature = "urx")]
         RenderBackend::UrxWgpuFull   => crate::submit_urx::submit_urx_wgpu_full(state, &params, &mut frame_metrics),
+
+        // Backend not compiled into this build: nothing can paint it, so
+        // skip the frame (not a lost surface).
+        #[allow(unreachable_patterns)]
+        _ => {
+            let _ = (&params, total_t0);
+            warn_backend_not_compiled(state.active);
+            false
+        }
     };
 
     frame_metrics.submit_us = total_t0.elapsed().as_micros() as u64;
@@ -263,6 +296,7 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
 
 // ── VelloGpu ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "vello-gpu")]
 fn submit_vello_gpu(
     state: &mut WindowRenderState,
     params: &SubmitParams,
@@ -419,6 +453,7 @@ fn submit_vello_gpu(
 
 // ── VelloHybrid ───────────────────────────────────────────────────────────────
 
+#[cfg(feature = "vello-hybrid")]
 fn submit_vello_hybrid(
     state: &mut WindowRenderState,
     _params: &SubmitParams,
@@ -485,6 +520,7 @@ fn submit_vello_hybrid(
 
 // ── InstancedWgpu ─────────────────────────────────────────────────────────────
 
+#[cfg(feature = "wgpu-instanced")]
 fn submit_instanced(
     state: &mut WindowRenderState,
     params: &SubmitParams,
@@ -577,8 +613,13 @@ fn submit_instanced(
 
 // ── VelloCpu ─────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "vello-cpu")]
 fn submit_cpu_vello(state: &mut WindowRenderState, metrics: &mut RenderMetrics) -> bool {
+    // Timing counters are only filled on the GPU-swapchain path.
+    #[cfg(not(feature = "gpu"))]
+    let _ = &metrics;
     match state.surface {
+        #[cfg(feature = "gpu")]
         SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } => {
             let width = surface.config.width;
             let height = surface.config.height;
@@ -650,8 +691,13 @@ fn submit_cpu_vello(state: &mut WindowRenderState, metrics: &mut RenderMetrics) 
 
 // ── TinySkia ──────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tiny-skia")]
 fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetrics) -> bool {
+    // Timing counters are only filled on the GPU-swapchain path.
+    #[cfg(not(feature = "gpu"))]
+    let _ = &metrics;
     match state.surface {
+        #[cfg(feature = "gpu")]
         SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } => {
             let width = surface.config.width;
             let height = surface.config.height;
@@ -718,6 +764,22 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// One stderr line per backend per process when `submit_frame` is asked to
+/// present a backend whose Cargo feature is off. Never reached with default
+/// features (every native variant has its own arm there).
+fn warn_backend_not_compiled(backend: RenderBackend) {
+    use std::sync::Mutex;
+    static WARNED: Mutex<Vec<RenderBackend>> = Mutex::new(Vec::new());
+    let mut warned = WARNED.lock().unwrap_or_else(|p| p.into_inner());
+    if !warned.contains(&backend) {
+        warned.push(backend);
+        eprintln!(
+            "[render-hub] {backend:?} is not compiled into this build of uzor-render-hub \
+             (its Cargo feature is off); skipping frame"
+        );
+    }
+}
+
 /// Acquire swapchain texture, blit `target_view` → swapchain, present.
 ///
 /// Returns `true` on an unrecoverable surface/device failure, `false`
@@ -725,6 +787,7 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
 /// Crate-public alias of `blit_and_present` — used by `submit_urx::submit_urx_cpu`
 /// (CPU rasteriser → swapchain) to share the same blit + present path as
 /// the other CPU backends.
+#[cfg(feature = "gpu")]
 pub(crate) fn blit_and_present_urx(
     surface: &mut vello::util::RenderSurface<'static>,
     device: &wgpu::Device,
@@ -733,6 +796,7 @@ pub(crate) fn blit_and_present_urx(
     blit_and_present(surface, device, queue)
 }
 
+#[cfg(feature = "gpu")]
 fn blit_and_present(
     surface: &mut vello::util::RenderSurface<'static>,
     device: &wgpu::Device,
@@ -772,6 +836,7 @@ fn blit_and_present(
 /// factory compiles area-only shaders, so a stray value (e.g. the
 /// framework `AppConfig` default of `1`) must never select an MSAA mode
 /// the shaders were not built for — that is an instant vello panic.
+#[cfg(feature = "vello-gpu")]
 fn aa_for(msaa: u8) -> AaConfig {
     match msaa {
         8 => AaConfig::Msaa8,
@@ -784,10 +849,13 @@ fn aa_for(msaa: u8) -> AaConfig {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "vello-gpu", feature = "tiny-skia", feature = "vello-cpu"))]
     use super::*;
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu"))]
     use uzor::layout::window::SoftwarePresenter;
 
     #[test]
+    #[cfg(feature = "vello-gpu")]
     fn vello_scene_stats_reports_stream_counts_and_memory_proxies() {
         let mut scene = vello::Scene::new();
         let encoding = scene.encoding_mut();
@@ -808,17 +876,20 @@ mod tests {
     // ── MockPresenter ────────────────────────────────────────────────────────
 
     /// Test double for [`SoftwarePresenter`] — records every call to `present`.
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu"))]
     struct MockPresenter {
         calls: Vec<(u32, u32, Vec<u8>)>,
         resize_calls: Vec<(u32, u32)>,
     }
 
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu"))]
     impl MockPresenter {
         fn new() -> Self {
             Self { calls: Vec::new(), resize_calls: Vec::new() }
         }
     }
 
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu"))]
     impl SoftwarePresenter for MockPresenter {
         fn present(&mut self, pixels: &[u8], width: u32, height: u32) {
             self.calls.push((width, height, pixels.to_vec()));
@@ -835,11 +906,12 @@ mod tests {
     /// with the correct pixel dimensions and a non-empty buffer.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg(feature = "tiny-skia")]
     fn tinyskia_software_present_called() {
         use crate::factory::{SurfaceMode, WindowRenderState};
         use crate::backend::RenderBackend;
         use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
-        use vello::peniko::color::{AlphaColor, Srgb};
+        use color::{AlphaColor, Srgb};
 
         let width = 16u32;
         let height = 16u32;
@@ -880,41 +952,74 @@ mod tests {
                 width,
                 height,
             },
+            #[cfg(feature = "vello-gpu")]
             vello_gpu_renderer:   None,
+            #[cfg(feature = "vello-hybrid")]
             vello_hybrid_renderer: None,
+            #[cfg(feature = "wgpu-instanced")]
             instanced_renderer:   None,
+            #[cfg(feature = "wgpu-instanced")]
             instanced_ctx:        None,
+            #[cfg(feature = "vello-cpu")]
             vello_cpu_ctx:        None,
+            #[cfg(feature = "tiny-skia")]
             tiny_skia_ctx:        Some(tiny_ctx),
+            #[cfg(feature = "urx")]
             urx_ctx:              None,
+            #[cfg(feature = "urx")]
             urx_cpu_backend:      None,
+            #[cfg(feature = "urx")]
             urx_cpu_pixmap:       None,
+            #[cfg(feature = "urx")]
             urx_hybrid_backend:   None,
+            #[cfg(feature = "urx")]
             urx_wgpu_full_backend: None,
+            #[cfg(feature = "urx")]
             urx_engine:           None,
+            #[cfg(feature = "urx-3d")]
             urx_renderer_3d:      None,
+            #[cfg(feature = "urx-3d")]
             urx_scene_3d:         None,
+            #[cfg(feature = "urx-3d")]
             urx_physics:          None,
+            #[cfg(feature = "urx-3d")]
             urx_particles:        std::collections::HashMap::new(),
+            #[cfg(feature = "gpu")]
             scene:                vello::Scene::new(),
+            #[cfg(feature = "vello-hybrid")]
             vello_hybrid_ctx:     uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:               RenderBackend::TinySkia,
             active_urx:           None,
+            #[cfg(feature = "urx")]
             urx_unified_memory:   None,
+            #[cfg(feature = "urx")]
             urx_retained_hint:    true,
+            #[cfg(feature = "urx")]
             urx_high_hz_hint:     false,
+            #[cfg(feature = "urx-3d")]
             urx_offscreen_3d:     None,
+            #[cfg(feature = "urx-3d")]
             urx_capture_3d:       None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_cache: None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_dynamic: None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_blitter: None,
+            #[cfg(feature = "urx")]
             urx_native_renderer: None,
+            #[cfg(feature = "urx-3d")]
             urx_cached_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
             urx_dynamic_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
             capture_3d_enabled:   false,
+            #[cfg(feature = "urx-3d")]
             urx_compose_msaa_sample_count: 4,
+            #[cfg(feature = "urx-3d")]
             urx_compose_edge_width_px: None,
             retained_cache:       crate::retained::RetainedCache::new(),
+            #[cfg(feature = "vello-gpu")]
             vello_fragment_store: Default::default(),
         };
 
@@ -947,11 +1052,12 @@ mod tests {
     /// with a properly sized buffer.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[cfg(feature = "vello-cpu")]
     fn vello_cpu_software_present_called() {
         use crate::factory::{SurfaceMode, WindowRenderState};
         use crate::backend::RenderBackend;
         use uzor_render_vello_cpu::VelloCpuRenderContext;
-        use vello::peniko::color::{AlphaColor, Srgb};
+        use color::{AlphaColor, Srgb};
 
         let width = 16u32;
         let height = 16u32;
@@ -978,41 +1084,74 @@ mod tests {
                 width,
                 height,
             },
+            #[cfg(feature = "vello-gpu")]
             vello_gpu_renderer:    None,
+            #[cfg(feature = "vello-hybrid")]
             vello_hybrid_renderer: None,
+            #[cfg(feature = "wgpu-instanced")]
             instanced_renderer:    None,
+            #[cfg(feature = "wgpu-instanced")]
             instanced_ctx:         None,
+            #[cfg(feature = "vello-cpu")]
             vello_cpu_ctx:         Some(vello_ctx),
+            #[cfg(feature = "tiny-skia")]
             tiny_skia_ctx:         None,
+            #[cfg(feature = "urx")]
             urx_ctx:               None,
+            #[cfg(feature = "urx")]
             urx_cpu_backend:       None,
+            #[cfg(feature = "urx")]
             urx_cpu_pixmap:        None,
+            #[cfg(feature = "urx")]
             urx_hybrid_backend:    None,
+            #[cfg(feature = "urx")]
             urx_wgpu_full_backend: None,
+            #[cfg(feature = "urx")]
             urx_engine:           None,
+            #[cfg(feature = "urx-3d")]
             urx_renderer_3d:      None,
+            #[cfg(feature = "urx-3d")]
             urx_scene_3d:         None,
+            #[cfg(feature = "urx-3d")]
             urx_physics:          None,
+            #[cfg(feature = "urx-3d")]
             urx_particles:        std::collections::HashMap::new(),
+            #[cfg(feature = "gpu")]
             scene:                 vello::Scene::new(),
+            #[cfg(feature = "vello-hybrid")]
             vello_hybrid_ctx:      uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:                RenderBackend::VelloCpu,
             active_urx:            None,
+            #[cfg(feature = "urx")]
             urx_unified_memory:    None,
+            #[cfg(feature = "urx")]
             urx_retained_hint:     true,
+            #[cfg(feature = "urx")]
             urx_high_hz_hint:      false,
+            #[cfg(feature = "urx-3d")]
             urx_offscreen_3d:      None,
+            #[cfg(feature = "urx-3d")]
             urx_capture_3d:        None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_cache: None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_dynamic: None,
+            #[cfg(feature = "urx-3d")]
             urx_compose_overlay_blitter: None,
+            #[cfg(feature = "urx")]
             urx_native_renderer: None,
+            #[cfg(feature = "urx-3d")]
             urx_cached_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
             urx_dynamic_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
             capture_3d_enabled:    false,
+            #[cfg(feature = "urx-3d")]
             urx_compose_msaa_sample_count: 4,
+            #[cfg(feature = "urx-3d")]
             urx_compose_edge_width_px: None,
             retained_cache:        crate::retained::RetainedCache::new(),
+            #[cfg(feature = "vello-gpu")]
             vello_fragment_store:  Default::default(),
         };
 

@@ -26,15 +26,24 @@
 //! state that is not safe to share across threads.  This is fine; the runtime
 //! always drives one window from one thread.
 
+#[cfg(feature = "tiny-skia")]
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
+#[cfg(feature = "vello-cpu")]
 use uzor_render_vello_cpu::VelloCpuRenderContext;
+#[cfg(feature = "vello-gpu")]
 use uzor_render_vello_gpu::VelloGpuRenderContext;
+#[cfg(feature = "vello-hybrid")]
 use uzor_render_vello_hybrid::VelloHybridRenderContext;
+#[cfg(feature = "wgpu-instanced")]
 use uzor_render_wgpu_instanced::{InstancedRenderContext, InstancedRenderer};
 #[cfg(not(target_arch = "wasm32"))]
 use uzor::layout::window::SoftwarePresenter;
+#[cfg(feature = "gpu")]
 use vello::util::{RenderContext as VelloRenderContext, RenderSurface};
-use vello::{Renderer as VelloRenderer, Scene};
+#[cfg(feature = "gpu")]
+use vello::Scene;
+#[cfg(feature = "vello-gpu")]
+use vello::Renderer as VelloRenderer;
 
 use crate::backend::RenderBackend;
 
@@ -45,6 +54,7 @@ use uzor_render_canvas2d::Canvas2dRenderContext;
 ///
 /// vello calls this type `RenderContext`, but that name collides with our
 /// public `uzor::render::RenderContext` (the widget draw trait).
+#[cfg(feature = "gpu")]
 pub type GpuDevicePool = VelloRenderContext;
 
 // ── SurfaceMode ───────────────────────────────────────────────────────────────
@@ -67,6 +77,9 @@ pub enum SurfaceMode {
     /// `queue.write_texture` into `surface.target_texture`, then the blitter
     /// copies the target texture to the swapchain (mlc gpu_submit.rs pattern,
     /// lines 235–258).
+    ///
+    /// Only present with the `gpu` feature.
+    #[cfg(feature = "gpu")]
     Gpu {
         /// wgpu instance + device pool.
         gpu_pool: GpuDevicePool,
@@ -107,37 +120,55 @@ pub enum SurfaceMode {
 /// Backend-specific render context the caller fills each frame.
 ///
 /// `VelloGpu` borrows the vello scene; the others are owned.
+///
+/// Each variant wraps that backend's own context type, so a variant (and its
+/// constructor) only exists when the backend's feature is enabled.
 pub enum BackendContext<'a> {
     /// GPU-backed vello scene context.
+    #[cfg(feature = "vello-gpu")]
     VelloGpu(VelloGpuRenderContext<'a>),
     /// vello hybrid context.
+    #[cfg(feature = "vello-hybrid")]
     VelloHybrid(VelloHybridRenderContext),
     /// Wgpu instanced draw context.
+    #[cfg(feature = "wgpu-instanced")]
     Instanced(InstancedRenderContext),
     /// vello CPU context.
+    #[cfg(feature = "vello-cpu")]
     VelloCpu(VelloCpuRenderContext),
     /// tiny-skia CPU context.
+    #[cfg(feature = "tiny-skia")]
     TinySkia(TinySkiaCpuRenderContext),
+    /// Keeps the `'a` parameter in use when `vello-gpu` (the only borrowing
+    /// variant) is compiled out. Uninhabited: can never be constructed.
+    #[cfg(not(feature = "vello-gpu"))]
+    #[doc(hidden)]
+    _Unused(std::marker::PhantomData<&'a ()>, std::convert::Infallible),
 }
 
 impl<'a> BackendContext<'a> {
     /// Build a `VelloGpu` context from a mutable scene reference.
+    #[cfg(feature = "vello-gpu")]
     pub fn vello_gpu(scene: &'a mut Scene, offset_x: f64, offset_y: f64) -> Self {
         Self::VelloGpu(VelloGpuRenderContext::new(scene, offset_x, offset_y))
     }
     /// Build a `VelloHybrid` context.
+    #[cfg(feature = "vello-hybrid")]
     pub fn vello_hybrid(dpr: f64) -> Self {
         Self::VelloHybrid(VelloHybridRenderContext::new(dpr))
     }
     /// Build an `Instanced` context.
+    #[cfg(feature = "wgpu-instanced")]
     pub fn instanced(screen_w: f32, screen_h: f32, offset_x: f32, offset_y: f32) -> Self {
         Self::Instanced(InstancedRenderContext::new(screen_w, screen_h, offset_x, offset_y))
     }
     /// Build a `VelloCpu` context.
+    #[cfg(feature = "vello-cpu")]
     pub fn vello_cpu(dpr: f64) -> Self {
         Self::VelloCpu(VelloCpuRenderContext::new(dpr))
     }
     /// Build a `TinySkia` context with its own pixel buffer.
+    #[cfg(feature = "tiny-skia")]
     pub fn tiny_skia(width: u32, height: u32, dpr: f64) -> Self {
         Self::TinySkia(TinySkiaCpuRenderContext::new(width, height, dpr))
     }
@@ -168,10 +199,13 @@ pub struct WindowRenderState {
 
     // ── GPU renderer slots ────────────────────────────────────────────────────
     /// vello GPU renderer (initialized when `VelloGpu` is in the pool).
+    #[cfg(feature = "vello-gpu")]
     pub(crate) vello_gpu_renderer: Option<VelloRenderer>,
     /// vello hybrid renderer (lazy-init on first submit; needs texture format).
+    #[cfg(feature = "vello-hybrid")]
     pub(crate) vello_hybrid_renderer: Option<vello_hybrid::Renderer>,
     /// Wgpu instanced renderer (lazy-init on first submit; needs texture format).
+    #[cfg(feature = "wgpu-instanced")]
     pub(crate) instanced_renderer: Option<InstancedRenderer>,
     /// Wgpu instanced per-frame draw context — walker writes `DrawCmd`s into
     /// `draw_commands`, `submit_instanced` pulls them. Lazy-init on first
@@ -179,50 +213,63 @@ pub struct WindowRenderState {
     /// slot lights up the InstancedWgpu path end-to-end (before this, hub
     /// returned `None` from `with_render_context` and `submit_instanced`
     /// passed `&[]` — net no-op clear-only frame).
+    #[cfg(feature = "wgpu-instanced")]
     pub(crate) instanced_ctx: Option<InstancedRenderContext>,
 
     // ── CPU renderer slots ────────────────────────────────────────────────────
     /// vello CPU render context.
+    #[cfg(feature = "vello-cpu")]
     pub(crate) vello_cpu_ctx: Option<VelloCpuRenderContext>,
     /// tiny-skia CPU render context.
+    #[cfg(feature = "tiny-skia")]
     pub(crate) tiny_skia_ctx: Option<TinySkiaCpuRenderContext>,
 
     // ── URX render-family slots ──────────────────────────────────────────────
     /// Shared URX paint context — captures consumer's RenderContext calls
     /// into a `urx_core::Scene`. Used by ALL four URX backends; the choice
     /// of backend happens at submit time (the `Scene` is universal).
+    #[cfg(feature = "urx")]
     pub(crate) urx_ctx: Option<uzor_render_urx::UrxRenderContext>,
     /// URX CPU backend (own scanline rasteriser). Lazy-init on first submit.
+    #[cfg(feature = "urx")]
     pub(crate) urx_cpu_backend: Option<uzor_urx_cpu::CpuBackend>,
     /// URX CPU output pixmap — same role as `tiny_skia_ctx`'s buffer.
+    #[cfg(feature = "urx")]
     pub(crate) urx_cpu_pixmap: Option<uzor_urx_cpu::Pixmap>,
     /// URX hybrid backend. Wired in Stage 1a (single-region: whole window).
+    #[cfg(feature = "urx")]
     pub(crate) urx_hybrid_backend: Option<uzor_urx_hybrid::HybridBackend>,
     /// URX full-GPU backend (`WgpuFullBackend` wrapper from
     /// uzor-urx-wgpu-full). Lazy-init on first urx_wgpu_full submit.
+    #[cfg(feature = "urx")]
     pub(crate) urx_wgpu_full_backend: Option<uzor_urx_wgpu_full::WgpuFullBackend>,
     /// URX retained-mode engine. Stage 3: lazy-init on first
     /// `with_urx_engine` call when the consumer chooses retained-mode
     /// via `handle.engine.upsert_region(...)`. Backend selection inside
     /// the engine is derived from `active_urx`.
+    #[cfg(feature = "urx")]
     pub(crate) urx_engine: Option<uzor_urx_engine::UrxEngine>,
     /// URX 3D renderer + scene. Stage 4: lazy-init on first
     /// `with_renderer_3d` call. Independent of `urx_engine` — a
     /// consumer can drive 2D-only, 3D-only, or both. Renderer3D owns
     /// its own depth attachment internally, so no separate depth slot
     /// is needed here.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_renderer_3d: Option<uzor_urx_3d::Renderer3D>,
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_scene_3d:    Option<uzor_urx_3d::Scene3D>,
     /// URX 3D physics world. Stage 4: lazy-init on first
     /// `with_physics_world` call. Independent of all other slots —
     /// consumer ticks `physics.step(dt)` per frame, reads body
     /// positions into Scene3D nodes.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_physics: Option<uzor_urx_physics::PhysicsWorld>,
     /// URX 3D particle systems, keyed by `ParticlesId.raw()` (1.4.11 —
     /// multi-emitter: one slot per `Content::Particles` container in the
     /// window). Opt-in via `init_particles(id, emitter_config)` — no
     /// zero-arg default (the EmitterConfig drives spawn rate / lifetime /
     /// direction). Was a single `Option` slot through 1.4.10.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_particles: std::collections::HashMap<u64, uzor_urx_3d::ParticleSystem>,
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
@@ -233,10 +280,12 @@ pub struct WindowRenderState {
 
     // ── Shared vello scene ────────────────────────────────────────────────────
     /// Per-frame vello scene, reset each frame.  Shared by GPU and Hybrid.
+    #[cfg(feature = "gpu")]
     pub(crate) scene: Scene,
 
     // ── VelloHybrid per-frame context ─────────────────────────────────────────
     /// vello-hybrid per-frame render context (rebuilt each frame).
+    #[cfg(feature = "vello-hybrid")]
     pub(crate) vello_hybrid_ctx: VelloHybridRenderContext,
 
     // ── Active backend ────────────────────────────────────────────────────────
@@ -264,6 +313,7 @@ pub struct WindowRenderState {
     /// explicitly OUT of scope for render-cache-parity plan §5 Step 5
     /// (which only re-scopes `region_count`/`retained`/`high_hz`) —
     /// left as the next PR3b tail item, not silently dropped.
+    #[cfg(feature = "urx")]
     pub(crate) urx_unified_memory: Option<bool>,
 
     /// `retained`/`high_hz` inputs for `UrxBackend::Auto`'s
@@ -277,7 +327,9 @@ pub struct WindowRenderState {
     /// consumer that never calls the setter: `retained` defaults
     /// `true` ("retained-mode is the URX sweet spot" — unchanged
     /// default assumption), `high_hz` defaults `false`.
+    #[cfg(feature = "urx")]
     pub(crate) urx_retained_hint: bool,
+    #[cfg(feature = "urx")]
     pub(crate) urx_high_hz_hint: bool,
 
     /// Offscreen texture for `submit_3d_frame_to_rect` (U-blit-viewport-1,
@@ -285,6 +337,7 @@ pub struct WindowRenderState {
     /// `copy_texture_to_texture` directly into a sub-rectangle without a
     /// blit shader. Lazy-init at first viewport-sized 3D submit;
     /// re-init when the requested rect size changes.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_offscreen_3d: Option<UrxOffscreen3D>,
 
     /// Screenshot capture mirror for the 3D / compose submit paths
@@ -296,9 +349,11 @@ pub struct WindowRenderState {
     /// (surface-format, COPY_SRC) which the consumer's screenshot path
     /// can read back. `None` + disarmed by default — zero overhead
     /// until a screenshot is actually requested.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_capture_3d: Option<UrxCapture3D>,
     /// Retained CPU-rasterized texture for a cache-keyed composed 3D
     /// overlay (toolbars, legends, and other mostly-static chrome).
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_compose_overlay_cache: Option<UrxComposeOverlayCache>,
     /// Persistent upload target for the per-frame DYNAMIC composed-3D
     /// overlay (labels, HUD text, crosshair). The pixel CONTENT is
@@ -308,9 +363,11 @@ pub struct WindowRenderState {
     /// full-surface texture EVERY frame and drop it at frame end —
     /// per-frame driver allocation/free churn for no benefit). Recreated
     /// only on surface resize.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_compose_overlay_dynamic: Option<UrxComposeOverlayDynamic>,
     /// Reused overlay blitter. Building its render pipeline per frame is
     /// expensive on DX12, so it follows the window/surface lifetime.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_compose_overlay_blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
     /// Wave 5: the Wave 1-4 native-pipeline renderer
     /// (`uzor_urx_wgpu::NativeUrxRenderer`) used by `compose.rs`'s
@@ -322,19 +379,23 @@ pub struct WindowRenderState {
     /// Lazy-init on first use by either the ordinary-submit path or
     /// composed Phase 3. Phase 3 can be skipped entirely by
     /// `compose.rs`'s existing `skip_2d_pass` dead-pass elimination.
+    #[cfg(feature = "urx")]
     pub(crate) urx_native_renderer: Option<uzor_urx_wgpu::NativeUrxRenderer>,
     /// Dedicated renderer for cache-miss recording of the retained
     /// post-3D overlay. It must not share instance buffers with either
     /// Phase 3 or the dynamic overlay: all three passes can be recorded
     /// into one command encoder before the queue submit, while each
     /// `render_into_encoder` call uploads at offset zero.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_cached_overlay_renderer: Option<uzor_urx_wgpu::NativeUrxRenderer>,
     /// Dedicated renderer for the per-frame post-3D overlay. See
     /// `urx_cached_overlay_renderer` for the command-buffer ownership
     /// invariant that requires this independent buffer arena.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_dynamic_overlay_renderer: Option<uzor_urx_wgpu::NativeUrxRenderer>,
     /// Arms the capture mirror above. Set by the consumer's screenshot
     /// pipeline on first request for a window.
+    #[cfg(feature = "urx-3d")]
     pub(crate) capture_3d_enabled: bool,
 
     /// `n` passed to `uzor_urx_3d::Renderer3D::set_sample_count` at
@@ -351,6 +412,7 @@ pub struct WindowRenderState {
     /// this crate boundary can't deliver. Default `4` — byte-identical
     /// to the pre-existing hardcoded call for any consumer that never
     /// calls [`Self::set_compose_msaa_sample_count`].
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_compose_msaa_sample_count: u32,
 
     /// `px` passed to `uzor_urx_3d::Renderer3D::set_edge_width_px` at
@@ -362,6 +424,7 @@ pub struct WindowRenderState {
     /// `Renderer3D::new`'s own `DEFAULT_EDGE_WIDTH_PX` untouched — a
     /// consumer that never calls [`Self::set_compose_edge_width_px`]
     /// sees zero behavior change.
+    #[cfg(feature = "urx-3d")]
     pub(crate) urx_compose_edge_width_px: Option<f32>,
 
     /// Retained-cache surface for this window — one instance covering
@@ -374,11 +437,13 @@ pub struct WindowRenderState {
     // Persistent vello-gpu fragment store - the VelloGpu context is
     // rebuilt per frame, so cross-frame fragment reuse requires the
     // table to live here and move in/out around each cached paint.
+    #[cfg(feature = "vello-gpu")]
     pub(crate) vello_fragment_store: uzor_render_vello_gpu::VelloFragmentStore,
 }
 
 /// Backing for the 3D screenshot capture mirror — see
 /// `WindowRenderState.urx_capture_3d`.
+#[cfg(feature = "urx-3d")]
 pub struct UrxCapture3D {
     pub texture: wgpu::Texture,
     pub view:    wgpu::TextureView,
@@ -388,6 +453,7 @@ pub struct UrxCapture3D {
 }
 
 /// Cached uploaded overlay texture for `submit_urx_composed`.
+#[cfg(feature = "urx-3d")]
 pub struct UrxComposeOverlayCache {
     pub key:     u64,
     pub texture: wgpu::Texture,
@@ -398,6 +464,7 @@ pub struct UrxComposeOverlayCache {
 
 /// Persistent upload target for the per-frame dynamic overlay — see
 /// `WindowRenderState.urx_compose_overlay_dynamic`.
+#[cfg(feature = "urx-3d")]
 pub struct UrxComposeOverlayDynamic {
     pub texture: wgpu::Texture,
     pub view:    wgpu::TextureView,
@@ -407,6 +474,7 @@ pub struct UrxComposeOverlayDynamic {
 
 /// Backing for the offscreen 3D render target — see
 /// `WindowRenderState.urx_offscreen_3d`.
+#[cfg(feature = "urx-3d")]
 pub struct UrxOffscreen3D {
     pub texture: wgpu::Texture,
     pub view:    wgpu::TextureView,
@@ -433,54 +501,105 @@ pub enum Submit3DError {
 impl WindowRenderState {
     // ── Constructors ──────────────────────────────────────────────────────────
 
+    /// Every slot empty / at its default, presenting through `surface` with
+    /// `active` selected. `dpr` seeds the vello-hybrid per-frame context.
+    /// All public constructors start here and then fill their own slots, so
+    /// the per-feature field set is spelled out exactly once.
+    #[cfg(any(feature = "gpu", feature = "tiny-skia", feature = "vello-cpu", target_arch = "wasm32"))]
+    fn blank(surface: SurfaceMode, active: RenderBackend, dpr: f64) -> Self {
+        #[cfg(not(feature = "vello-hybrid"))]
+        let _ = dpr;
+        Self {
+            surface,
+            #[cfg(feature = "vello-gpu")]
+            vello_gpu_renderer: None,
+            #[cfg(feature = "vello-hybrid")]
+            vello_hybrid_renderer: None,
+            #[cfg(feature = "wgpu-instanced")]
+            instanced_renderer: None,
+            #[cfg(feature = "wgpu-instanced")]
+            instanced_ctx: None,
+            #[cfg(feature = "vello-cpu")]
+            vello_cpu_ctx: None,
+            #[cfg(feature = "tiny-skia")]
+            tiny_skia_ctx: None,
+            #[cfg(feature = "urx")]
+            urx_ctx: None,
+            #[cfg(feature = "urx")]
+            urx_cpu_backend: None,
+            #[cfg(feature = "urx")]
+            urx_cpu_pixmap: None,
+            #[cfg(feature = "urx")]
+            urx_hybrid_backend: None,
+            #[cfg(feature = "urx")]
+            urx_wgpu_full_backend: None,
+            #[cfg(feature = "urx")]
+            urx_engine: None,
+            #[cfg(feature = "urx-3d")]
+            urx_renderer_3d: None,
+            #[cfg(feature = "urx-3d")]
+            urx_scene_3d:    None,
+            #[cfg(feature = "urx-3d")]
+            urx_physics:     None,
+            #[cfg(feature = "urx-3d")]
+            urx_particles:   std::collections::HashMap::new(),
+            active_urx: None,
+            #[cfg(feature = "urx")]
+            urx_unified_memory: None,
+            #[cfg(feature = "urx")]
+            urx_retained_hint: true,
+            #[cfg(feature = "urx")]
+            urx_high_hz_hint: false,
+            #[cfg(feature = "urx-3d")]
+            urx_offscreen_3d: None,
+            #[cfg(feature = "urx-3d")]
+            urx_capture_3d: None,
+            #[cfg(feature = "urx-3d")]
+            urx_compose_overlay_cache: None,
+            #[cfg(feature = "urx-3d")]
+            urx_compose_overlay_dynamic: None,
+            #[cfg(feature = "urx-3d")]
+            urx_compose_overlay_blitter: None,
+            #[cfg(feature = "urx")]
+            urx_native_renderer: None,
+            #[cfg(feature = "urx-3d")]
+            urx_cached_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
+            urx_dynamic_overlay_renderer: None,
+            #[cfg(feature = "urx-3d")]
+            capture_3d_enabled: false,
+            #[cfg(feature = "urx-3d")]
+            urx_compose_msaa_sample_count: 4,
+            #[cfg(feature = "urx-3d")]
+            urx_compose_edge_width_px: None,
+            retained_cache: crate::retained::RetainedCache::new(),
+            #[cfg(feature = "vello-gpu")]
+            vello_fragment_store: Default::default(),
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
+            #[cfg(feature = "gpu")]
+            scene: Scene::new(),
+            #[cfg(feature = "vello-hybrid")]
+            vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
+            active,
+        }
+    }
+
     /// Build a GPU-mode state with vello GPU renderer initialized.
+    #[cfg(feature = "vello-gpu")]
     pub fn new_gpu(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
         renderer: VelloRenderer,
         dev_id: usize,
     ) -> Self {
-        Self {
-            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
-            vello_gpu_renderer: Some(renderer),
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            #[cfg(target_arch = "wasm32")]
-            canvas2d_ctx: None,
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
-            active: RenderBackend::VelloGpu,
-        }
+        let mut state = Self::blank(
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            RenderBackend::VelloGpu,
+            1.0,
+        );
+        state.vello_gpu_renderer = Some(renderer);
+        state
     }
 
     /// Build a GPU-mode state with the swapchain ready but no vello
@@ -489,55 +608,21 @@ impl WindowRenderState {
     /// and the renderer is slotted in later via
     /// [`Self::attach_vello_renderer`] once `vello::Renderer::new`
     /// finishes on the background thread.
+    #[cfg(feature = "gpu")]
     pub fn new_gpu_skeleton(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
         dev_id: usize,
     ) -> Self {
-        Self {
-            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            #[cfg(target_arch = "wasm32")]
-            canvas2d_ctx: None,
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
-            active: RenderBackend::VelloGpu,
-        }
+        Self::blank(
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            RenderBackend::VelloGpu,
+            1.0,
+        )
     }
 
     /// Slot a freshly-built vello `Renderer` into a skeleton state.
+    #[cfg(feature = "vello-gpu")]
     pub fn attach_vello_renderer(&mut self, renderer: VelloRenderer) {
         self.vello_gpu_renderer = Some(renderer);
     }
@@ -550,8 +635,16 @@ impl WindowRenderState {
     }
 
     /// `true` if the vello GPU renderer is wired up and ready to submit.
+    /// Always `false` when built without the `vello-gpu` feature.
     pub fn has_vello_gpu_renderer(&self) -> bool {
-        self.vello_gpu_renderer.is_some()
+        #[cfg(feature = "vello-gpu")]
+        {
+            self.vello_gpu_renderer.is_some()
+        }
+        #[cfg(not(feature = "vello-gpu"))]
+        {
+            false
+        }
     }
 
     /// Current configured surface dimensions `(width, height)` in physical
@@ -560,6 +653,7 @@ impl WindowRenderState {
     /// detect a surface-vs-window size desync (diagnostics + self-heal).
     pub fn surface_config_size(&self) -> (u32, u32) {
         match &self.surface {
+            #[cfg(feature = "gpu")]
             SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
             SurfaceMode::Software { width, height, .. } => (*width, *height),
         }
@@ -569,6 +663,7 @@ impl WindowRenderState {
     ///
     /// Used for `VelloHybrid` and `WgpuInstanced` where the renderer is
     /// lazy-initialized on the first submit.
+    #[cfg(feature = "gpu")]
     pub fn new_gpu_no_vello(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
@@ -576,47 +671,7 @@ impl WindowRenderState {
         active: RenderBackend,
         dpr: f64,
     ) -> Self {
-        Self {
-            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            #[cfg(target_arch = "wasm32")]
-            canvas2d_ctx: None,
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
-            active,
-        }
+        Self::blank(SurfaceMode::Gpu { gpu_pool, surface, dev_id }, active, dpr)
     }
 
     /// Build a CPU-only (tiny-skia) state with a software presenter.
@@ -626,47 +681,15 @@ impl WindowRenderState {
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
     ///
     /// Available on native targets only — use the Canvas 2D path on wasm32.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia"))]
     pub fn new_cpu(width: u32, height: u32, presenter: Box<dyn SoftwarePresenter>) -> Self {
-        Self {
-            surface: SurfaceMode::Software { presenter, width, height },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: Some(TinySkiaCpuRenderContext::new(width, height, 1.0)),
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
-            active: RenderBackend::TinySkia,
-        }
+        let mut state = Self::blank(
+            SurfaceMode::Software { presenter, width, height },
+            RenderBackend::TinySkia,
+            1.0,
+        );
+        state.tiny_skia_ctx = Some(TinySkiaCpuRenderContext::new(width, height, 1.0));
+        state
     }
 
     /// Build a CPU-only (vello-cpu) state with a software presenter.
@@ -676,47 +699,15 @@ impl WindowRenderState {
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
     ///
     /// Available on native targets only — use the Canvas 2D path on wasm32.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "vello-cpu"))]
     pub fn new_vello_cpu(dpr: f64, presenter: Box<dyn SoftwarePresenter>) -> Self {
-        Self {
-            surface: SurfaceMode::Software { presenter, width: 0, height: 0 },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: Some(VelloCpuRenderContext::new(dpr)),
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
-            active: RenderBackend::VelloCpu,
-        }
+        let mut state = Self::blank(
+            SurfaceMode::Software { presenter, width: 0, height: 0 },
+            RenderBackend::VelloCpu,
+            dpr,
+        );
+        state.vello_cpu_ctx = Some(VelloCpuRenderContext::new(dpr));
+        state
     }
 
     // (helper above the constructor)
@@ -729,7 +720,7 @@ impl WindowRenderState {
 /// Same shape as the `add_copy_src_to_target_texture` helper used by
 /// the screenshot endpoint — kept here so the swapchain comes up
 /// with the right usage from the very first frame, not lazily.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 fn recreate_target_with_cpu_usage(
     surface: &mut RenderSurface<'static>,
     device: &wgpu::Device,
@@ -765,6 +756,7 @@ impl WindowRenderState {
     /// swapchain).  Each frame the tiny-skia pixmap is uploaded to
     /// `surface.target_texture` via `queue.write_texture` and blitted
     /// to the swapchain — same path mlc uses.
+    #[cfg(all(feature = "gpu", feature = "tiny-skia"))]
     pub fn new_tiny_skia_gpu(
         gpu_pool: GpuDevicePool,
         mut surface: RenderSurface<'static>,
@@ -776,51 +768,18 @@ impl WindowRenderState {
         // COPY_SRC.  Recreate the texture with the right usage flags
         // BEFORE handing the surface to the new state.
         recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device, w, h);
-        Self {
-            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: Some(TinySkiaCpuRenderContext::new(w, h, 1.0)),
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            #[cfg(target_arch = "wasm32")]
-            canvas2d_ctx: None,
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
-            active: RenderBackend::TinySkia,
-        }
+        let mut state = Self::blank(
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            RenderBackend::TinySkia,
+            1.0,
+        );
+        state.tiny_skia_ctx = Some(TinySkiaCpuRenderContext::new(w, h, 1.0));
+        state
     }
 
     /// Build a GPU-mode state for vello-cpu (CPU rasteriser, GPU
     /// swapchain).  Mirror of `new_tiny_skia_gpu`.
+    #[cfg(all(feature = "gpu", feature = "vello-cpu"))]
     pub fn new_vello_cpu_gpu(
         gpu_pool: GpuDevicePool,
         mut surface: RenderSurface<'static>,
@@ -829,50 +788,17 @@ impl WindowRenderState {
     ) -> Self {
         let (cw, ch) = (surface.config.width.max(1), surface.config.height.max(1));
         recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device, cw, ch);
-        Self {
-            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: Some(VelloCpuRenderContext::new(dpr)),
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            #[cfg(target_arch = "wasm32")]
-            canvas2d_ctx: None,
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
-            active: RenderBackend::VelloCpu,
-        }
+        let mut state = Self::blank(
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            RenderBackend::VelloCpu,
+            dpr,
+        );
+        state.vello_cpu_ctx = Some(VelloCpuRenderContext::new(dpr));
+        state
     }
 
     /// Build a GPU-mode state for vello-hybrid (renderer lazy-init).
+    #[cfg(feature = "vello-hybrid")]
     pub fn new_vello_hybrid(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
@@ -883,6 +809,7 @@ impl WindowRenderState {
     }
 
     /// Build a GPU-mode state for wgpu-instanced (renderer lazy-init).
+    #[cfg(feature = "wgpu-instanced")]
     pub fn new_wgpu_instanced(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
@@ -901,46 +828,9 @@ impl WindowRenderState {
         canvas: web_sys::HtmlCanvasElement,
         ctx: Canvas2dRenderContext,
     ) -> Self {
-        Self {
-            surface: SurfaceMode::Canvas2d { canvas },
-            vello_gpu_renderer: None,
-            vello_hybrid_renderer: None,
-            instanced_renderer: None,
-            instanced_ctx: None,
-            vello_cpu_ctx: None,
-            tiny_skia_ctx: None,
-            urx_ctx: None,
-            urx_cpu_backend: None,
-            urx_cpu_pixmap: None,
-            urx_hybrid_backend: None,
-            urx_wgpu_full_backend: None,
-            urx_engine: None,
-            urx_renderer_3d: None,
-            urx_scene_3d:    None,
-            urx_physics:     None,
-            urx_particles:   std::collections::HashMap::new(),
-            active_urx: None,
-            urx_unified_memory: None,
-            urx_retained_hint: true,
-            urx_high_hz_hint: false,
-            urx_offscreen_3d: None,
-            urx_capture_3d: None,
-            urx_compose_overlay_cache: None,
-            urx_compose_overlay_dynamic: None,
-            urx_compose_overlay_blitter: None,
-            urx_native_renderer: None,
-            urx_cached_overlay_renderer: None,
-            urx_dynamic_overlay_renderer: None,
-            capture_3d_enabled: false,
-            urx_compose_msaa_sample_count: 4,
-            urx_compose_edge_width_px: None,
-            retained_cache: crate::retained::RetainedCache::new(),
-            vello_fragment_store: Default::default(),
-            canvas2d_ctx: Some(ctx),
-            scene: Scene::new(),
-            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
-            active: RenderBackend::Canvas2d,
-        }
+        let mut state = Self::blank(SurfaceMode::Canvas2d { canvas }, RenderBackend::Canvas2d, 1.0);
+        state.canvas2d_ctx = Some(ctx);
+        state
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -954,6 +844,7 @@ impl WindowRenderState {
     /// window is GPU-backed.  Returns `None` for software-presented
     /// windows (TinySkia / VelloCpu in headless GPU mode) and on web.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "gpu")]
     pub fn gpu_handles(&self) -> Option<(&wgpu::Device, &wgpu::Queue, &vello::util::RenderSurface<'static>)> {
         match &self.surface {
             SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
@@ -971,6 +862,7 @@ impl WindowRenderState {
     /// `&mut` so callers can patch its texture (e.g. add COPY_SRC for
     /// screenshots).
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "gpu")]
     pub fn gpu_handles_mut(
         &mut self,
     ) -> Option<(&wgpu::Device, &wgpu::Queue, &mut vello::util::RenderSurface<'static>)> {
@@ -992,8 +884,26 @@ impl WindowRenderState {
     /// renderer / context is ready before the next frame.
     pub fn set_active(&mut self, backend: RenderBackend) {
         self.active = backend;
-        self.vello_fragment_store = Default::default();
+        #[cfg(feature = "vello-gpu")]
+        {
+            self.vello_fragment_store = Default::default();
+        }
         self.ensure_backend_slot(backend);
+    }
+
+    /// Physical size of the GPU swapchain config (each side clamped to
+    /// `>= 1`), or `None` on a non-GPU surface / without the `gpu` feature.
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu", feature = "wgpu-instanced", feature = "urx"))]
+    fn gpu_surface_size(&self) -> Option<(u32, u32)> {
+        #[cfg(feature = "gpu")]
+        {
+            self.gpu_handles()
+                .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            None
+        }
     }
 
     /// Lazily create whatever renderer / CPU context the given
@@ -1004,6 +914,7 @@ impl WindowRenderState {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn ensure_backend_slot(&mut self, backend: RenderBackend) {
         match backend {
+            #[cfg(feature = "vello-gpu")]
             RenderBackend::VelloGpu => {
                 if self.vello_gpu_renderer.is_none() {
                     if let Some((device, _, _)) = self.gpu_handles() {
@@ -1022,16 +933,16 @@ impl WindowRenderState {
                     }
                 }
             }
+            #[cfg(feature = "vello-cpu")]
             RenderBackend::VelloCpu => {
                 if self.vello_cpu_ctx.is_none() {
                     self.vello_cpu_ctx = Some(VelloCpuRenderContext::new(1.0));
                 }
             }
+            #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
                 if self.tiny_skia_ctx.is_none() {
-                    let (w, h) = self.gpu_handles()
-                        .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                        .unwrap_or((1, 1));
+                    let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                     self.tiny_skia_ctx = Some(TinySkiaCpuRenderContext::new(w, h, 1.0));
                 }
             }
@@ -1045,6 +956,7 @@ impl WindowRenderState {
             // URX family — `urx_ctx` is the only shared slot; per-backend
             // backends (CpuBackend / WgpuBackend / HybridBackend) lazy-init
             // on first submit because they need the surface format.
+            #[cfg(feature = "urx")]
             RenderBackend::UrxCpu
             | RenderBackend::UrxWgpu
             | RenderBackend::UrxHybrid
@@ -1053,10 +965,14 @@ impl WindowRenderState {
                     self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(1.0));
                 }
             }
+            // Backend not compiled into this build: nothing to wake up.
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
     }
 
     /// Mutable reference to the vello `Scene` (used by VelloGpu / VelloHybrid).
+    #[cfg(feature = "gpu")]
     pub fn scene_mut(&mut self) -> Option<&mut Scene> {
         match self.active {
             RenderBackend::VelloGpu | RenderBackend::VelloHybrid => Some(&mut self.scene),
@@ -1065,6 +981,7 @@ impl WindowRenderState {
     }
 
     /// Shared reference to the vello `Scene`.
+    #[cfg(feature = "gpu")]
     pub fn scene(&self) -> Option<&Scene> {
         match self.active {
             RenderBackend::VelloGpu | RenderBackend::VelloHybrid => Some(&self.scene),
@@ -1073,26 +990,31 @@ impl WindowRenderState {
     }
 
     /// Mutable reference to the tiny-skia CPU context.
+    #[cfg(feature = "tiny-skia")]
     pub fn cpu_ctx_mut(&mut self) -> Option<&mut TinySkiaCpuRenderContext> {
         self.tiny_skia_ctx.as_mut()
     }
 
     /// Shared reference to the tiny-skia CPU context.
+    #[cfg(feature = "tiny-skia")]
     pub fn cpu_ctx(&self) -> Option<&TinySkiaCpuRenderContext> {
         self.tiny_skia_ctx.as_ref()
     }
 
     /// Mutable reference to the vello-cpu context.
+    #[cfg(feature = "vello-cpu")]
     pub fn vello_cpu_ctx_mut(&mut self) -> Option<&mut VelloCpuRenderContext> {
         self.vello_cpu_ctx.as_mut()
     }
 
     /// Shared reference to the vello-cpu context.
+    #[cfg(feature = "vello-cpu")]
     pub fn vello_cpu_ctx(&self) -> Option<&VelloCpuRenderContext> {
         self.vello_cpu_ctx.as_ref()
     }
 
     /// Mutable reference to the vello-hybrid per-frame context.
+    #[cfg(feature = "vello-hybrid")]
     pub fn vello_hybrid_ctx_mut(&mut self) -> Option<&mut VelloHybridRenderContext> {
         if matches!(self.active, RenderBackend::VelloHybrid) {
             Some(&mut self.vello_hybrid_ctx)
@@ -1152,6 +1074,7 @@ impl WindowRenderState {
     ///
     /// VelloGpu / VelloHybrid only — returns `None` on backends that don't
     /// expose a vello-style `Scene` (Canvas2d / TinySkia / VelloCpu).
+    #[cfg(feature = "vello-gpu")]
     pub fn with_scene_render_context<R>(
         &mut self,
         scene: &mut Scene,
@@ -1174,6 +1097,7 @@ impl WindowRenderState {
 
     /// Append a previously-built region scene into the main per-window
     /// scene.  No-op on non-vello backends.
+    #[cfg(feature = "gpu")]
     pub fn append_region_scene(&mut self, region_scene: &Scene) {
         if matches!(self.active, RenderBackend::VelloGpu | RenderBackend::VelloHybrid) {
             self.scene.append(region_scene, None);
@@ -1185,29 +1109,29 @@ impl WindowRenderState {
         f: impl FnOnce(&mut dyn uzor::render::RenderContext) -> R,
     ) -> Option<R> {
         match self.active {
+            #[cfg(feature = "vello-gpu")]
             RenderBackend::VelloGpu => {
                 let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
                 Some(f(&mut ctx))
             }
+            #[cfg(feature = "vello-hybrid")]
             RenderBackend::VelloHybrid => {
                 // Route through the dedicated hybrid context; submit_vello_hybrid
                 // reads from the same context. Routing through VelloGpuRenderContext
                 // would write to the wrong scene and the swapchain stays blank.
                 Some(f(&mut self.vello_hybrid_ctx))
             }
+            #[cfg(feature = "vello-cpu")]
             RenderBackend::VelloCpu => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 self.vello_cpu_ctx.as_mut().map(|c| {
                     c.begin_frame(w, h);
                     f(c)
                 })
             }
+            #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 self.tiny_skia_ctx.as_mut().map(|c| {
                     if c.width() != w || c.height() != h {
                         c.resize(w, h);
@@ -1215,6 +1139,7 @@ impl WindowRenderState {
                     f(c)
                 })
             }
+            #[cfg(feature = "wgpu-instanced")]
             RenderBackend::InstancedWgpu => {
                 // Lazy-init the per-frame context. Lives across frames; we
                 // call `clear()` at the start of each frame to reset
@@ -1223,9 +1148,7 @@ impl WindowRenderState {
                 // Dimensions come from the GPU surface config (physical
                 // pixels). On software surfaces InstancedWgpu is not
                 // supported; we return None there.
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 if self.instanced_ctx.is_none() {
                     self.instanced_ctx = Some(InstancedRenderContext::new(
                         w as f32, h as f32, 0.0, 0.0,
@@ -1257,17 +1180,19 @@ impl WindowRenderState {
             // into a `urx_core::Scene` via UrxRenderContext. The backend
             // (Cpu / Wgpu / Hybrid / WgpuFull) is dispatched at submit time
             // and consumes that same Scene.
+            #[cfg(feature = "urx")]
             RenderBackend::UrxCpu
             | RenderBackend::UrxWgpu
             | RenderBackend::UrxHybrid
             | RenderBackend::UrxWgpuFull => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or_else(|| match &self.surface {
+                let (w, h) = match self.gpu_surface_size() {
+                    Some(size) => size,
+                    None => match &self.surface {
                         #[cfg(not(target_arch = "wasm32"))]
                         SurfaceMode::Software { width, height, .. } => (*width, *height),
                         _ => (1, 1),
-                    });
+                    },
+                };
                 if self.urx_ctx.is_none() {
                     self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(1.0));
                 }
@@ -1275,6 +1200,12 @@ impl WindowRenderState {
                     c.begin_frame(w, h);
                     f(c)
                 })
+            }
+            // Backend not compiled into this build: no context to hand out.
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = f;
+                None
             }
         }
     }
@@ -1303,6 +1234,7 @@ impl WindowRenderState {
         f: impl FnOnce(&mut dyn uzor::render::RenderContext, &mut dyn uzor::core::render::retained::RetainedSurface) -> R,
     ) -> Option<R> {
         match self.active {
+            #[cfg(feature = "vello-gpu")]
             RenderBackend::VelloGpu => {
                 let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
                 ctx.install_fragment_store(std::mem::take(&mut self.vello_fragment_store));
@@ -1310,23 +1242,22 @@ impl WindowRenderState {
                 self.vello_fragment_store = ctx.take_fragment_store();
                 Some(out)
             }
+            #[cfg(feature = "vello-hybrid")]
             RenderBackend::VelloHybrid => {
                 Some(f(&mut self.vello_hybrid_ctx, &mut self.retained_cache))
             }
+            #[cfg(feature = "vello-cpu")]
             RenderBackend::VelloCpu => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 let Self { vello_cpu_ctx, retained_cache, .. } = self;
                 vello_cpu_ctx.as_mut().map(|c| {
                     c.begin_frame(w, h);
                     f(c, retained_cache)
                 })
             }
+            #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 let Self { tiny_skia_ctx, retained_cache, .. } = self;
                 tiny_skia_ctx.as_mut().map(|c| {
                     if c.width() != w || c.height() != h {
@@ -1335,10 +1266,9 @@ impl WindowRenderState {
                     f(c, retained_cache)
                 })
             }
+            #[cfg(feature = "wgpu-instanced")]
             RenderBackend::InstancedWgpu => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or((1, 1));
+                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
                 if self.instanced_ctx.is_none() {
                     self.instanced_ctx = Some(InstancedRenderContext::new(
                         w as f32, h as f32, 0.0, 0.0,
@@ -1362,17 +1292,19 @@ impl WindowRenderState {
             #[cfg(not(target_arch = "wasm32"))]
             RenderBackend::Canvas2d => None,
 
+            #[cfg(feature = "urx")]
             RenderBackend::UrxCpu
             | RenderBackend::UrxWgpu
             | RenderBackend::UrxHybrid
             | RenderBackend::UrxWgpuFull => {
-                let (w, h) = self.gpu_handles()
-                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
-                    .unwrap_or_else(|| match &self.surface {
+                let (w, h) = match self.gpu_surface_size() {
+                    Some(size) => size,
+                    None => match &self.surface {
                         #[cfg(not(target_arch = "wasm32"))]
                         SurfaceMode::Software { width, height, .. } => (*width, *height),
                         _ => (1, 1),
-                    });
+                    },
+                };
                 if self.urx_ctx.is_none() {
                     self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(1.0));
                 }
@@ -1381,6 +1313,12 @@ impl WindowRenderState {
                     c.begin_frame(w, h);
                     f(c, retained_cache)
                 })
+            }
+            // Backend not compiled into this build: no context to hand out.
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = f;
+                None
             }
         }
     }
@@ -1395,6 +1333,7 @@ impl WindowRenderState {
     /// wait DWM may composite a stale backbuffer onto the new
     /// outer rect for one vblank).  No-op on non-GPU backends.
     pub fn wait_gpu_idle(&self) {
+        #[cfg(feature = "gpu")]
         if let SurfaceMode::Gpu { gpu_pool, dev_id, .. } = &self.surface {
             let device = &gpu_pool.devices[*dev_id].device;
             let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
@@ -1412,6 +1351,7 @@ impl WindowRenderState {
             return;
         }
         match &mut self.surface {
+            #[cfg(feature = "gpu")]
             SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
                 gpu_pool.resize_surface(surface, width, height);
                 // VelloHybrid renderer caches the target dimensions when it
@@ -1419,6 +1359,7 @@ impl WindowRenderState {
                 // it so the next submit re-creates it with the new size —
                 // otherwise the GPU draws into a stale render target and
                 // the swapchain shows blank / stretched content.
+                #[cfg(feature = "vello-hybrid")]
                 if matches!(self.active, RenderBackend::VelloHybrid) {
                     self.vello_hybrid_renderer = None;
                 }
@@ -1444,6 +1385,7 @@ impl WindowRenderState {
                 // Resize the CPU pixmap / vello-cpu render context so the
                 // submit path's `cw == width` check succeeds and present()
                 // sends a non-empty frame.
+                #[cfg(feature = "tiny-skia")]
                 if let Some(ref mut ts) = self.tiny_skia_ctx {
                     ts.resize(width, height);
                 }
@@ -1464,7 +1406,9 @@ impl WindowRenderState {
     /// Reset per-frame artifacts.  Call at the top of each frame.
     pub fn begin_frame(&mut self) {
         match self.active {
+            #[cfg(feature = "vello-gpu")]
             RenderBackend::VelloGpu => self.scene.reset(),
+            #[cfg(feature = "vello-hybrid")]
             RenderBackend::VelloHybrid => {
                 // Re-create / reset the hybrid scene with the current swapchain
                 // size so the caller can paint into it.  Without this the
@@ -1490,6 +1434,9 @@ impl WindowRenderState {
                 // urx_ctx::begin_frame is called by `with_render_context` (it
                 // needs the surface size). Nothing per-frame here.
             }
+            // Backend not compiled into this build: nothing to reset.
+            #[allow(unreachable_patterns)]
+            _ => {}
         }
     }
 
@@ -1534,6 +1481,7 @@ impl WindowRenderState {
     /// A consumer that never calls this keeps the pre-Step-5 hardcoded
     /// defaults (`retained: true`, `high_hz: false`) — additive, no
     /// behavior change for callers that don't opt in.
+    #[cfg(feature = "urx")]
     pub fn set_workload_hint_inputs(&mut self, retained: bool, high_hz: bool) {
         self.urx_retained_hint = retained;
         self.urx_high_hz_hint = high_hz;
@@ -1552,12 +1500,14 @@ impl WindowRenderState {
     /// composed 3D frame to change it from the default. A consumer that
     /// never calls this keeps the pre-existing hardcoded `4` (MSAA
     /// armed), unchanged.
+    #[cfg(feature = "urx-3d")]
     pub fn set_compose_msaa_sample_count(&mut self, n: u32) {
         self.urx_compose_msaa_sample_count = n;
     }
 
     /// Current value set via [`Self::set_compose_msaa_sample_count`]
     /// (default `4`, matching the pre-existing hardcoded behavior).
+    #[cfg(feature = "urx-3d")]
     pub fn compose_msaa_sample_count(&self) -> u32 {
         self.urx_compose_msaa_sample_count
     }
@@ -1572,12 +1522,14 @@ impl WindowRenderState {
     /// leaves `Renderer3D::new`'s own default untouched. Has NO effect
     /// on an already-lazy-initialized `Renderer3D` for this window —
     /// call before the window's first composed 3D frame to change it.
+    #[cfg(feature = "urx-3d")]
     pub fn set_compose_edge_width_px(&mut self, px: Option<f32>) {
         self.urx_compose_edge_width_px = px;
     }
 
     /// Current value set via [`Self::set_compose_edge_width_px`]
     /// (default `None` — `Renderer3D::new`'s own default applies).
+    #[cfg(feature = "urx-3d")]
     pub fn compose_edge_width_px(&self) -> Option<f32> {
         self.urx_compose_edge_width_px
     }
@@ -1593,6 +1545,7 @@ impl WindowRenderState {
     /// want retained-mode regions drive `engine.upsert_region(...)`
     /// and friends; consumers that prefer immediate-mode ignore the
     /// engine and paint into `render_ctx`.
+    #[cfg(feature = "urx")]
     pub fn with_urx_engine<R>(
         &mut self,
         f: impl FnOnce(&mut crate::urx_engine_handle::UrxEngineHandle<'_>) -> R,
@@ -1713,6 +1666,7 @@ impl WindowRenderState {
     ///
     /// The renderer is initialised with `node_capacity = 1024`. To use
     /// a larger capacity, see [`Self::init_renderer_3d_with_capacity`].
+    #[cfg(feature = "urx-3d")]
     pub fn with_renderer_3d<R>(
         &mut self,
         f: impl FnOnce(&mut uzor_urx_3d::Renderer3D, &mut uzor_urx_3d::Scene3D) -> R,
@@ -1764,6 +1718,7 @@ impl WindowRenderState {
     /// caller should retry next frame.
     pub fn paint_skeleton(&mut self, spec: uzor_urx_core::SkeletonSpec, now_us: u64) -> bool {
         let (width, height) = match &self.surface {
+            #[cfg(feature = "gpu")]
             SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
             #[cfg(not(target_arch = "wasm32"))]
             SurfaceMode::Software { width, height, .. } => (*width, *height),
@@ -1776,6 +1731,7 @@ impl WindowRenderState {
         frame.render(now_us);
 
         match &mut self.surface {
+            #[cfg(feature = "gpu")]
             SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
                 let device = &gpu_pool.devices[*dev_id].device;
                 let queue  = &gpu_pool.devices[*dev_id].queue;
@@ -1828,6 +1784,7 @@ impl WindowRenderState {
     /// swapchain. Tessera-window's paint walker case-splits at
     /// `ContentBody::Scene3D` and calls this method instead of
     /// `submit_frame`.
+    #[cfg(feature = "urx-3d")]
     pub fn submit_3d_frame(
         &mut self,
         camera: &uzor_urx_3d::PerspectiveCamera,
@@ -1913,6 +1870,7 @@ impl WindowRenderState {
     /// demos prove the composition shape).
     ///
     /// U-blit-viewport-1 (2026-06-09).
+    #[cfg(feature = "urx-3d")]
     pub fn submit_3d_frame_to_rect(
         &mut self,
         camera: &uzor_urx_3d::PerspectiveCamera,
@@ -2059,6 +2017,7 @@ impl WindowRenderState {
     /// surface — independent of all render slots. Consumer ticks
     /// `physics.step(dt)` per frame, reads body positions into Scene3D
     /// nodes (the wire from physics to render is consumer-side).
+    #[cfg(feature = "urx-3d")]
     pub fn with_physics_world<R>(
         &mut self,
         f: impl FnOnce(&mut uzor_urx_physics::PhysicsWorld) -> R,
@@ -2074,17 +2033,20 @@ impl WindowRenderState {
     /// `EmitterConfig`. Idempotent only if called with the same config;
     /// re-init replaces the previous instance for that id. Multi-emitter
     /// (1.4.11): each `Content::Particles` container gets its own slot.
+    #[cfg(feature = "urx-3d")]
     pub fn init_particles(&mut self, id: u64, config: uzor_urx_3d::EmitterConfig) {
         self.urx_particles.insert(id, uzor_urx_3d::ParticleSystem::new(config));
     }
 
     /// `true` once `id` has been initialised via [`Self::init_particles`].
+    #[cfg(feature = "urx-3d")]
     pub fn has_particles(&self, id: u64) -> bool {
         self.urx_particles.contains_key(&id)
     }
 
     /// Borrow the URX particle system for `id` (only after
     /// [`Self::init_particles`]). `None` until then.
+    #[cfg(feature = "urx-3d")]
     pub fn with_particles<R>(
         &mut self,
         id: u64,
@@ -2094,6 +2056,7 @@ impl WindowRenderState {
     }
 
     /// Drop the particle system for `id` (container despawned / migrated).
+    #[cfg(feature = "urx-3d")]
     pub fn remove_particles(&mut self, id: u64) {
         self.urx_particles.remove(&id);
     }
@@ -2105,6 +2068,7 @@ impl WindowRenderState {
     /// consumer's screenshot pipeline (the swapchain itself has no
     /// COPY_SRC, and these paths bypass `target_texture`). Disarmed by
     /// default — zero per-frame cost until a screenshot is requested.
+    #[cfg(feature = "urx-3d")]
     pub fn set_capture_3d(&mut self, on: bool) {
         self.capture_3d_enabled = on;
         if !on { self.urx_capture_3d = None; }
@@ -2113,6 +2077,7 @@ impl WindowRenderState {
     /// Borrow the 3D capture mirror, if armed AND at least one
     /// 3D-family submit has run since. The texture is full-surface in
     /// the swapchain format (often Bgra8 — the reader must swizzle).
+    #[cfg(feature = "urx-3d")]
     pub fn capture_3d(&self) -> Option<&UrxCapture3D> {
         self.urx_capture_3d.as_ref()
     }
@@ -2121,6 +2086,7 @@ impl WindowRenderState {
     /// the retained URX engine, `None` when the engine was never
     /// initialised (immediate mode / engine channel unused). Feeds the
     /// consumer's stats endpoints (U2 Wave A, 2026-06-10).
+    #[cfg(feature = "urx")]
     pub fn urx_region_stats(&self) -> Option<(usize, bool)> {
         self.urx_engine.as_ref().map(|e| {
             (e.region_count(), e.needs_paint().is_some())
@@ -2138,6 +2104,7 @@ impl WindowRenderState {
     /// (Two calls instead of one handle: the handle's `render_ctx` is
     /// `&mut dyn RenderContext`, which can't expose `take_scene` —
     /// this method has the concrete context.)
+    #[cfg(feature = "urx")]
     pub fn paint_urx_region_scene(
         &mut self,
         f: impl FnOnce(&mut dyn uzor::render::RenderContext),
@@ -2161,6 +2128,7 @@ impl WindowRenderState {
 
     /// Ensure the capture mirror exists at the current surface size.
     /// Crate-internal — called by the 3D submit paths when armed.
+    #[cfg(feature = "urx-3d")]
     pub(crate) fn ensure_capture_3d(
         &mut self,
         device: &wgpu::Device,
@@ -2209,6 +2177,7 @@ impl WindowRenderState {
     /// To draw particles ON TOP of a 3D scene, push the scene into the
     /// slot via [`Self::with_renderer_3d`] first — the particle pass
     /// composites over whatever the scene drew.
+    #[cfg(feature = "urx-3d")]
     pub fn submit_particles_to_rect(
         &mut self,
         id: u64,
@@ -2343,6 +2312,7 @@ impl WindowRenderState {
 }
 
 #[cfg(test)]
+#[cfg(all(feature = "tiny-skia", feature = "urx"))]
 mod workload_hint_input_tests {
     //! render-cache-parity plan §5 Step 5 — `set_workload_hint_inputs`
     //! plumbing. Headless (software surface, no GPU/window needed):
@@ -2379,6 +2349,7 @@ mod workload_hint_input_tests {
 }
 
 #[cfg(test)]
+#[cfg(all(feature = "tiny-skia", feature = "urx-3d"))]
 mod compose_msaa_and_edge_width_config_tests {
     //! Graph-strengthening arc item 5 — `submit_urx_composed`'s lazy
     //! `Renderer3D::new` used to hardcode `set_sample_count(&device, 4)`
