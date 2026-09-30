@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::types::WidgetId;
 use crate::input::keyboard::keyboard::KeyPress;
+use super::selection::{char_from_x as cursor_from_x, char_index_at_x, word_left, word_right, TextSelection};
 
 // =============================================================================
 // InputCapability
@@ -766,6 +767,76 @@ impl TextFieldStore {
         self.drag_field = None;
     }
 
+    /// The selection of field `id`: anchor = the selection anchor (or the
+    /// cursor when there is none), focus = the cursor. `None` for an
+    /// unknown field.
+    pub fn selection(&self, id: &WidgetId) -> Option<TextSelection> {
+        let state = self.fields.get(id)?;
+        Some(TextSelection::new(state.selection_start.unwrap_or(state.cursor), state.cursor))
+    }
+
+    /// Focus and engage `id` and set its selection to `sel` (clamped to the
+    /// text), ending any drag-select session. An empty `sel` is a caret
+    /// with no selection.
+    pub fn set_selection(&mut self, id: impl Into<WidgetId>, sel: TextSelection) {
+        let id = id.into();
+        self.focus(id.clone());
+        let Some(state) = self.fields.get_mut(&id) else { return };
+        state.engaged = true;
+        let sel = sel.clamped(state.char_count());
+        state.cursor = sel.focus;
+        state.selection_start = if sel.is_empty() { None } else { Some(sel.anchor) };
+        self.drag_field = None;
+        self.reset_blink();
+    }
+
+    /// The end state of a drag-select on `id`: select from the char
+    /// boundary nearest `anchor_x` (the press) to the one nearest `focus_x`
+    /// (the release), either direction. A drag that ends on its start
+    /// char leaves a caret there.
+    pub fn select_drag(&mut self, id: impl Into<WidgetId>, anchor_x: f64, focus_x: f64) {
+        let id = id.into();
+        let Some(state) = self.fields.get(&id) else { return };
+        let anchor = cursor_from_x(&state.last_char_positions, anchor_x);
+        let focus = cursor_from_x(&state.last_char_positions, focus_x);
+        self.set_selection(id, TextSelection::new(anchor, focus));
+    }
+
+    /// A press on `id` at `x` with `click_count`: 1 places the caret and
+    /// arms a drag ([`Self::begin_drag_at`]); 2 selects the word under `x`;
+    /// 3 selects the line under `x` (the whole text for a single-line
+    /// field). Word and line use the
+    /// [`selection`](super::selection) helpers, so they agree with
+    /// Ctrl+Arrow.
+    pub fn select_at_click_count(&mut self, id: impl Into<WidgetId>, x: f64, click_count: u8) {
+        let id = id.into();
+        if click_count <= 1 {
+            self.begin_drag_at(id, x);
+            return;
+        }
+        let Some(state) = self.fields.get(&id) else {
+            self.focus(id);
+            return;
+        };
+        // A masked field shows no words, so a multi-click selects it all
+        // (as native password fields do) instead of leaking word breaks.
+        let sel = if state.config.masked {
+            TextSelection::all(&state.text)
+        } else {
+            let under = char_index_at_x(&state.last_char_positions, x);
+            TextSelection::for_click_count(&state.text, under, click_count)
+        };
+        self.set_selection(id, sel);
+    }
+
+    /// Select all of field `id`'s text (focuses and engages it).
+    pub fn select_all(&mut self, id: impl Into<WidgetId>) {
+        let id = id.into();
+        let Some(state) = self.fields.get(&id) else { return };
+        let sel = TextSelection::all(&state.text);
+        self.set_selection(id, sel);
+    }
+
     /// Return the selected text of the focused (or drag) field for the clipboard.
     pub fn copy_selection(&self) -> Option<String> {
         let id = self.focused.as_ref().or(self.drag_field.as_ref())?;
@@ -1017,35 +1088,6 @@ fn apply_key(state: &mut TextFieldState, key: KeyPress) -> bool {
     }
 }
 
-/// Char index of the start of the word before `cursor`: skip whitespace
-/// backwards, then non-whitespace.
-fn word_left(text: &str, cursor: usize) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let mut pos = cursor.min(chars.len());
-    while pos > 0 && chars[pos - 1].is_whitespace() {
-        pos -= 1;
-    }
-    while pos > 0 && !chars[pos - 1].is_whitespace() {
-        pos -= 1;
-    }
-    pos
-}
-
-/// Char index after the word at or after `cursor`: skip non-whitespace,
-/// then whitespace.
-fn word_right(text: &str, cursor: usize) -> usize {
-    let chars: Vec<char> = text.chars().collect();
-    let n = chars.len();
-    let mut pos = cursor.min(n);
-    while pos < n && !chars[pos].is_whitespace() {
-        pos += 1;
-    }
-    while pos < n && chars[pos].is_whitespace() {
-        pos += 1;
-    }
-    pos
-}
-
 /// Encode a printable character as PTY bytes.
 fn raw_char_to_bytes(ch: char) -> Vec<u8> {
     if ch == '\r' || ch == '\n' {
@@ -1086,23 +1128,6 @@ fn key_to_pty_bytes(key: &KeyPress) -> Option<Vec<u8>> {
         KeyPress::ShiftRight => Some(b"\x1b[1;2C".to_vec()),
         _ => None,
     }
-}
-
-/// Compute cursor char index from x position using char boundary positions.
-fn cursor_from_x(positions: &[f64], x: f64) -> usize {
-    if positions.is_empty() {
-        return 0;
-    }
-    let char_count = positions.len().saturating_sub(1);
-    for i in 0..char_count {
-        let left = positions[i];
-        let right = positions[i + 1];
-        let mid = (left + right) * 0.5;
-        if x < mid {
-            return i;
-        }
-    }
-    char_count
 }
 
 // =============================================================================
@@ -1558,5 +1583,71 @@ mod tests {
         s.on_char('\x08');
         assert_eq!(s.text(&id("f")).chars().count(), 2);
         assert_eq!(s.cursor(&id("f")), 2);
+    }
+
+    fn laid_out(text: &str) -> TextFieldStore {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.set_text(&id("f"), text);
+        let n = text.chars().count();
+        let positions: Vec<f64> = (0..=n).map(|i| i as f64 * 10.0).collect();
+        s.update_field(&id("f"), (0.0, 0.0, n as f64 * 10.0, 20.0), positions);
+        s
+    }
+
+    #[test]
+    fn select_drag_selects_press_to_release_in_both_directions() {
+        let mut s = laid_out("hello world");
+        s.select_drag("f", 12.0, 48.0);
+        assert!(s.is_focused(&id("f")) && s.is_engaged(&id("f")));
+        assert_eq!(s.selection_range(&id("f")), Some((1, 5)));
+        assert_eq!(s.copy_selection().as_deref(), Some("ello"));
+        s.select_drag("f", 48.0, 12.0);
+        assert_eq!(s.selection_range(&id("f")), Some((1, 5)));
+        assert_eq!(s.cursor(&id("f")), 1, "the focus follows the release");
+        assert!(!s.drag_active());
+        // a drag back onto its start char leaves a caret
+        s.select_drag("f", 12.0, 13.0);
+        assert_eq!(s.selection_range(&id("f")), None);
+        assert_eq!(s.cursor(&id("f")), 1);
+    }
+
+    #[test]
+    fn click_count_selects_caret_word_or_line() {
+        let mut s = laid_out("привет мир");
+        // x=83 is inside char 8 ('и'); nearest boundary would be 8 too, but
+        // x=88 (right half of 'и') must still select "мир", not the end.
+        s.select_at_click_count("f", 88.0, 2);
+        assert_eq!(s.selection_range(&id("f")), Some((7, 10)));
+        assert_eq!(s.copy_selection().as_deref(), Some("мир"));
+        s.select_at_click_count("f", 25.0, 3);
+        assert_eq!(s.selection_range(&id("f")), Some((0, 10)));
+        s.select_at_click_count("f", 25.0, 1);
+        assert_eq!(s.selection_range(&id("f")), None);
+        assert_eq!(s.cursor(&id("f")), 3);
+    }
+
+    #[test]
+    fn multi_click_on_a_masked_field_selects_everything() {
+        let mut s = store();
+        s.register("p", TextFieldConfig::password());
+        s.set_text(&id("p"), "two words");
+        let positions: Vec<f64> = (0..=9).map(|i| i as f64 * 10.0).collect();
+        s.update_field(&id("p"), (0.0, 0.0, 90.0, 20.0), positions);
+        s.select_at_click_count("p", 5.0, 2);
+        assert_eq!(s.selection_range(&id("p")), Some((0, 9)));
+    }
+
+    #[test]
+    fn selection_accessor_and_select_all() {
+        let mut s = laid_out("你好 世界");
+        assert_eq!(s.selection(&id("f")), Some(TextSelection::caret(5)));
+        s.select_all("f");
+        assert_eq!(s.selection(&id("f")).unwrap().range(), (0, 5));
+        assert_eq!(s.copy_selection().as_deref(), Some("你好 世界"));
+        s.set_selection("f", TextSelection::new(4, 1));
+        assert_eq!(s.copy_selection().as_deref(), Some("好 世"));
+        assert_eq!(s.selection(&id("f")), Some(TextSelection::new(4, 1)));
+        assert!(s.selection(&id("missing")).is_none());
     }
 }

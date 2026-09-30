@@ -222,6 +222,7 @@ impl SeparatorTheme for TokenTheme {
 impl TextTheme for TokenTheme {
     fn text_color(&self) -> &str { &self.0.text().text_color }
     fn text_color_hover(&self) -> &str { &self.0.text().text_color_hover }
+    fn selection_color(&self) -> &str { &self.0.text().selection_color }
 }
 
 // `chrome_bottom_accent`, `chrome_hover_line`, `sidebar_left_accent`,

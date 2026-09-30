@@ -164,6 +164,10 @@ pub struct InputCoordinator {
     cook: CookState,
     /// `pointer.button_down` of the previous `end_frame`, for press edges.
     cook_prev_down: Option<MouseButton>,
+    /// Press origin of a release that ended a drag THIS frame (set by
+    /// `feed_cook`, `None` otherwise). A drag-release is not a click for
+    /// the text store: it keeps the selection the drag made.
+    cook_drag_release: Option<(f64, f64)>,
 }
 
 impl InputCoordinator {
@@ -186,6 +190,7 @@ impl InputCoordinator {
             default_layer: None,
             cook: CookState::default(),
             cook_prev_down: None,
+            cook_drag_release: None,
         }
     }
 
@@ -620,7 +625,7 @@ impl InputCoordinator {
                         response.clicked = true;
                         response.double_clicked = self.cook.click_count == 2;
                         response.triple_clicked = self.cook.click_count >= 3;
-                        if widget.sense.text {
+                        if widget.sense.text && self.cook_drag_release.is_none() {
                             // Place the caret at the hit character instead of
                             // only arming focus — the coordinator already
                             // knows exactly which widget was hit (z-order +
@@ -629,8 +634,14 @@ impl InputCoordinator {
                             // the same answer from a geometric `last_rect`
                             // search the way `on_drag_start` does for callers
                             // that don't already have a hit-test of their own.
+                            // A double / triple click selects the word / line
+                            // (needs `InputState::time`, else always 1).
+                            //
+                            // A release that ENDS a drag is skipped here: it
+                            // must not collapse the selection the drag made
+                            // (handled below, after the loop).
                             if let Some((mx, _my)) = mouse_pos {
-                                self.text_fields.begin_drag_at(widget.id.clone(), mx);
+                                self.text_fields.select_at_click_count(widget.id.clone(), mx, self.cook.click_count);
                             } else {
                                 self.text_fields.focus(widget.id.clone());
                             }
@@ -653,6 +664,21 @@ impl InputCoordinator {
                         responses.push((widget.id.clone(), response));
                     }
                 }
+        }
+
+        // 2b. Drag-select end: a release that ended a drag which began on a
+        // text field selects press → release in that field (wherever the
+        // release landed — the boundaries clamp), keeping any selection a
+        // host built live via `on_drag_move` instead of collapsing it to a
+        // caret at the release point.
+        if let (Some((ox, oy)), Some((mx, _))) = (self.cook_drag_release, mouse_pos) {
+            let origin = self
+                .hit_test_at(ox, oy)
+                .filter(|w| w.sense.text)
+                .map(|w| w.id.clone());
+            if let Some(id) = origin {
+                self.text_fields.select_drag(id, ox, mx);
+            }
         }
 
         // 3. Handle ongoing drag (but not if we just started it this frame)
@@ -719,6 +745,7 @@ impl InputCoordinator {
     /// the host; while it is `0.0` every press counts as a single click, so
     /// an unstamped host never reports a spurious double click.
     fn feed_cook(&mut self) {
+        self.cook_drag_release = None;
         let now = self.input.time;
         let down = self.input.pointer.button_down;
         let clicked = self.input.pointer.clicked;
@@ -739,7 +766,10 @@ impl InputCoordinator {
                 }
             }
             if let (None, Some(button)) = (down, clicked) {
-                self.cook.release(x, y, button, now);
+                let origin = self.cook.press_origin.map(|o| (o.x, o.y));
+                if self.cook.release(x, y, button, now) {
+                    self.cook_drag_release = origin;
+                }
             }
         }
         self.cook_prev_down = down;
@@ -2246,5 +2276,143 @@ mod tests {
 
         step(&mut coord, &btn, rect, pos, None);
         assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+    }
+
+    // -------------------------------------------------------------------
+    // Text input: drag-select, click-to-caret, multi-click
+    // -------------------------------------------------------------------
+
+    const FIELD: Rect = Rect { x: 0.0, y: 0.0, width: 200.0, height: 30.0 };
+
+    /// One frame over a text field holding `text` (10 px per char):
+    /// pointer at `pos`, `down` held, `clicked` = a release this frame,
+    /// `time` stamped (seconds).
+    fn text_frame(
+        coord: &mut InputCoordinator,
+        id: &WidgetId,
+        text: &str,
+        pos: (f64, f64),
+        down: bool,
+        clicked: bool,
+        time: f64,
+    ) -> Vec<(WidgetId, WidgetResponse)> {
+        let mut input = InputState::default();
+        input.pointer.pos = Some(pos);
+        input.pointer.button_down = if down { Some(MouseButton::Left) } else { None };
+        input.pointer.clicked = if clicked { Some(MouseButton::Left) } else { None };
+        input.time = time;
+        coord.begin_frame(input);
+        let fresh = !coord.text_fields().has_field(id);
+        coord.register_text_field(id.clone(), FIELD, TextFieldConfig::text());
+        if fresh {
+            coord.text_fields_mut().set_text(id, text);
+        }
+        let n = text.chars().count();
+        let positions: Vec<f64> = (0..=n).map(|i| i as f64 * 10.0).collect();
+        coord.text_fields_mut().update_field(id, (FIELD.x, FIELD.y, FIELD.width, FIELD.height), positions);
+        coord.end_frame()
+    }
+
+    #[test]
+    fn test_text_input_drag_select_survives_release() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("drag_field");
+        let text = "hello world";
+        // press at char boundary 1, drag to 5, release there
+        text_frame(&mut coord, &id, text, (12.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (30.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), true, false, 0.0);
+        let responses = text_frame(&mut coord, &id, text, (48.0, 15.0), false, true, 0.0);
+        // the widget still reports the release as it always did
+        assert!(responses.iter().any(|(w, r)| w == &id && r.clicked));
+        assert!(coord.text_fields().is_focused(&id));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((1, 5)), "release after a drag keeps the selection");
+        assert_eq!(coord.text_fields().copy_selection().as_deref(), Some("ello"));
+    }
+
+    #[test]
+    fn test_text_input_backward_drag_released_outside_the_field_keeps_the_selection() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("drag_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (78.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (40.0, 15.0), true, false, 0.0);
+        // released left of and below the field: clamps to char 0
+        text_frame(&mut coord, &id, text, (-20.0, 80.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), Some((0, 8)));
+        assert_eq!(coord.text_fields().cursor(&id), 0);
+    }
+
+    #[test]
+    fn test_text_input_host_driven_drag_select_survives_release() {
+        // A host that drives the store itself (on_drag_start / move / end,
+        // as the desktop input bridge does) must not have its selection
+        // collapsed by the coordinator's release handling.
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("host_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (0.0, 15.0), false, false, 0.0);
+        coord.text_fields_mut().on_drag_start(22.0, 15.0);
+        text_frame(&mut coord, &id, text, (22.0, 15.0), true, false, 0.0);
+        coord.text_fields_mut().on_drag_move(70.0);
+        text_frame(&mut coord, &id, text, (70.0, 15.0), true, false, 0.0);
+        coord.text_fields_mut().on_drag_end();
+        text_frame(&mut coord, &id, text, (70.0, 15.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), Some((2, 7)));
+    }
+
+    #[test]
+    fn test_plain_click_places_caret_and_clears_selection() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("click_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (12.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), false, true, 0.0);
+        assert!(coord.text_fields().selection_range(&id).is_some());
+
+        // a press and release in place (jitter under the drag threshold)
+        text_frame(&mut coord, &id, text, (71.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (73.0, 16.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (73.0, 16.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+        assert_eq!(coord.text_fields().cursor(&id), 7);
+
+        // a click inside one frame, the way the old tests drive it
+        text_frame(&mut coord, &id, text, (22.0, 15.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().cursor(&id), 2);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+    }
+
+    #[test]
+    fn test_double_click_selects_a_word_and_triple_a_line() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("multi_field");
+        let text = "привет мир";
+        // x = 88 is the right half of 'и': the word under it, not the end
+        text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.0);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+        assert_eq!(coord.text_fields().cursor(&id), 9);
+        let r = text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.1);
+        assert!(r.iter().any(|(w, r)| w == &id && r.double_clicked));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((7, 10)));
+        assert_eq!(coord.text_fields().copy_selection().as_deref(), Some("мир"));
+        let r = text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.2);
+        assert!(r.iter().any(|(w, r)| w == &id && r.triple_clicked));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((0, 10)));
+    }
+
+    #[test]
+    fn test_unstamped_time_never_multi_clicks_a_text_input() {
+        // Hosts that do not stamp `InputState::time` keep the old behaviour:
+        // every click places the caret.
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("unstamped");
+        let text = "hello world";
+        for _ in 0..3 {
+            text_frame(&mut coord, &id, text, (22.0, 15.0), false, true, 0.0);
+            assert_eq!(coord.text_fields().selection_range(&id), None);
+            assert_eq!(coord.text_fields().cursor(&id), 2);
+        }
     }
 }
