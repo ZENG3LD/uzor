@@ -8,6 +8,7 @@
 //! NOT a method added onto `PerspectiveCamera` itself.
 
 use glam::Vec3;
+#[cfg(feature = "render3d")]
 use uzor_urx_3d::PerspectiveCamera;
 
 /// Screen-px -> radians conversion for [`Camera3D::orbit`] — mirrors the
@@ -119,6 +120,7 @@ impl Camera3D {
     /// `PerspectiveCamera::new`'s own hardcoded 60° — a caller that never
     /// touches [`Camera3D::fov_y`] sees no behavior change) instead of
     /// silently keeping whatever `PerspectiveCamera::new` happened to set.
+    #[cfg(feature = "render3d")]
     pub fn to_perspective(&self, aspect: f32) -> PerspectiveCamera {
         let mut camera = PerspectiveCamera::new(self.eye(), self.target, aspect);
         camera.z_near = (self.distance * 0.001).max(0.05);
@@ -206,10 +208,10 @@ impl Camera3D {
         // Reads back THIS camera's own current `fov_y` (`self.fov_y`,
         // graph-strengthening arc item 5 — was always
         // `PerspectiveCamera::new`'s hardcoded default before that field
-        // existed) via `to_perspective` rather than duplicating the
-        // value, so a caller-overridden fov automatically fits correctly
-        // too, not just the default one.
-        let half_fov_y = (self.to_perspective(aspect).fov_y * 0.5).max(1e-4);
+        // existed) — the same value `to_perspective` hands the
+        // `PerspectiveCamera`, so a caller-overridden fov automatically
+        // fits correctly too, not just the default one.
+        let half_fov_y = (self.fov_y * 0.5).max(1e-4);
         let tan_half_y = half_fov_y.tan().max(1e-6);
         let tan_half_x = (tan_half_y * aspect).max(1e-6);
 
@@ -251,6 +253,7 @@ impl Camera3D {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "render3d")]
     #[test]
     fn to_perspective_places_the_eye_at_distance_from_target_along_the_orbit_offset() {
         let camera = Camera3D { target: Vec3::ZERO, distance: 10.0, yaw: 0.0, pitch: 0.0, ..Camera3D::default() };
@@ -264,6 +267,7 @@ mod tests {
     /// A caller that never touches `fov_y` must see byte-identical
     /// behavior to before this field existed — same value
     /// `uzor_urx_3d::PerspectiveCamera::new` hardcodes.
+    #[cfg(feature = "render3d")]
     #[test]
     fn fov_y_defaults_to_the_prior_hardcoded_perspective_camera_value() {
         let default_camera = Camera3D::default();
@@ -276,6 +280,7 @@ mod tests {
     /// `PerspectiveCamera` — the graph-strengthening arc's actual fix
     /// (previously always the hardcoded 60° regardless of this field,
     /// since this field didn't exist).
+    #[cfg(feature = "render3d")]
     #[test]
     fn a_caller_overridden_fov_y_reaches_the_produced_perspective_camera() {
         let camera = Camera3D { fov_y: 30_f32.to_radians(), ..Camera3D::default() };
@@ -377,6 +382,7 @@ mod tests {
 
     // ── fit_bounds (Wave 5 fit-to-bounds) ───────────────────────────────
 
+    #[cfg(feature = "render3d")]
     #[test]
     fn fit_bounds_centers_the_target_on_the_aabb_and_keeps_every_corner_inside_ndc() {
         let mut camera = Camera3D { target: Vec3::new(999.0, -50.0, 12.0), distance: 5.0, yaw: 0.6, pitch: -0.3, ..Camera3D::default() };

@@ -11,7 +11,7 @@ description = "Reusable force-directed graph visualization engine for uzor — g
 [dependencies]
 uzor = { workspace = true }
 uzor-figures = { workspace = true }
-uzor-urx-3d = { workspace = true }
+uzor-urx-3d = { workspace = true, optional = true }
 glam = "0.29"
 serde_json = "1"
 # W3D Wave 4 (GPU color-ID picking) — `interaction/pick3d.rs`'s
@@ -21,7 +21,14 @@ serde_json = "1"
 # uses so both crates resolve to the identical `wgpu` instance (required
 # for `Renderer3D::render_to_texture`'s own `&wgpu::Device` param to
 # type-check against what this crate constructs and passes through).
-wgpu = "29"
+wgpu = { version = "29", optional = true }
+
+[features]
+# The 3D render bridge: `engine3d`, `render3d`, `interaction::pick3d` and
+# `Camera3D::to_perspective` build `uzor-urx-3d` scenes and take `wgpu`
+# devices. Off by default so the 2D engine, the 3D layouts and the fly
+# camera build without the GPU stack.
+render3d = ["dep:uzor-urx-3d", "dep:wgpu"]
 
 [dev-dependencies]
 uzor-export = { workspace = true }
@@ -32,3 +39,7 @@ png = "0.17"
 # 4; `pollster` stays dev-only (blocking `request_adapter`/`request_device`
 # setup is a test-only convenience, production code never blocks).
 pollster = "0.4"
+
+[[test]]
+name = "render3d_gpu"
+required-features = ["render3d"]

@@ -29,6 +29,7 @@ pub enum DashPattern {
 impl DashPattern {
     /// A finite, positive alternating pattern, or `None` when the custom
     /// pattern is invalid/empty and should degrade safely to a solid edge.
+    #[cfg(feature = "render3d")]
     pub(crate) fn resolved(&self) -> Option<Vec<f32>> {
         let values = match self {
             Self::Dashed => vec![8.0, 5.0],

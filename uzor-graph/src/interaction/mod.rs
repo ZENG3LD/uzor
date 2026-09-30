@@ -17,4 +17,5 @@
 pub mod drag;
 pub mod fly;
 pub mod pick;
+#[cfg(feature = "render3d")]
 pub mod pick3d;

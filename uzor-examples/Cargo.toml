@@ -15,7 +15,7 @@ path = "src/lib.rs"
 uzor                  = { workspace = true }
 uzor-desktop          = { workspace = true }
 uzor-framework-macros = { workspace = true }
-uzor-graph            = { workspace = true }
+uzor-graph            = { workspace = true, features = ["render3d"] }
 uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
 uzor-render-vello-cpu = { workspace = true }
