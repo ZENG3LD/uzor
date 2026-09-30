@@ -13,7 +13,7 @@ use tiny_skia::{Color, IntSize, Pixmap};
 
 use uzor::render::{Painter, TextAlign, TextBaseline, TextRenderer};
 use uzor::tokens::{BuiltinSet, Tokens};
-use uzor_render_tiny_skia::golden::{compare_or_bless, GoldenError, GoldenTolerance};
+use crate::golden::{compare_or_bless, GoldenError, GoldenTolerance};
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 /// Runs `f` once per built-in token set (H1 §1 D5: the 4 generic sets).
@@ -46,7 +46,7 @@ pub fn canvas(width: u32, height: u32, set: BuiltinSet) -> TinySkiaCpuRenderCont
 }
 
 /// Compares/blesses `<widget>/<set>/<state>` against the committed golden
-/// PNG (`UZOR_BLESS=1` (re)writes it — see `uzor_render_tiny_skia::golden`).
+/// PNG (`UZOR_BLESS=1` (re)writes it — see `crate::golden`).
 pub fn golden(
     widget: &str,
     set: BuiltinSet,
@@ -58,7 +58,7 @@ pub fn golden(
 }
 
 /// `<workspace root>/target` — the same resolution rule as
-/// `uzor_render_tiny_skia::golden`'s own (crate-private) target directory
+/// `crate::golden`'s own (module-private) target directory
 /// helper: `CARGO_TARGET_DIR` if set, else this crate's manifest dir's
 /// parent (this crate is a direct member of the `uzor-next` workspace).
 fn target_dir() -> PathBuf {
