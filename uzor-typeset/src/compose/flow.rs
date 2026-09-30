@@ -83,7 +83,7 @@ use super::baseline_grid::{start_delta, trailing_extra};
 use super::island_layout::{island_placement_rect, island_strip_rects};
 use super::keep_break::BreakControl;
 use super::list_layout::{items_fitting, list_total_height, measure_list_items, place_list_items, ComposedListItem};
-use super::table_layout::{header_group_height, measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
+use super::table_layout::{header_group_height, header_group_rows, measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
 use super::{lines_fitting, slice_layout_lines, widow_orphan_count};
 use crate::region::{Frame, PlacedBlock, RegionSequence};
 use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode};
@@ -217,6 +217,7 @@ fn full_height_if_whole(kind: &Block<'_>, region_width: f64, remaining_height: f
         // `region_width`) — the side-strip content beside it is a
         // separate concern real placement handles, never this lookahead.
         Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height),
+        Block::IslandEnd => 0.0,
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
             table_total_height(&rows)
@@ -245,14 +246,37 @@ fn has_room_for_next(next: &Block<'_>, region_width: f64, remaining_height: f64,
         Block::Spacer(gap) => *gap <= remaining_height,
         Block::Paragraph(p) => {
             let full = layout_paragraph(&Paragraph { max_width: region_width, ..*p }, shaper);
-            full.lines.is_empty() || lines_fitting(&full, 0, remaining_height, false) > 0
+            // "Room" means what the placement below would actually accept:
+            // a head shorter than the orphan minimum defers the whole
+            // paragraph, so counting a single line as room strands the
+            // keep-with-next heading at the foot of the region.
+            full.lines.is_empty()
+                || widow_orphan_count(
+                    full.lines.len(),
+                    0,
+                    lines_fitting(&full, 0, remaining_height, false),
+                    style.min_orphan_lines,
+                    style.min_widow_lines,
+                    true,
+                )
+                .is_some_and(|n| n > 0)
         }
         Block::Figure(fb) => fb.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
         Block::Image(ib) => ib.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
         Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height) <= remaining_height,
+        Block::IslandEnd => true,
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
-            rows.first().map_or(true, |r| r.height <= remaining_height)
+            let header_rows = header_group_rows(&rows);
+            // A repeating header never stands alone (see the Table arm of
+            // `place_into_region`): "some room" then means the header plus
+            // the first body row.
+            let lead = if table.header_repeat && rows.len() > header_rows {
+                header_group_height(&rows) + rows[header_rows].height
+            } else {
+                rows.first().map_or(0.0, |r| r.height)
+            };
+            rows.is_empty() || lead <= remaining_height
         }
         Block::List(list) => {
             let content_width = (region_width - list.indent_px).max(0.0);
@@ -280,7 +304,8 @@ pub fn compose<'a>(flow: &'a [BlockNode<'a>], regions: &mut dyn RegionSequence, 
 
     while block_idx < flow.len() {
         let Some(region) = regions.next() else { break };
-        let (blocks, overflow) = place_into_region(flow, &ids, &mut block_idx, &mut progress, region.rect, style, shaper);
+        let mut island_closed = false;
+        let (blocks, overflow) = place_into_region(flow, &ids, &mut block_idx, &mut progress, region.rect, style, shaper, false, &mut island_closed);
         frames.push(Frame { region, blocks, overflow });
     }
 
@@ -308,6 +333,8 @@ fn place_into_region<'a>(
     region_rect: Rect,
     style: &ComposeStyle,
     shaper: &dyn LineShaper,
+    in_strip: bool,
+    island_closed: &mut bool,
 ) -> (Vec<PlacedBlock<'a>>, Option<&'a BlockNode<'a>>) {
     let region_bottom = region_rect.y + region_rect.height;
     let mut cursor_y = region_rect.y;
@@ -316,6 +343,16 @@ fn place_into_region<'a>(
 
     while *block_idx < flow.len() {
         let node = &flow[*block_idx];
+
+        if matches!(node.kind, Block::IslandEnd) {
+            *block_idx += 1;
+            *progress = InProgress::None;
+            if in_strip {
+                *island_closed = true;
+                break;
+            }
+            continue;
+        }
 
         // Baseline grid (typography track T2): a FRESH (non-continuation)
         // block's own grid-relevant edge is snapped forward BEFORE any
@@ -416,11 +453,13 @@ fn place_into_region<'a>(
                 *block_idx += 1;
                 *progress = InProgress::None;
 
+                let mut closed = false;
                 for strip in island_strip_rects(island, region_rect, island_rect, band_bottom) {
-                    if *block_idx >= flow.len() {
+                    if closed || *block_idx >= flow.len() {
                         break;
                     }
-                    let (strip_blocks, _strip_overflow) = place_into_region(flow, ids, block_idx, progress, strip, style, shaper);
+                    let (strip_blocks, _strip_overflow) =
+                        place_into_region(flow, ids, block_idx, progress, strip, style, shaper, true, &mut closed);
                     blocks.extend(strip_blocks);
                     // Whether or not THIS strip's own content overflowed,
                     // move on to the NEXT strip (if any) — an overflowing
@@ -621,6 +660,7 @@ fn place_into_region<'a>(
             }
             // Handled above, before this match — never reached.
             Block::Island(_) => unreachable!("Block::Island is handled before this match, via its own recursive strip-fill branch"),
+            Block::IslandEnd => unreachable!("Block::IslandEnd is consumed before this match"),
             Block::Table(table) => {
                 if !matches!(*progress, InProgress::Table { .. }) {
                     let (column_widths, rows) = measure_and_layout_table(table, region_rect.width, style, shaper);
@@ -653,7 +693,14 @@ fn place_into_region<'a>(
                 // real header row).
                 let header_reserved = if table.header_repeat && next_row > 0 { header_group_height(rows) } else { 0.0 };
                 let count = rows_fitting(rows, next_row, remaining_height, !region_has_content, header_reserved);
-                if count == 0 {
+                // A table that repeats its header never leaves that header
+                // alone at the foot of a region: with no body row beside it
+                // the header would print twice, here and again on the next
+                // region. Defer the whole table instead (only when the
+                // region already holds other content, so a fresh region
+                // always makes progress).
+                let header_only = table.header_repeat && next_row == 0 && region_has_content && count <= header_group_rows(rows) && count < rows.len();
+                if count == 0 || header_only {
                     overflow = Some(node);
                     break;
                 }
@@ -1139,6 +1186,44 @@ mod tests {
         );
     }
 
+    /// Keep-with-next must count the orphan minimum as "room": when only ONE
+    /// line of the following paragraph fits under the heading, the placement
+    /// defers the whole paragraph (orphan control), so the heading has to
+    /// move with it instead of staying alone at the foot of the region.
+    #[test]
+    fn keep_with_next_moves_the_heading_when_only_a_single_orphan_line_would_fit() {
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let shaper = CosmicShaper::headless();
+        let heading_run = [StyledRun::new("Section Heading", font)];
+        let body_text = "This body paragraph is long enough to wrap onto several lines at this width, \
+            so that a region with room for exactly one of its lines would strand the heading above it \
+            unless keep-with-next counts the two-line orphan minimum as the room the paragraph needs.";
+        let body_run = [StyledRun::new(body_text, font)];
+
+        let heading_height = layout_paragraph(&Paragraph::new(&heading_run, 300.0), &shaper).height;
+        let body_layout = layout_paragraph(&Paragraph::new(&body_run, 300.0), &shaper);
+        assert!(body_layout.lines.len() >= 4, "the body must wrap onto several lines");
+        let line_height = body_layout.lines[0].height;
+
+        const FILLER_GAP: f64 = 40.0;
+        const PARAGRAPH_GAP: f64 = 6.0;
+        let region_height = FILLER_GAP + heading_height + PARAGRAPH_GAP + line_height * 1.5;
+
+        let flow = [
+            BlockNode::new(Block::Spacer(FILLER_GAP)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&heading_run, 300.0))).with_break_control(BreakControl::AvoidAfter),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&body_run, 300.0))),
+        ];
+        let style = ComposeStyle::new(PARAGRAPH_GAP, font);
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, 300.0, region_height));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+
+        let is_heading = |b: &PlacedBlock<'_>| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == "Section Heading");
+        assert!(!frames[0].blocks.iter().any(is_heading), "the heading must not be stranded above a body paragraph that cannot start in this region");
+        let heading_frame = frames.iter().find(|f| f.blocks.iter().any(is_heading)).expect("the heading lands on a later region");
+        assert!(heading_frame.blocks.len() >= 2, "the heading's region must also carry the start of its body paragraph");
+    }
+
     /// `ComposeStyle::from_theme` must resolve `default_font` through the
     /// theme's own `FontRole::Body`, not some independent hardcoded value
     /// (design doc §5: "paragraph default fonts ... resolve through the
@@ -1149,6 +1234,86 @@ mod tests {
         let style = ComposeStyle::from_theme(&theme, 8.0);
         assert_eq!(style.default_font, theme.font_spec(crate::style::FontRole::Body));
         assert_eq!(style.paragraph_spacing, 8.0);
+    }
+
+    /// A table that repeats its header must not strand that header alone at
+    /// the foot of a region (it would print twice): with room for the header
+    /// only, the whole table moves to the next region. Without
+    /// `header_repeat` the header-only fragment stays, as before.
+    #[test]
+    fn a_repeating_header_is_never_left_alone_at_the_foot_of_a_region() {
+        use crate::scene::{ColumnSpec, TableBlock, TableCell, TableRow};
+
+        let shaper = CosmicShaper::headless();
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let style = ComposeStyle::new(0.0, font);
+
+        let cell_run = [StyledRun::new("cell", font)];
+        let cell_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&cell_run, f64::MAX)))];
+        let cells = [TableCell::new(&cell_nodes)];
+        let rows = [TableRow::new(&cells), TableRow::new(&cells), TableRow::new(&cells), TableRow::new(&cells)];
+        let columns = [ColumnSpec::Auto];
+
+        let text_run = [StyledRun::new("lead-in", font)];
+        let paragraph = Paragraph::new(&text_run, 200.0);
+        let paragraph_height = layout_paragraph(&paragraph, &shaper).height;
+        let plain = TableBlock::new(&columns, &rows);
+        let (_, measured_rows) = measure_and_layout_table(&plain, 200.0, &style, &shaper);
+        let row_height = measured_rows[0].height;
+        // Room for the lead-in and exactly one row (the header) beneath it.
+        let region_height = paragraph_height + row_height * 1.5;
+
+        let run = |repeat: bool| {
+            let flow = [
+                BlockNode::new(Block::Paragraph(paragraph)),
+                BlockNode::new(Block::Table(TableBlock::new(&columns, &rows).with_header_repeat(repeat))),
+            ];
+            let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, 200.0, region_height));
+            let frames = compose(&flow, &mut regions, &style, &shaper);
+            frames[0].blocks.iter().filter_map(|b| b.table_placement.as_ref()).map(|t| t.rows.len()).sum::<usize>()
+        };
+
+        assert_eq!(run(false), 1, "without header repeat the header row stays alone on the first region");
+        assert_eq!(run(true), 0, "with header repeat the whole table moves to the next region");
+    }
+
+    /// The keep-with-next lookahead agrees: a heading in front of a table
+    /// with a repeating header moves along with it when only the header
+    /// would fit, instead of being stranded alone.
+    #[test]
+    fn a_heading_keeps_with_a_repeating_header_table_that_would_only_fit_its_header() {
+        use crate::scene::{ColumnSpec, TableBlock, TableCell, TableRow};
+
+        let shaper = CosmicShaper::headless();
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let style = ComposeStyle::new(0.0, font);
+
+        let cell_run = [StyledRun::new("cell", font)];
+        let cell_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&cell_run, f64::MAX)))];
+        let cells = [TableCell::new(&cell_nodes)];
+        let rows = [TableRow::new(&cells), TableRow::new(&cells), TableRow::new(&cells)];
+        let columns = [ColumnSpec::Auto];
+
+        let lead_run = [StyledRun::new("lead-in", font)];
+        let lead = Paragraph::new(&lead_run, 200.0);
+        let lead_height = layout_paragraph(&lead, &shaper).height;
+        let text_run = [StyledRun::new("Heading", font)];
+        let heading = Paragraph::new(&text_run, 200.0);
+        let heading_height = layout_paragraph(&heading, &shaper).height;
+        let plain = TableBlock::new(&columns, &rows);
+        let (_, measured_rows) = measure_and_layout_table(&plain, 200.0, &style, &shaper);
+        let row_height = measured_rows[0].height;
+        // Room for the lead-in, the heading and one row (the header) - not two.
+        let region_height = lead_height + heading_height + row_height * 1.5;
+
+        let flow = [
+            BlockNode::new(Block::Paragraph(lead)),
+            BlockNode::new(Block::Paragraph(heading)).with_break_control(BreakControl::AvoidAfter),
+            BlockNode::new(Block::Table(TableBlock::new(&columns, &rows).with_header_repeat(true))),
+        ];
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, 200.0, region_height));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+        assert_eq!(frames[0].blocks.len(), 1, "only the lead-in stays: the heading moves on with its table");
     }
 
     /// A table taller than one region must split BETWEEN rows only — every

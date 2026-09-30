@@ -89,6 +89,9 @@ pub enum Block<'a> {
     /// pass — a plain, caller-chosen `f64` height in the same units as
     /// every other block's rect).
     Spacer(f64),
+    /// Ends the island side-strip. The following block is measured again
+    /// at the full region width. Outside a strip this block is skipped.
+    IslandEnd,
 }
 
 /// A [`BlockNode`] tagged as a document-outline / table-of-contents entry

@@ -50,6 +50,23 @@ pub static JETBRAINS_MONO_REGULAR: &[u8] =
 /// JetBrains Mono Bold.
 pub static JETBRAINS_MONO_BOLD: &[u8] = include_bytes!("../fonts/JetBrainsMono-Bold.ttf");
 
+// ── Source Serif 4 ────────────────────────────────────────────────────────────
+//
+// OFL text serif (adobe-fonts/source-serif). Used when a preset rebinds the
+// text role. The face name inside the file is "Source Serif 4".
+
+/// Source Serif 4 Regular.
+pub static SOURCE_SERIF_4_REGULAR: &[u8] = include_bytes!("../fonts/SourceSerif4-Regular.ttf");
+
+/// Source Serif 4 Bold.
+pub static SOURCE_SERIF_4_BOLD: &[u8] = include_bytes!("../fonts/SourceSerif4-Bold.ttf");
+
+/// Source Serif 4 Italic.
+pub static SOURCE_SERIF_4_ITALIC: &[u8] = include_bytes!("../fonts/SourceSerif4-It.ttf");
+
+/// Source Serif 4 Bold Italic.
+pub static SOURCE_SERIF_4_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/SourceSerif4-BoldIt.ttf");
+
 // ── Fallback fonts ────────────────────────────────────────────────────────────
 
 /// Symbols Nerd Font Mono — Powerline separators (U+E0B0–U+E0B3), Nerd Font PUA

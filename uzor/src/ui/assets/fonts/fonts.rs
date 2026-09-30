@@ -36,6 +36,10 @@ pub use uzor_fonts::{
     ROBOTO_BOLD_ITALIC,
     ROBOTO_ITALIC,
     ROBOTO_REGULAR,
+    SOURCE_SERIF_4_BOLD,
+    SOURCE_SERIF_4_BOLD_ITALIC,
+    SOURCE_SERIF_4_ITALIC,
+    SOURCE_SERIF_4_REGULAR,
     SYMBOLS_NERD_FONT_MONO,
 };
 
@@ -61,6 +65,8 @@ pub enum FontFamily {
     Roboto,
     PtRootUi,
     JetBrainsMono,
+    /// Source Serif 4, OFL. Regular, bold, italic, bold-italic.
+    SourceSerif4,
 }
 
 /// Parsed CSS font-shorthand result.
@@ -123,6 +129,8 @@ pub fn resolve_family(family_str: &str) -> FontFamily {
     let lower = family_str.to_ascii_lowercase();
     if is_monospace(&lower) {
         FontFamily::JetBrainsMono
+    } else if lower.contains("source serif") {
+        FontFamily::SourceSerif4
     } else if is_pt_root_ui(&lower) {
         FontFamily::PtRootUi
     } else {
@@ -186,6 +194,12 @@ pub fn font_bytes(family: FontFamily, bold: bool, italic: bool) -> &'static [u8]
             let _ = italic; // no italic variant bundled
             if bold { JETBRAINS_MONO_BOLD } else { JETBRAINS_MONO_REGULAR }
         }
+        FontFamily::SourceSerif4 => match (bold, italic) {
+            (true, true) => SOURCE_SERIF_4_BOLD_ITALIC,
+            (true, false) => SOURCE_SERIF_4_BOLD,
+            (false, true) => SOURCE_SERIF_4_ITALIC,
+            (false, false) => SOURCE_SERIF_4_REGULAR,
+        },
     }
 }
 

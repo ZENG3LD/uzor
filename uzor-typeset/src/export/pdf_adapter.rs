@@ -593,7 +593,7 @@ fn collect_text_runs_from_placed(
         // ops in the content stream since WAVE 1 (Figure/Image tagging
         // itself happens in `build_tagged_content`'s own ops-level pass,
         // not here). A spacer paints nothing.
-        Block::Figure(_) | Block::Image(_) | Block::Island(_) | Block::Spacer(_) => {}
+        Block::Figure(_) | Block::Image(_) | Block::Island(_) | Block::Spacer(_) | Block::IslandEnd => {}
     }
 }
 

@@ -20,4 +20,4 @@ pub use footnote::Footnote;
 pub use image_block::{ImageBlock, ImageFit};
 pub use island::{AnchoredIsland, IslandAnchor};
 pub use list::{ListBlock, ListItem, MarkerStyle, NumberScheme};
-pub use table::{CellPadding, ColumnSpec, TableBlock, TableCell, TableRow};
+pub use table::{CellPadding, ColumnSpec, TableBlock, TableCell, TableRow, TableRuleStyle, TableRules};

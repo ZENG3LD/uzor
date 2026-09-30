@@ -281,6 +281,9 @@ pub fn draw_frame_state(ctx: &mut dyn RenderContext, state: &FrameBlockState<'_>
 /// `pub(crate)` (was private) since typography wave 5 — see
 /// [`draw_placed_block`]'s own doc comment for why.
 pub(crate) fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement, theme: &Theme) {
+    if placement.text.is_empty() {
+        return;
+    }
     ctx.set_font(&theme.font_spec(FontRole::Caption).to_css_font());
     ctx.set_fill_color(&theme.color_hex(ColorRole::Muted));
     ctx.set_text_align(TextAlign::Right);
@@ -324,9 +327,9 @@ pub(crate) fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBloc
             let content_rect = island.image.content_rect(placed.rect.width, placed.rect.height);
             draw_image_content(ctx, island.image.rgba, island.image.intrinsic_width, island.image.intrinsic_height, content_rect, placed.rect);
         }
-        Block::Table(_) => {
-            if let Some(table) = &placed.table_placement {
-                draw_table_placement(ctx, table, default_color, figure_theme, layers);
+        Block::Table(table) => {
+            if let Some(placement) = &placed.table_placement {
+                draw_table_placement(ctx, placement, table.rules, table.rule_style, default_color, figure_theme, layers);
             }
         }
         Block::List(_) => {
@@ -334,7 +337,7 @@ pub(crate) fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBloc
                 draw_list_placement(ctx, list, default_color, figure_theme, layers);
             }
         }
-        Block::Spacer(_) => {}
+        Block::Spacer(_) | Block::IslandEnd => {}
     }
 }
 
@@ -381,15 +384,44 @@ fn draw_image_placeholder(ctx: &mut dyn RenderContext, rect: Rect) {
 /// through, drawing it WOULD paint a spurious horizontal line straight
 /// through a merged cell's own interior — a genuine defect this
 /// track fixes outright, not a debatable default.
-fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
-    ctx.set_stroke_color(default_color);
-    ctx.set_stroke_width(1.0);
-    for row in &table.rows {
-        if !row.spans_row {
-            ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+fn draw_table_placement(
+    ctx: &mut dyn RenderContext,
+    table: &TablePlacement<'_>,
+    rules: crate::scene::TableRules,
+    rule_style: Option<crate::scene::TableRuleStyle>,
+    default_color: &str,
+    figure_theme: &FigureTheme,
+    layers: DrawLayers,
+) {
+    let rule_color = rule_style.map_or_else(|| default_color.to_owned(), |style| format!("#{:06x}", style.color & 0xff_ffff));
+    let rule_width = rule_style.map_or(1.0, |style| style.width);
+    ctx.set_stroke_color(&rule_color);
+    ctx.set_stroke_width(rule_width);
+    for (index, row) in table.rows.iter().enumerate() {
+        if let Some(fill) = row.fill {
+            ctx.set_fill_color(&format!("#{:06x}", fill & 0xff_ffff));
+            ctx.fill_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+        }
+        match rules {
+            crate::scene::TableRules::Box => {
+                if !row.spans_row {
+                    ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+                }
+                for cell in &row.cells {
+                    ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
+                }
+            }
+            crate::scene::TableRules::Horizontal => {
+                ctx.set_stroke_width(0.75);
+                if index == 0 {
+                    ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, 0.75);
+                }
+                let y = row.rect.y + row.rect.height - 0.75;
+                ctx.stroke_rect(row.rect.x, y, row.rect.width, 0.75);
+                ctx.set_stroke_width(rule_width);
+            }
         }
         for cell in &row.cells {
-            ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
             for inner in &cell.content {
                 draw_placed_block(ctx, inner, default_color, figure_theme, layers);
             }

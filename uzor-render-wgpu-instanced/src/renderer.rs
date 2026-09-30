@@ -678,6 +678,12 @@ impl InstancedRenderer {
                     (false, true)  => "Roboto Italic",
                     (false, false) => "Roboto",
                 },
+                FontFamily::SourceSerif4 => match (ta.bold, ta.italic) {
+                    (true, true) => "Source Serif 4 Bold Italic",
+                    (true, false) => "Source Serif 4 Bold",
+                    (false, true) => "Source Serif 4 Italic",
+                    (false, false) => "Source Serif 4",
+                },
             };
 
             let line_height = ta.font_size * 1.2;

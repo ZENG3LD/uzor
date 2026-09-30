@@ -49,6 +49,10 @@ static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_PT_ROOT_UI: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SS_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SS_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SS_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SS_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_NERD_FONT:    OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_SYMBOLS:      OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_COLOR_EMOJI:  OnceLock<fontdue::Font> = OnceLock::new();
@@ -95,6 +99,12 @@ fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static fontdue::F
                 .get_or_init(|| make_font(fonts::font_bytes(family, false, true))),
             (false, false) => FONT_REGULAR
                 .get_or_init(|| make_font(fonts::font_bytes(family, false, false))),
+        },
+        FontFamily::SourceSerif4 => match (bold, italic) {
+            (true, true) => FONT_SS_BOLD_ITALIC.get_or_init(|| make_font(fonts::font_bytes(family, true, true))),
+            (true, false) => FONT_SS_BOLD.get_or_init(|| make_font(fonts::font_bytes(family, true, false))),
+            (false, true) => FONT_SS_ITALIC.get_or_init(|| make_font(fonts::font_bytes(family, false, true))),
+            (false, false) => FONT_SS_REGULAR.get_or_init(|| make_font(fonts::font_bytes(family, false, false))),
         },
     }
 }
@@ -199,6 +209,7 @@ fn font_css_string(info: &FontInfo) -> String {
         FontFamily::Roboto => "Roboto",
         FontFamily::PtRootUi => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
     let mut parts: Vec<String> = Vec::with_capacity(4);
     if info.italic {

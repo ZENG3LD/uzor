@@ -48,6 +48,10 @@ fn font_system() -> &'static Mutex<FontSystem> {
             f::PT_ROOT_UI_VF,
             f::JETBRAINS_MONO_REGULAR,
             f::JETBRAINS_MONO_BOLD,
+            f::SOURCE_SERIF_4_REGULAR,
+            f::SOURCE_SERIF_4_BOLD,
+            f::SOURCE_SERIF_4_ITALIC,
+            f::SOURCE_SERIF_4_BOLD_ITALIC,
             f::SYMBOLS_NERD_FONT_MONO,
             f::NOTO_SANS_SYMBOLS2,
             f::NOTO_COLOR_EMOJI,
@@ -203,6 +207,7 @@ pub fn shape_glyph_runs(text: &str, font: &str) -> Vec<GlyphSegment> {
         FontFamily::Roboto        => "Roboto",
         FontFamily::PtRootUi      => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
 
     let Ok(mut fs) = font_system().lock() else {
@@ -461,6 +466,7 @@ fn text_to_path_uncached(text: &str, font: &str) -> String {
         FontFamily::Roboto      => "Roboto",
         FontFamily::PtRootUi    => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
 
     // Acquire font_system first, then swash_cache — consistent lock order.
@@ -572,6 +578,7 @@ fn shape_uncached(text: &str, font: &str) -> Vec<GlyphMetric> {
         FontFamily::Roboto      => "Roboto",
         FontFamily::PtRootUi    => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
 
     let Ok(mut fs) = font_system().lock() else {
@@ -656,6 +663,7 @@ fn measure_glyphs_wrapped_uncached(text: &str, font: &str, max_width: f64) -> Ve
         FontFamily::Roboto      => "Roboto",
         FontFamily::PtRootUi    => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
 
     let Ok(mut fs) = font_system().lock() else {

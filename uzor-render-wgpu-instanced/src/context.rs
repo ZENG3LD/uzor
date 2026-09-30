@@ -74,6 +74,18 @@ fn get_font_ref(family: FontFamily, bold: bool, italic: bool) -> Option<&'static
             (false, false) => FONT_REGULAR
                 .get_or_init(|| make_font_ref(fonts::font_bytes(family, false, false))).as_ref(),
         },
+        FontFamily::SourceSerif4 => {
+            static REG: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+            static BOLD: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+            static IT: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+            static BI: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+            match (bold, italic) {
+                (true, true) => BI.get_or_init(|| make_font_ref(fonts::font_bytes(family, true, true))).as_ref(),
+                (true, false) => BOLD.get_or_init(|| make_font_ref(fonts::font_bytes(family, true, false))).as_ref(),
+                (false, true) => IT.get_or_init(|| make_font_ref(fonts::font_bytes(family, false, true))).as_ref(),
+                (false, false) => REG.get_or_init(|| make_font_ref(fonts::font_bytes(family, false, false))).as_ref(),
+            }
+        }
     }
 }
 
@@ -997,6 +1009,7 @@ fn font_css_string(family: FontFamily, bold: bool, italic: bool, size: f32) -> S
         FontFamily::Roboto        => "Roboto",
         FontFamily::PtRootUi      => "PT Root UI",
         FontFamily::JetBrainsMono => "JetBrains Mono",
+        FontFamily::SourceSerif4 => "Source Serif 4",
     };
     let mut parts: Vec<String> = Vec::with_capacity(4);
     if italic { parts.push("italic".into()); }
