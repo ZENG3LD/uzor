@@ -15,15 +15,16 @@ uzor-urx-core = { workspace = true }
 uzor-urx-cpu  = { workspace = true, features = ["glyph"] }
 metrics = "0.24"
 
-# uzor-urx-wgpu is opt-in via feature so consumers that only want CPU
-# (headless / CI / embedded) can skip the wgpu dep tree entirely.
+# Every GPU backend is opt-in: the default build is CPU-only, so headless /
+# CI / embedded consumers never pull the wgpu dep tree. `uzor-render-hub`
+# turns on the backends it dispatches to.
 uzor-urx-wgpu      = { workspace = true, optional = true }
 uzor-urx-hybrid    = { workspace = true, optional = true }
 uzor-urx-wgpu-full = { workspace = true, optional = true }
 wgpu = { version = "29", optional = true }
 
 [features]
-default = ["wgpu-backend"]
+default = []
 wgpu-backend = ["dep:uzor-urx-wgpu"]
 hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]
 # URX 1.6 full-GPU compute pipeline (encode → tile → fine → blit).
