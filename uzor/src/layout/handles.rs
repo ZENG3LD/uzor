@@ -10,8 +10,8 @@
 //!    act as *opaque keys* into the `LayoutManager` composite state maps.  L3 app
 //!    code obtains them from `LayoutManager::add_modal` / `add_popup` / … and
 //!    passes them back to `layout.modal(h)` / `layout.modal_mut(h)` / etc.
-//!    The inner `WidgetId` is `pub(crate)` so app code outside this crate cannot
-//!    forge a handle from a raw string.
+//!    The inner `WidgetId` is `pub(crate)`; a handle is minted with `new` by the
+//!    one owner of the composite's state.
 
 use super::tree::LayoutNodeId;
 use crate::types::WidgetId;
@@ -63,11 +63,25 @@ macro_rules! state_handle {
         }
 
         impl $name {
+            /// A handle for the composite whose host widget id is `id`.
+            ///
+            /// For the one owner of the composite's state (the
+            /// `LayoutManager` today, the framework's overlay engine
+            /// tomorrow), which mints a handle per instance and registers
+            /// it with a [`ClickDispatcher`](super::ClickDispatcher). App
+            /// code receives handles from that owner.
+            pub fn new(id: WidgetId) -> Self {
+                Self { id }
+            }
+
+            /// The composite's host widget id.
+            pub fn id(&self) -> &WidgetId {
+                &self.id
+            }
+
             /// Read-only access to the inner widget id as a string slice.
             ///
             /// Used by framework-level builders to derive overlay slot ids.
-            /// External crates cannot construct a handle from a string —
-            /// they obtain it from `LayoutManager::add_*`.
             pub fn id_str(&self) -> &str {
                 self.id.as_str()
             }

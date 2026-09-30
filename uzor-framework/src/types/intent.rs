@@ -135,6 +135,9 @@ pub enum CloseCause {
     Timer,
     /// Its window closed.
     WindowClosed,
+    /// An `Open` with the same app identity replaced this instance (the new
+    /// instance's `Opened` follows).
+    Replaced,
 }
 
 /// Overlay lifecycle and composite item picks. `O` is the app's overlay

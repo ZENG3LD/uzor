@@ -16,7 +16,7 @@ use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::types::CompositeId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalHandle, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalHandle, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -108,6 +108,84 @@ pub fn consume_event(
     }
 }
 
+/// Register a modal's click patterns (close, footer, tabs, wizard, body
+/// scrollbar, chevrons and — when `resizable` — the eight resize handles)
+/// into `dispatcher`, so clicks on its parts surface as typed
+/// [`DispatchEvent`]s. Used by [`register_layout_manager_modal`] and by any
+/// engine that owns modal state without a `LayoutManager`.
+pub fn register_modal_dispatch(dispatcher: &mut ClickDispatcher, handle: &ModalHandle, resizable: bool) {
+    let id: &WidgetId = &handle.id;
+    dispatcher.on_exact(
+        format!("{}:close", id.0),
+        EventBuilder::ModalClose { handle: handle.clone() },
+    );
+    // Footer buttons close the modal by default — same semantics as the X.
+    dispatcher.on_prefix(
+        format!("{}:footer:", id.0),
+        EventBuilder::ModalClose { handle: handle.clone() },
+    );
+    dispatcher.on_prefix(
+        format!("{}:tab:", id.0),
+        EventBuilder::ModalTabFromSuffix { handle: handle.clone() },
+    );
+    dispatcher.on_exact(
+        format!("{}:wizard:next", id.0),
+        EventBuilder::ModalWizardNext { handle: handle.clone() },
+    );
+    dispatcher.on_exact(
+        format!("{}:wizard:back", id.0),
+        EventBuilder::ModalWizardBack { handle: handle.clone() },
+    );
+
+    // Body overflow dispatcher routing — both chevron and scrollbar routes
+    // are registered unconditionally; the active guard is chosen per frame
+    // inside register_body_overflow based on view.overflow.
+    dispatcher.on_exact(
+        format!("{}:scrollbar_track", id.0),
+        EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+    );
+    dispatcher.on_exact(
+        format!("{}:scrollbar_handle", id.0),
+        EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+    );
+    {
+        use crate::layout::ChevronStepDirection;
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep {
+                    chevron_id: WidgetId::new(format!("{}:{}", id.0, suffix)),
+                    direction:  dir,
+                },
+            );
+        }
+    }
+    // Resize handles (8): N S W E + NW NE SW SE.
+    if resizable {
+        use crate::layout::ResizeEdge;
+        for (suffix, edge) in &[
+            ("resize_n",  ResizeEdge::N),
+            ("resize_s",  ResizeEdge::S),
+            ("resize_w",  ResizeEdge::W),
+            ("resize_e",  ResizeEdge::E),
+            ("resize_nw", ResizeEdge::NW),
+            ("resize_ne", ResizeEdge::NE),
+            ("resize_sw", ResizeEdge::SW),
+            ("resize_se", ResizeEdge::SE),
+        ] {
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ResizeHandle { host_id: id.clone(), edge: *edge },
+            );
+        }
+    }
+}
+
 /// Register + draw a modal in one call using a [`LayoutManager`].
 ///
 /// Pushes the overlay entry onto the layout's overlay stack, then registers
@@ -163,76 +241,7 @@ pub fn register_layout_manager_modal<P: DockPanel>(
 
     // Register dispatcher patterns so the app gets semantic events instead of
     // raw "modal-widget:close" string matching.
-    let dispatcher = layout.dispatcher_mut();
-    dispatcher.on_exact(
-        format!("{}:close", id.0),
-        EventBuilder::ModalClose { handle: handle.clone() },
-    );
-    // Footer buttons close the modal by default — same semantics as the X.
-    dispatcher.on_prefix(
-        format!("{}:footer:", id.0),
-        EventBuilder::ModalClose { handle: handle.clone() },
-    );
-    dispatcher.on_prefix(
-        format!("{}:tab:", id.0),
-        EventBuilder::ModalTabFromSuffix { handle: handle.clone() },
-    );
-    dispatcher.on_exact(
-        format!("{}:wizard:next", id.0),
-        EventBuilder::ModalWizardNext { handle: handle.clone() },
-    );
-    dispatcher.on_exact(
-        format!("{}:wizard:back", id.0),
-        EventBuilder::ModalWizardBack { handle: handle.clone() },
-    );
-
-    // Body overflow dispatcher routing — both chevron and scrollbar routes
-    // are registered unconditionally; the active guard is chosen per frame
-    // inside register_body_overflow based on view.overflow.
-    dispatcher.on_exact(
-        format!("{}:scrollbar_track", id.0),
-        EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
-    );
-    dispatcher.on_exact(
-        format!("{}:scrollbar_handle", id.0),
-        EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
-    );
-    {
-        use crate::layout::ChevronStepDirection;
-        for (suffix, dir) in [
-            ("chevron_up",    ChevronStepDirection::Up),
-            ("chevron_down",  ChevronStepDirection::Down),
-            ("chevron_left",  ChevronStepDirection::Left),
-            ("chevron_right", ChevronStepDirection::Right),
-        ] {
-            dispatcher.on_exact(
-                format!("{}:{}", id.0, suffix),
-                EventBuilder::ChevronStep {
-                    chevron_id: WidgetId::new(format!("{}:{}", id.0, suffix)),
-                    direction:  dir,
-                },
-            );
-        }
-    }
-    // Resize handles (8): N S W E + NW NE SW SE.
-    if view.resizable {
-        use crate::layout::ResizeEdge;
-        for (suffix, edge) in &[
-            ("resize_n",  ResizeEdge::N),
-            ("resize_s",  ResizeEdge::S),
-            ("resize_w",  ResizeEdge::W),
-            ("resize_e",  ResizeEdge::E),
-            ("resize_nw", ResizeEdge::NW),
-            ("resize_ne", ResizeEdge::NE),
-            ("resize_sw", ResizeEdge::SW),
-            ("resize_se", ResizeEdge::SE),
-        ] {
-            dispatcher.on_exact(
-                format!("{}:{}", id.0, suffix),
-                EventBuilder::ResizeHandle { host_id: id.clone(), edge: *edge },
-            );
-        }
-    }
+    register_modal_dispatch(layout.dispatcher_mut(), handle, view.resizable);
 
     register_context_manager_modal(
         layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,

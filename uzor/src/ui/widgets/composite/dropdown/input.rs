@@ -13,7 +13,7 @@ use super::types::{DropdownItem, DropdownRenderKind, DropdownView, DropdownViewK
 use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, DropdownHandle, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, DropdownHandle, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, Rect, SizeMode, WidgetId};
 
@@ -56,6 +56,46 @@ pub fn consume_event(
             }
         }
         _ => Some(event),
+    }
+}
+
+/// Register a dropdown's click patterns (items, sub-items, submenu
+/// chevrons, overflow pager chevrons) into `dispatcher`. Used by
+/// [`register_layout_manager_dropdown`] and by any engine that owns dropdown
+/// state without a `LayoutManager`.
+pub fn register_dropdown_dispatch(dispatcher: &mut ClickDispatcher, handle: &DropdownHandle) {
+    let id: &WidgetId = &handle.id;
+    // Clicks on items + sub-items both surface as
+    // DispatchEvent::DropdownItemClicked { dropdown, item_id }.
+    dispatcher.on_prefix(
+        format!("{}:item:", id.0),
+        EventBuilder::DropdownItem { handle: handle.clone() },
+    );
+    dispatcher.on_prefix(
+        format!("{}:sub-item:", id.0),
+        EventBuilder::DropdownItem { handle: handle.clone() },
+    );
+    // Submenu chevron clicks (only used for SubmenuTrigger::ChevronClick).
+    dispatcher.on_prefix(
+        format!("{}:chev:submenu:", id.0),
+        EventBuilder::DropdownSubmenuToggleFromSuffix { handle: handle.clone() },
+    );
+    // Body-overflow chevron pager — fires only when the dropdown panel was
+    // clipped by the window edge (window guard).  Routes are registered
+    // unconditionally; the strips themselves are registered later in
+    // register_input_coordinator_dropdown only when the panel is clipped.
+    {
+        use crate::layout::ChevronStepDirection;
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+        ] {
+            let cid = WidgetId(format!("{}:{}", id.0, suffix));
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+            );
+        }
     }
 }
 
@@ -106,36 +146,7 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
 
     // Register dispatch patterns: clicks on items + sub-items both surface
     // as DispatchEvent::DropdownItemClicked { dropdown, item_id }.
-    layout.dispatcher_mut().on_prefix(
-        format!("{}:item:", id.0),
-        EventBuilder::DropdownItem { handle: handle.clone() },
-    );
-    layout.dispatcher_mut().on_prefix(
-        format!("{}:sub-item:", id.0),
-        EventBuilder::DropdownItem { handle: handle.clone() },
-    );
-    // Submenu chevron clicks (only used for SubmenuTrigger::ChevronClick).
-    layout.dispatcher_mut().on_prefix(
-        format!("{}:chev:submenu:", id.0),
-        EventBuilder::DropdownSubmenuToggleFromSuffix { handle: handle.clone() },
-    );
-    // Body-overflow chevron pager — fires only when the dropdown panel was
-    // clipped by the window edge (window guard).  Routes are registered
-    // unconditionally; the strips themselves are registered later in
-    // register_input_coordinator_dropdown only when the panel is clipped.
-    {
-        use crate::layout::ChevronStepDirection;
-        for (suffix, dir) in [
-            ("chevron_up",    ChevronStepDirection::Up),
-            ("chevron_down",  ChevronStepDirection::Down),
-        ] {
-            let cid = WidgetId(format!("{}:{}", id.0, suffix));
-            layout.dispatcher_mut().on_exact(
-                format!("{}:{}", id.0, suffix),
-                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
-            );
-        }
-    }
+    register_dropdown_dispatch(layout.dispatcher_mut(), handle);
 
     // Auto-forward hovered_id (main panel) and submenu_hovered_id
     // (submenu panel) from the layout manager (L3 authoritative hover source).

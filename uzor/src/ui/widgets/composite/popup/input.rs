@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupHandle, PopupNode, WidgetNode};
+use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupHandle, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -80,6 +80,26 @@ pub fn drag_outcome_popup(state: &PopupState) -> Option<crate::layout::DragOutco
     None
 }
 
+/// Register a popup's click patterns (overflow chevrons) into `dispatcher`.
+/// Used by [`register_layout_manager_popup`] and by any engine that owns
+/// popup state without a `LayoutManager`.
+pub fn register_popup_dispatch(dispatcher: &mut ClickDispatcher, handle: &PopupHandle) {
+    use crate::layout::ChevronStepDirection;
+    let id: &WidgetId = &handle.id;
+    for (suffix, dir) in [
+        ("chevron_up",    ChevronStepDirection::Up),
+        ("chevron_down",  ChevronStepDirection::Down),
+        ("chevron_left",  ChevronStepDirection::Left),
+        ("chevron_right", ChevronStepDirection::Right),
+    ] {
+        let cid = WidgetId(format!("{}:{}", id.0, suffix));
+        dispatcher.on_exact(
+            format!("{}:{}", id.0, suffix),
+            EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+        );
+    }
+}
+
 /// Register + draw a popup in one call using a [`LayoutManager`].
 ///
 /// Pushes the overlay entry, then registers the popup layer with the
@@ -129,22 +149,7 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     // Popup overflow guard — chevrons only (popup auto-sizes; scrollbar /
     // compress are non-applicable). Chevron routing is unconditional so
     // Clip-content-overflow falls back without re-registration.
-    {
-        use crate::layout::ChevronStepDirection;
-        let dispatcher = layout.dispatcher_mut();
-        for (suffix, dir) in [
-            ("chevron_up",    ChevronStepDirection::Up),
-            ("chevron_down",  ChevronStepDirection::Down),
-            ("chevron_left",  ChevronStepDirection::Left),
-            ("chevron_right", ChevronStepDirection::Right),
-        ] {
-            let cid = WidgetId(format!("{}:{}", id.0, suffix));
-            dispatcher.on_exact(
-                format!("{}:{}", id.0, suffix),
-                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
-            );
-        }
-    }
+    register_popup_dispatch(layout.dispatcher_mut(), handle);
 
     register_context_manager_popup(
         layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,

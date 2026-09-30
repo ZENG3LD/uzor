@@ -6,8 +6,9 @@
 //! These are kernel-facing, not app-facing: the app speaks
 //! [`AppCommand`](crate::AppCommand); the kernel translates it into ops.
 //! This module grows one op / effect pair per engine brief (F2: windows,
-//! cadence, animation; F3: input, keymap).
+//! cadence, animation; F3: input, keymap; F4: overlays).
 
+use uzor::layout::OverlayKind;
 use uzor::render::{InvalidateBits, TickRate};
 use uzor::{Rect, WidgetId};
 
@@ -15,11 +16,13 @@ use crate::types::anim::{AnimKey, AnimPolicy};
 use crate::types::bus::{
     ClipboardResult, ImeInput, KeyInput, PointerInput, RenderInfo, WheelInput, WindowInput,
 };
-use crate::types::command::{CadenceCmd, ClipboardCmd, FocusCmd, KeymapCmd, ThemeCmd, WindowCmd};
+use crate::types::command::{
+    CadenceCmd, ClipboardCmd, FocusCmd, KeymapCmd, OverlayCmd, ThemeCmd, WindowCmd,
+};
 use crate::types::frame::TimerOwner;
 use crate::types::ids::{OverlaySlot, RegionId, ScopeId, Seconds, Ticket, TimerToken, WindowId};
-use crate::types::intent::TextIntent;
-use crate::types::window::{RenderCmd, WindowCommand, WindowSpec};
+use crate::types::intent::{CloseCause, OverlayIntent, TextIntent};
+use crate::types::window::{Point, RenderCmd, WindowCommand, WindowSpec};
 
 // ---------------------------------------------------------------------------
 // WindowEngine
@@ -526,3 +529,218 @@ pub enum KeymapOp<O, A> {
 /// no other engine, and resolution is a read (`KeymapEngine::resolve`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeymapEffect {}
+
+// ---------------------------------------------------------------------------
+// OverlayEngine
+// ---------------------------------------------------------------------------
+
+/// An input event the kernel offers to the OverlayEngine before layout zones
+/// and content (routing pointer step 3, key step 2, wheel step 2).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Intercepted {
+    /// A pointer event (after cook; never a captured one).
+    Pointer(PointerInput),
+    /// A wheel step.
+    Wheel(WheelInput),
+    /// A key the InputEngine passed on (`InputEffect::KeyPassed`).
+    Key(KeyInput),
+}
+
+/// One mutation of the OverlayEngine. `O` is the app's overlay identity.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayOp<O> {
+    /// An app overlay command (open / re-open, close, close top, toggle,
+    /// move). `now` stamps the open time and the auto-close deadline.
+    Cmd {
+        /// The command.
+        cmd: OverlayCmd<O>,
+        /// Host clock.
+        now: Seconds,
+    },
+    /// The measured size of an open overlay (its model decided, compose
+    /// phase); the origin stays, the rect is clamped to the viewport.
+    Resize {
+        /// The window.
+        win: WindowId,
+        /// App identity.
+        id: O,
+        /// New width, logical pixels.
+        width: f64,
+        /// New height, logical pixels.
+        height: f64,
+    },
+    /// Offer an input event to the stack. Answered by exactly one
+    /// [`OverlayEffect::Pointer`] (pointer / wheel) or
+    /// [`OverlayEffect::Key`] (key), after any `Closed` it caused.
+    Intercept {
+        /// The window.
+        win: WindowId,
+        /// The event.
+        event: Intercepted,
+    },
+    /// A widget of this frame was clicked (phase 6): if it belongs to an
+    /// overlay body it is resolved through the window's
+    /// [`ClickDispatcher`](uzor::layout::ClickDispatcher) and handled by the
+    /// body (lib `consume_event`) or turned into an intent. Widgets that are
+    /// not overlay parts produce no effect.
+    Click {
+        /// The window.
+        win: WindowId,
+        /// The clicked widget.
+        widget: WidgetId,
+        /// Pointer position, window-local logical pixels.
+        cursor: Point,
+    },
+    /// A pointer event while the pointer is captured by one overlay
+    /// (`Capture::Engine(EngineTarget::Overlay(slot))`): resize / body
+    /// scrollbar drags.
+    Captured {
+        /// The window.
+        win: WindowId,
+        /// The capturing overlay.
+        slot: OverlaySlot,
+        /// The event.
+        input: PointerInput,
+    },
+    /// The window's viewport after a solve (conducted from
+    /// `WindowEffect::GeometryChanged`): every rect is clamped inside it,
+    /// and later opens are placed in it.
+    Reclamp {
+        /// The window.
+        win: WindowId,
+        /// The viewport, window-local logical pixels.
+        viewport: Rect,
+    },
+    /// The auto-close deadline of one overlay fired
+    /// (`TimerOwner::OverlayAutoClose`). Stale slots are ignored.
+    Fire {
+        /// The window.
+        win: WindowId,
+        /// The overlay instance.
+        slot: OverlaySlot,
+    },
+    /// The window is gone: close its whole stack, newest first
+    /// (`CloseCause::WindowClosed`), and forget the window.
+    CloseWindow(WindowId),
+}
+
+/// Where a pointer or wheel event goes after the overlay intercept. Every
+/// intercepted pointer / wheel event gets exactly one route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerRoute<O> {
+    /// Absorbed (modal shield, outside dismiss, the release of a consumed
+    /// press): routing stops; no layout zone, dock panel, chrome, splitter
+    /// or content widget sees it.
+    Consumed,
+    /// Inside this overlay: only its body's widgets may take it (the
+    /// coordinator layer of that overlay); routing stops at the overlay.
+    Overlay {
+        /// App identity.
+        id: O,
+        /// The instance.
+        slot: OverlaySlot,
+    },
+    /// No overlay claims it: continue with layout zones and content.
+    Pass,
+}
+
+/// Where a key goes after the overlay intercept. Every intercepted key gets
+/// exactly one route.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyRoute<O> {
+    /// Absorbed (Escape closed an overlay): routing stops.
+    Consumed,
+    /// Continue with the keymap; these two values are the ONLY source the
+    /// kernel uses for `KeymapEngine::resolve(.., top_overlay, modal_open)`.
+    Pass {
+        /// The top overlay, if it opened a keymap scope.
+        top_overlay: Option<O>,
+        /// A modal is open in the window (global bindings resolve only with
+        /// `through_modal`).
+        modal_open: bool,
+    },
+}
+
+/// A consequence of an OverlayEngine op. `O` is the app's overlay identity.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayEffect<O> {
+    /// An overlay instance opened. Conduction: `FocusOp::PushScope { owner:
+    /// scope }` (when `Some`), arm `TimerOwner::OverlayAutoClose { win, slot }`
+    /// at `auto_close_at` (when `Some`), fade in `AnimKey::OverlayFade`,
+    /// invalidate `STRUCTURE`, `Intent::Overlay(Opened)`.
+    Opened {
+        /// The window.
+        win: WindowId,
+        /// App identity.
+        id: O,
+        /// The new instance.
+        slot: OverlaySlot,
+        /// Its kind.
+        kind: OverlayKind,
+        /// The focus scope to push (`ScopeOwner::Overlay(slot)`), `None`
+        /// for pointer-transparent kinds (tooltips).
+        scope: Option<ScopeOwner>,
+        /// It is modal (shields everything below it).
+        modal: bool,
+        /// Its app-typed keymap bindings (`KeymapScope::Overlay(id)`) are
+        /// reachable while it is on top.
+        keymap_scope: bool,
+        /// Host-clock instant of the auto-close deadline.
+        auto_close_at: Option<Seconds>,
+    },
+    /// An overlay instance closed. Conduction: `FocusOp::PopScope { owner:
+    /// scope, restore: restore_focus }` (when `Some`), disarm the auto-close
+    /// deadline (when `auto_close`), drop the fade, invalidate `STRUCTURE`,
+    /// `Intent::Overlay(Closed { id, cause })`. Several closes of one op come
+    /// newest first, so scopes pop in reverse open order.
+    Closed {
+        /// The window.
+        win: WindowId,
+        /// App identity.
+        id: O,
+        /// The closed instance.
+        slot: OverlaySlot,
+        /// The focus scope to pop (same value `Opened` carried).
+        scope: Option<ScopeOwner>,
+        /// Why.
+        cause: CloseCause,
+        /// Restore the focus saved when the scope opened.
+        restore_focus: bool,
+        /// An auto-close deadline was armed for it.
+        auto_close: bool,
+    },
+    /// Routing verdict of an intercepted pointer / wheel event.
+    Pointer {
+        /// The window.
+        win: WindowId,
+        /// The verdict.
+        route: PointerRoute<O>,
+    },
+    /// Routing verdict of an intercepted key.
+    Key {
+        /// The window.
+        win: WindowId,
+        /// The verdict.
+        route: KeyRoute<O>,
+    },
+    /// A composite pick for the app (modal tab, dropdown item, context-menu
+    /// item); the kernel pushes it to the intents.
+    Intent(OverlayIntent<O>),
+    /// Hold (`Some`) or release (`None`) the pointer for one overlay
+    /// (resize / body scrollbar drag); the kernel applies
+    /// `InputOp::SetCapture` with `Capture::Engine(EngineTarget::Overlay(slot))`.
+    Capture {
+        /// The window.
+        win: WindowId,
+        /// The capturing overlay, or `None` to release.
+        slot: Option<OverlaySlot>,
+    },
+    /// Repaint the window's overlay region (`GEOMETRY` after a move, resize
+    /// or reclamp; `MATERIAL` after a body state change).
+    Invalidate {
+        /// The window.
+        win: WindowId,
+        /// What changed.
+        bits: InvalidateBits,
+    },
+}

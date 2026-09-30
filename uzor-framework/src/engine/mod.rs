@@ -23,6 +23,7 @@
 //! | [`anim`] | [`AnimationEngine`](anim::AnimationEngine) | typed linear animators (expand, overlay fade) |
 //! | [`input`] | [`InputEngine`](input::InputEngine) | per-window coordinator, cook, focus scopes, capture, hover / press / click, text / IME, caret blink |
 //! | [`keymap`] | [`KeymapEngine`](keymap::KeymapEngine) | key bindings per scope (global / overlay / focused widget) |
+//! | [`overlays`] | [`OverlayEngine`](overlays::OverlayEngine) | per-window overlay stacks (Z order, modal shield, outside / Escape dismiss, scopes) and composite widget states |
 //!
 //! ## Visibility
 //!
@@ -36,4 +37,5 @@ pub mod anim;
 pub mod cadence;
 pub mod input;
 pub mod keymap;
+pub mod overlays;
 pub mod windows;
