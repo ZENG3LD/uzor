@@ -1,7 +1,7 @@
 //! LayoutEngine: per-window chrome, edge slots, dock trees and solved rects
-//! (design §3.2). Part 1: rect solve, dock glue, typed hit-testing,
-//! splitters with policy, chrome / bezel, layout persistence. Expand and
-//! drag-out are the next brief (see "Seams" below).
+//! (design §3.2): rect solve, dock glue, typed hit-testing, splitters with
+//! policy, chrome / bezel, layout persistence (part 1) and inner / outer
+//! expand, drag-out and dwell (part 2, [`expand`], [`dragout`]).
 //!
 //! The one writer of window layout state. Every change goes through
 //! [`LayoutEngine::apply`] (and time through [`LayoutEngine::tick`]); the
@@ -29,6 +29,8 @@
 //! point of a window maps to exactly one hit:
 //!
 //! 1. outside the viewport → `None`;
+//!    then, only while a panel drag is live in a window that may expand
+//!    (see [`expand`]), the edge gutter bands → `EdgeGutter(side)`;
 //! 2. the resize bezel, `LayoutPolicy::bezel_px` wide along the viewport
 //!    border, only when the host has no OS resize border → `Bezel(dir)`
 //!    (corners when two borders meet);
@@ -46,9 +48,6 @@
 //!    single-tab header: "+" → `TabNew`, else `PanelHeader`; a leaf's rect
 //!    → `PanelBody` (leaves in `LeafId` order);
 //! 7. `None`.
-//!
-//! `EdgeGutter` exists in the enum for the expand brief and is never
-//! produced here.
 //!
 //! ## Pointer sessions
 //!
@@ -113,13 +112,10 @@
 //!
 //! ## Seams
 //!
-//! - Expand (outer / inner) and drag-out: `LayoutHit::EdgeGutter` is
-//!   reserved; `DragOutPolicy` is carried in the policy and unused;
-//!   `finish_drag` in `dock.rs` is where a drop outside the viewport will
-//!   become a drag-out session instead of an in-window float.
-//! - The kernel (F7) conducts the effects (capture, window commands, chrome
-//!   actions, invalidation) and decides routing with
-//!   [`LayoutHit::claims_press`].
+//! The kernel (F7) conducts the effects (capture, window commands, chrome
+//! actions, invalidation, expand targets, micro-window spawn), feeds
+//! `OuterRect` / `ExpandValue` / `AdoptPanel`, and decides routing with
+//! [`LayoutHit::claims_press`].
 //!
 //! [`SplitterPolicy`]: crate::types::command::SplitterPolicy
 //! [`LayoutCodecError`]: crate::types::layout_blob::LayoutCodecError
@@ -127,6 +123,8 @@
 mod blob;
 mod chrome;
 mod dock;
+pub mod dragout;
+pub mod expand;
 mod rects;
 mod splitter;
 
@@ -140,7 +138,9 @@ use uzor::widgets::composite::chrome::ChromeState;
 use uzor::{Rect, ResizeDirection};
 
 use crate::types::bus::HostCaps;
-use crate::types::command::{ChromeModel, DockTarget, LayoutCmd, LayoutHit, LayoutPolicy};
+use crate::types::command::{
+    ChromeModel, DockTarget, DragOutChrome, LayoutCmd, LayoutHit, LayoutPolicy,
+};
 use crate::types::ids::{Revision, Seconds, WindowId};
 use crate::types::intent::DockIntent;
 use crate::types::layout_blob::WindowGeometrySnapshot;
@@ -150,6 +150,8 @@ use crate::types::spec::{PanelHome, Spec};
 use crate::types::window::{Point, WindowCommand};
 
 pub use blob::BLOB_VERSION;
+pub use dragout::{DragOutView, DWELL_S, MOVE_FRESH_S, STALE_S};
+pub use expand::{ExpandState, ExpandTarget};
 pub use uzor::layout::DockState;
 
 /// Effects of one LayoutEngine op or tick.
@@ -211,6 +213,8 @@ pub enum SessionKind {
     FloatingResize(FloatingWindowId),
     /// A click-type part is pressed; it acts on release over the same part.
     Click(LayoutHit),
+    /// A drag-out micro-window without chrome follows its panel header.
+    MicroMove,
 }
 
 /// One live pointer session of a window.
@@ -239,6 +243,12 @@ enum Session {
         start: Rect,
     },
     Click(LayoutHit),
+    /// Moving a chrome-less micro-window by its panel header; `grab` is the
+    /// press point (window-local), which the cursor keeps while the window
+    /// follows it.
+    MicroMove {
+        grab: Point,
+    },
 }
 
 impl Session {
@@ -261,6 +271,7 @@ impl Session {
             Session::FloatingMove { id, .. } => SessionKind::FloatingMove(id),
             Session::FloatingResize { id, .. } => SessionKind::FloatingResize(id),
             Session::Click(hit) => SessionKind::Click(hit),
+            Session::MicroMove { .. } => SessionKind::MicroMove,
         }
     }
 }
@@ -279,6 +290,14 @@ struct WindowLayout<P: DockPanel> {
     session: Option<Session>,
     dock_rev: Revision,
     wire: blob::WireDock,
+    /// Outer rect (physical screen px), from host echoes.
+    outer: Option<Rect>,
+    /// Device pixel ratio from the last outer-rect echo.
+    scale: f64,
+    /// The latched expand, if any.
+    expand: Option<expand::Expand>,
+    /// `Some` for a drag-out micro-window (with the chrome it wears).
+    micro: Option<DragOutChrome>,
 }
 
 impl<P: DockPanel> WindowLayout<P> {
@@ -302,6 +321,10 @@ impl<P: DockPanel> WindowLayout<P> {
             session: None,
             dock_rev: Revision::ZERO,
             wire,
+            outer: None,
+            scale: 1.0,
+            expand: None,
+            micro: None,
         };
         rects::solve(&mut w);
         w
@@ -318,6 +341,10 @@ struct Observed {
     edges: Vec<EdgeSlotView>,
     dock: dock::DockObs,
     session: Option<SessionKind>,
+    outer: Option<Rect>,
+    scale: f64,
+    expand: Option<expand::Expand>,
+    micro: Option<DragOutChrome>,
 }
 
 impl Observed {
@@ -329,24 +356,42 @@ impl Observed {
             edges: rects::edge_views(w),
             dock: dock::DockObs::of(&w.dock),
             session: w.session.map(|s| s.kind()),
+            outer: w.outer,
+            scale: w.scale,
+            expand: w.expand,
+            micro: w.micro,
         }
     }
 }
 
 /// Engine-wide settings an op on one window may read.
-#[derive(Clone, Copy)]
 struct Ctx<P> {
     policy: LayoutPolicy,
     decode: PanelDecoder<P>,
+    /// A drag-out panel is held waiting for its micro-window: no second
+    /// drag-out may start.
+    dragout_busy: bool,
 }
+
+impl<P> Clone for Ctx<P> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<P> Copy for Ctx<P> {}
 
 /// The LayoutEngine. `P` is the app's panel type ([`Spec::Panel`]).
 pub struct LayoutEngine<P: DockPanel> {
     windows: BTreeMap<WindowId, WindowLayout<P>>,
+    dragout: Option<dragout::DragOutSession<P>>,
     policy: LayoutPolicy,
     decode: PanelDecoder<P>,
     changed: BTreeSet<WindowId>,
     clock: Option<Seconds>,
+    /// Something observable changed during the current op / tick; the
+    /// revision bumps once when it ends.
+    touched: bool,
     rev: Revision,
 }
 
@@ -361,10 +406,12 @@ impl<P: DockPanel> LayoutEngine<P> {
     pub fn with_policy(decode: PanelDecoder<P>, policy: LayoutPolicy) -> Self {
         Self {
             windows: BTreeMap::new(),
+            dragout: None,
             policy,
             decode,
             changed: BTreeSet::new(),
             clock: None,
+            touched: false,
             rev: Revision::ZERO,
         }
     }
@@ -376,6 +423,7 @@ impl<P: DockPanel> LayoutEngine<P> {
 
     /// The only mutation door.
     pub fn apply(&mut self, op: LayoutOp<P>) -> LayoutEffects {
+        let before = self.dragout_obs();
         let mut fx = LayoutEffects::new();
         match op {
             LayoutOp::Open {
@@ -386,7 +434,7 @@ impl<P: DockPanel> LayoutEngine<P> {
                 if !self.windows.contains_key(&win) {
                     self.windows
                         .insert(win, WindowLayout::new(caps, viewport, &self.policy));
-                    self.rev.bump();
+                    self.touched = true;
                     fx.push(invalidate(win, InvalidateBits::ALL));
                 } else {
                     self.edit(win, &mut fx, |w, _, _| {
@@ -394,12 +442,14 @@ impl<P: DockPanel> LayoutEngine<P> {
                         w.viewport = viewport;
                     });
                 }
+                self.dragout_place(win, &mut fx);
             }
             LayoutOp::Close(win) => {
                 if self.windows.remove(&win).is_some() {
                     self.changed.remove(&win);
-                    self.rev.bump();
+                    self.touched = true;
                 }
+                self.dragout_window_closed(win);
             }
             LayoutOp::Solve { win, viewport } => {
                 self.edit(win, &mut fx, |w, _, _| w.viewport = viewport);
@@ -409,18 +459,69 @@ impl<P: DockPanel> LayoutEngine<P> {
                     Some(c) if c.get() > now.get() => c,
                     _ => now,
                 });
-                self.edit(win, &mut fx, |w, ctx, fx| pointer(win, w, ctx, event, fx));
+                self.dragout_pointer(win, event);
+                let outer_before = self.windows.get(&win).and_then(|w| w.outer);
+                let mut out = None;
+                self.edit(win, &mut fx, |w, ctx, fx| {
+                    pointer(win, w, ctx, event, fx, &mut out)
+                });
+                let outer_after = self.windows.get(&win).and_then(|w| w.outer);
+                if outer_after != outer_before {
+                    self.dragout_moved(win, now);
+                }
+                if let Some(out) = out {
+                    self.dragout_start(win, now, out, &mut fx);
+                }
             }
             LayoutOp::Cmd(cmd) => self.cmd(cmd, &mut fx),
+            LayoutOp::OuterRect {
+                win,
+                now,
+                rect,
+                scale,
+            } => {
+                let before = self.windows.get(&win).and_then(|w| w.outer);
+                let scale = if scale.is_finite() && scale > 0.0 {
+                    scale
+                } else {
+                    1.0
+                };
+                self.edit(win, &mut fx, |w, _, _| {
+                    w.outer = Some(rect);
+                    w.scale = scale;
+                });
+                let moved = match before {
+                    Some(b) => b.x != rect.x || b.y != rect.y,
+                    None => false,
+                };
+                if moved {
+                    self.dragout_moved(win, now);
+                }
+            }
+            LayoutOp::ExpandValue { win, kind, t } => {
+                self.edit(win, &mut fx, |w, _, fx| expand::value(win, w, kind, t, fx));
+            }
+            LayoutOp::AdoptPanel { win } => self.dragout_adopt(win, &mut fx),
         }
+        self.settle_rev(before);
         fx
     }
 
+    /// End of an op / tick: one revision bump when anything observable
+    /// changed (a window or the drag-out session).
+    fn settle_rev(&mut self, dragout_before: Option<DragOutView>) {
+        if std::mem::take(&mut self.touched) || self.dragout_obs() != dragout_before {
+            self.rev.bump();
+        }
+    }
+
     /// Advance time: snap-back springs move (one revision bump and one
-    /// `GEOMETRY` invalidation per window whose springs moved), then one
+    /// `GEOMETRY` invalidation per window whose springs moved), the
+    /// drag-out dwell runs (see [`dragout`]), then one
     /// `DockIntent::LayoutChanged` per window whose dock changed since the
     /// last tick.
     pub fn tick(&mut self, now: Seconds) -> LayoutEffects {
+        let dragout_before = self.dragout_obs();
         let dt = match self.clock {
             Some(c) => now.since(c).get(),
             None => 0.0,
@@ -443,8 +544,9 @@ impl<P: DockPanel> LayoutEngine<P> {
             }
         }
         if moved {
-            self.rev.bump();
+            self.touched = true;
         }
+        self.dragout_tick(now, &mut fx);
         for win in std::mem::take(&mut self.changed) {
             if let Some(w) = self.windows.get(&win) {
                 fx.push(LayoutEffect::Intent(DockIntent::LayoutChanged {
@@ -453,6 +555,7 @@ impl<P: DockPanel> LayoutEngine<P> {
                 }));
             }
         }
+        self.settle_rev(dragout_before);
         fx
     }
 
@@ -479,14 +582,15 @@ impl<P: DockPanel> LayoutEngine<P> {
     // ---------------------------------------------------------------------
 
     /// Run `f` on one window and account for what it changed: re-solve,
-    /// bump the revision once if anything observable moved, bump the dock
-    /// revision and queue `LayoutChanged` if the blob-relevant part moved.
+    /// mark the op as changed (one revision bump when it ends) if anything
+    /// observable moved, bump the dock revision and queue `LayoutChanged`
+    /// if the blob-relevant part moved.
     fn edit<F>(&mut self, win: WindowId, fx: &mut LayoutEffects, f: F)
     where
         F: FnOnce(&mut WindowLayout<P>, Ctx<P>, &mut LayoutEffects),
     {
         if self.edit_quiet(win, fx, f) {
-            self.rev.bump();
+            self.touched = true;
         }
     }
 
@@ -499,6 +603,7 @@ impl<P: DockPanel> LayoutEngine<P> {
         let ctx = Ctx {
             policy: self.policy,
             decode: self.decode,
+            dragout_busy: self.dragout.as_ref().is_some_and(|s| s.holds_panel()),
         };
         let Some(w) = self.windows.get_mut(&win) else {
             return false;
@@ -533,7 +638,7 @@ impl<P: DockPanel> LayoutEngine<P> {
                 }
                 // One bump for the whole op (the policy itself changed).
                 self.policy = policy;
-                self.rev.bump();
+                self.touched = true;
                 let wins: Vec<WindowId> = self.windows.keys().copied().collect();
                 for win in wins {
                     self.edit_quiet(win, fx, |w, ctx, _| {
@@ -679,13 +784,15 @@ fn window_cmd<P: DockPanel>(w: &mut WindowLayout<P>, cmd: LayoutCmd<P>) {
     }
 }
 
-/// One pointer event for one window.
+/// One pointer event for one window. A release that drags a panel out of
+/// the viewport leaves the panel in `out` for the engine-level drag-out.
 fn pointer<P: DockPanel>(
     win: WindowId,
     w: &mut WindowLayout<P>,
     ctx: Ctx<P>,
     event: DockPointer,
     fx: &mut LayoutEffects,
+    out: &mut Option<dragout::Outbound<P>>,
 ) {
     match event {
         DockPointer::Down { pos, button } => {
@@ -695,7 +802,7 @@ fn pointer<P: DockPanel>(
             if w.session.is_some() {
                 // A press while a session is live (a lost release): end the
                 // old one first, as a cancel.
-                end_session(win, w, fx, None);
+                end_session(win, w, fx, None, ctx, out);
             }
             let hit = hit_window(w, &ctx.policy, pos);
             press(win, w, hit, pos, fx);
@@ -706,23 +813,33 @@ fn pointer<P: DockPanel>(
             };
             let next = match session {
                 Session::Splitter(d) => Session::Splitter(splitter::drag(w, d, pos, &ctx.policy)),
-                Session::Tab { .. } | Session::Header { .. } => dock::drag_move(w, session, pos),
+                Session::Tab { .. } | Session::Header { .. } => {
+                    let next = dock::drag_move(w, session, pos);
+                    if dock::is_live_drag(&next) {
+                        expand::track(win, w, &ctx.policy, pos, fx);
+                    }
+                    next
+                }
                 Session::FloatingMove { .. } | Session::FloatingResize { .. } => {
                     dock::floating_move(w, session, pos);
                     session
                 }
                 Session::Click(_) => session,
+                Session::MicroMove { grab } => {
+                    dragout::micro_move(win, w, grab, pos, fx);
+                    session
+                }
             };
             w.session = Some(next);
         }
         DockPointer::Up(pos) => {
             if w.session.is_some() {
-                end_session(win, w, fx, Some((pos, ctx.policy)));
+                end_session(win, w, fx, Some(pos), ctx, out);
             }
         }
         DockPointer::Cancel => {
             if w.session.is_some() {
-                end_session(win, w, fx, None);
+                end_session(win, w, fx, None, ctx, out);
             }
         }
     }
@@ -752,6 +869,11 @@ fn press<P: DockPanel>(
             vertical,
             horizontal,
         } => splitter::start_corner(&w.dock, vertical, horizontal, pos).map(Session::Splitter),
+        LayoutHit::PanelHeader(_) if w.micro == Some(DragOutChrome::None) => {
+            // A chrome-less micro-window: its panel header moves the OS
+            // window (previous kernel `drag_out.rs:285-337`).
+            Some(Session::MicroMove { grab: pos })
+        }
         LayoutHit::Tab { leaf, tab } => {
             if dock::activate_tab(&mut w.dock, leaf, tab) {
                 fx.push(LayoutEffect::Intent(DockIntent::TabActivated {
@@ -760,19 +882,31 @@ fn press<P: DockPanel>(
                     index: tab,
                 }));
             }
+            // Nothing tears off a micro-window (previous kernel
+            // `drag_out.rs:299`: infinite tear threshold there).
+            let stage = if w.micro.is_some() {
+                dock::TabStage::Refused
+            } else {
+                dock::TabStage::Pressed
+            };
             Some(Session::Tab {
                 leaf,
                 tab,
                 origin: pos,
-                stage: dock::TabStage::Pressed,
+                stage,
             })
         }
         LayoutHit::PanelHeader(leaf) => {
             w.dock.set_active_leaf(leaf);
+            let stage = if w.micro.is_some() {
+                dock::HeaderStage::Refused
+            } else {
+                dock::HeaderStage::Pressed
+            };
             Some(Session::Header {
                 leaf,
                 origin: pos,
-                stage: dock::HeaderStage::Pressed,
+                stage,
             })
         }
         LayoutHit::FloatingHeader(id) => dock::floating_press(&mut w.dock, id, pos),
@@ -791,29 +925,41 @@ fn press<P: DockPanel>(
     }
 }
 
-/// End the window's session: `release = Some((pos, policy))` completes it
-/// (drop, click), `None` cancels it. Always releases the capture.
+/// End the window's session: `release = Some(pos)` completes it (drop,
+/// click), `None` cancels it. Always releases the capture.
 fn end_session<P: DockPanel>(
     win: WindowId,
     w: &mut WindowLayout<P>,
     fx: &mut LayoutEffects,
-    release: Option<(Point, LayoutPolicy)>,
+    release: Option<Point>,
+    ctx: Ctx<P>,
+    out: &mut Option<dragout::Outbound<P>>,
 ) {
     let Some(session) = w.session.take() else {
         return;
     };
     match (session, release) {
         (Session::Splitter(_), _) => {}
-        (Session::Tab { .. } | Session::Header { .. }, Some(_)) => {
-            dock::drag_release(win, w, session, fx)
+        (Session::Tab { .. } | Session::Header { .. }, Some(pos)) => {
+            if dock::is_live_drag(&session) {
+                // The release point decides, not the last move.
+                expand::track(win, w, &ctx.policy, pos, fx);
+            }
+            if !expand::commit_drop(win, w, session, fx) {
+                dock::drag_release(win, w, session, pos, ctx, fx, out);
+            }
+            expand::unhot(win, w, fx);
         }
-        (Session::Tab { .. } | Session::Header { .. }, None) => dock::drag_cancel(w, session),
+        (Session::Tab { .. } | Session::Header { .. }, None) => {
+            dock::drag_cancel(w, session);
+            expand::unhot(win, w, fx);
+        }
         (Session::FloatingMove { .. }, _) => {
             w.dock.end_floating_drag();
         }
-        (Session::FloatingResize { .. }, _) => {}
-        (Session::Click(hit), Some((pos, policy))) => {
-            if hit_window(w, &policy, pos) == hit {
+        (Session::FloatingResize { .. }, _) | (Session::MicroMove { .. }, _) => {}
+        (Session::Click(hit), Some(pos)) => {
+            if hit_window(w, &ctx.policy, pos) == hit {
                 click(win, w, hit, fx);
             }
         }
@@ -856,6 +1002,9 @@ fn click<P: DockPanel>(
 fn hit_window<P: DockPanel>(w: &WindowLayout<P>, policy: &LayoutPolicy, p: Point) -> LayoutHit {
     if !rects::contains(w.viewport, p) {
         return LayoutHit::None;
+    }
+    if let Some(side) = expand::gutter(w, policy, p, expand::drag_live(w)) {
+        return LayoutHit::EdgeGutter(side);
     }
     if !w.caps.os_resize_bezel {
         if let Some(dir) = chrome::bezel(w.viewport, policy.bezel_px, p) {
@@ -923,6 +1072,18 @@ impl<'a, P: DockPanel> LayoutEngineView<'a, P> {
     pub fn revision(&self) -> Revision {
         self.engine.rev
     }
+
+    /// The live drag-out session, if any.
+    pub fn drag_out(&self) -> Option<DragOutView> {
+        self.engine.dragout_obs()
+    }
+
+    /// When the engine needs its next [`LayoutEngine::tick`] without any
+    /// input: the instant a running dwell completes. Snap-back springs are
+    /// reported by [`WindowLayoutView::snap_backs`] (they want every frame).
+    pub fn next_deadline(&self) -> Option<Seconds> {
+        self.engine.dragout.as_ref().and_then(|s| s.deadline())
+    }
 }
 
 /// Read-only view of one window's layout.
@@ -984,6 +1145,33 @@ impl<'a, P: DockPanel> WindowLayoutView<'a, P> {
     /// The live pointer session, if any.
     pub fn session(&self) -> Option<SessionKind> {
         self.w.session.map(|s| s.kind())
+    }
+
+    /// The outer rect (physical screen px) from the last host echo.
+    pub fn outer_rect(&self) -> Option<Rect> {
+        self.w.outer
+    }
+
+    /// The device pixel ratio from the last outer-rect echo (`1.0` before).
+    pub fn scale(&self) -> f64 {
+        self.w.scale
+    }
+
+    /// The latched expand, if any (drives the gutter preview in compose).
+    pub fn expand(&self) -> Option<ExpandState> {
+        self.w.expand.map(|x| x.state())
+    }
+
+    /// The rect the window's content is laid out in: the viewport, or while
+    /// an expand is latched the viewport at latch time shifted by the
+    /// expand inset (so the content keeps its place while the window grows).
+    pub fn content_rect(&self) -> Rect {
+        expand::content_rect(self.w)
+    }
+
+    /// `Some(chrome)` when this window is a drag-out micro-window.
+    pub fn micro(&self) -> Option<DragOutChrome> {
+        self.w.micro
     }
 
     /// Running separator snap-back springs.

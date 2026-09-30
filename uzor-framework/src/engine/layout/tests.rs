@@ -1521,3 +1521,5 @@ fn closed_and_unknown_windows_are_ignored() {
     assert!(e.view().window(W).is_none());
     assert!(e.tick(Seconds(1.0)).is_empty());
 }
+
+mod expand_dragout;

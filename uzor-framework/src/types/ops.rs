@@ -6,15 +6,15 @@
 //! These are kernel-facing, not app-facing: the app speaks
 //! [`AppCommand`](crate::AppCommand); the kernel translates it into ops.
 //! This module grows one op / effect pair per engine brief (F2: windows,
-//! cadence, animation; F3: input, keymap; F4: overlays; F5: layout).
+//! cadence, animation; F3: input, keymap; F4: overlays; F5 / F6: layout).
 
 use uzor::input::MouseButton;
-use uzor::layout::OverlayKind;
+use uzor::layout::{EdgeSide, OverlayKind};
 use uzor::render::{InvalidateBits, TickRate};
 use uzor::widgets::composite::chrome::ChromeAction;
 use uzor::{Rect, WidgetId};
 
-use crate::types::anim::{AnimKey, AnimPolicy};
+use crate::types::anim::{AnimKey, AnimPolicy, ExpandKind};
 use crate::types::bus::{
     ClipboardResult, HostCaps, ImeInput, KeyInput, PointerInput, RenderInfo, WheelInput,
     WindowInput,
@@ -809,13 +809,50 @@ pub enum LayoutOp<P> {
     },
     /// An app layout command.
     Cmd(LayoutCmd<P>),
+    /// The window's outer rect and scale (conducted from the host's
+    /// `WindowInput::Created` / `Moved` / `Resized` / `OuterRect` echoes).
+    /// Expand latches its origin from it; drag-out projects the cursor to
+    /// screen space with it; a move of the drag-out micro-window counts as
+    /// a fresh move for the dwell.
+    OuterRect {
+        /// The window.
+        win: WindowId,
+        /// Host clock of the echo.
+        now: Seconds,
+        /// Outer rect, physical screen pixels.
+        rect: Rect,
+        /// Device pixel ratio (physical / logical).
+        scale: f64,
+    },
+    /// The animated expand value (conducted from the AnimationEngine's
+    /// `AnimKey::Expand` values, phase 4b): the engine resizes the OS window
+    /// and shifts the content for `t`, and restores the exact original rect
+    /// once a released expand is back at `0`.
+    ExpandValue {
+        /// The window.
+        win: WindowId,
+        /// Outer or inner.
+        kind: ExpandKind,
+        /// Progress, `0.0` (retracted) to `1.0` (fully grown).
+        t: f64,
+    },
+    /// The WindowEngine allocated the micro-window a
+    /// [`LayoutEffect::SpawnWindow`] asked for (conducted from the
+    /// `WindowEffect::Spawned` that follows it). The engine hands the held
+    /// panel to that window once it is open.
+    AdoptPanel {
+        /// The new micro-window.
+        win: WindowId,
+    },
 }
 
 /// A consequence of a LayoutEngine op or tick.
 #[derive(Clone, Debug)]
 pub enum LayoutEffect {
     /// A host command the kernel enqueues on the WindowEngine
-    /// (`DragWindow`, `DragResizeWindow`).
+    /// (`DragWindow`, `DragResizeWindow`; expand and micro-window moves:
+    /// `SetOuterRect` + `RequestRedraw`; a docked-back micro-window:
+    /// `SetVisible(false)` then `Close`).
     Window {
         /// Target window.
         win: WindowId,
@@ -852,5 +889,35 @@ pub enum LayoutEffect {
         win: WindowId,
         /// What changed.
         bits: InvalidateBits,
+    },
+    /// Point the window's expand animator at `1` (`side` = the latched
+    /// gutter) or back at `0` (`None`); the kernel applies
+    /// `AnimOp::SetTarget { key: AnimKey::Expand { win, kind }, .. }`.
+    ExpandTarget {
+        /// The window.
+        win: WindowId,
+        /// Outer or inner.
+        kind: ExpandKind,
+        /// The latched side, or `None` to retract.
+        side: Option<EdgeSide>,
+    },
+    /// The expand is over (retracted to the original rect, or committed by
+    /// a gutter drop); the kernel drops the animator
+    /// (`AnimOp::Remove(AnimKey::Expand { win, kind })`) so the next latch
+    /// starts from `0`.
+    ExpandDone {
+        /// The window.
+        win: WindowId,
+        /// Outer or inner.
+        kind: ExpandKind,
+    },
+    /// A panel left its window: ask the WindowEngine for a micro-window
+    /// (`WindowOp::Create(spec)`), then answer with
+    /// [`LayoutOp::AdoptPanel`] for the id it allocated.
+    SpawnWindow {
+        /// The window the panel came from.
+        src: WindowId,
+        /// The micro-window, sized to the panel and placed under the cursor.
+        spec: WindowSpec,
     },
 }

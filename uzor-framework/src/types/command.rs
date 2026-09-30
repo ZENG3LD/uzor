@@ -18,6 +18,7 @@ use uzor::tokens::Tokens;
 use uzor::widgets::composite::chrome::{ChromeHit, ChromeLayoutConfig};
 use uzor::{CursorIcon, Rect, ResizeDirection, RgbaIcon, WidgetId};
 
+use crate::types::anim::ExpandKind;
 use crate::types::frame::RegionSpec;
 use crate::types::ids::{RegionId, Seconds, Ticket, WindowId};
 use crate::types::layout_blob::LayoutBlob;
@@ -396,8 +397,19 @@ pub struct LayoutPolicy {
     pub splitter: SplitterPolicy,
     /// Whether and how panels can be dragged out into their own window.
     pub drag_out: DragOutPolicy,
-    /// Width of the edge gutter that triggers an outer expand, logical px.
+    /// Width of the edge gutter that latches an expand while a panel is
+    /// dragged, logical px (the Left / Top bands are at least as wide as
+    /// the chrome and edge slots on that side).
     pub edge_expand_px: f64,
+    /// How far an expand grows the window, logical px (the full-`t`
+    /// extent; also the size of the leaf a gutter drop creates).
+    pub expand_thickness_px: f64,
+    /// Which expand a Left / Top gutter latches. Right / Bottom gutters
+    /// always latch [`ExpandKind::Outer`]. `Inner` (default): the OS window
+    /// keeps its position and grows on the far side while the content
+    /// shifts by the extent; `Outer`: the window grows toward the gutter
+    /// with its opposite edge fixed.
+    pub left_top_expand: ExpandKind,
     /// Width of the uzor resize bezel, logical px; used only when the host
     /// has no OS resize border. Also the resize border of floating windows.
     pub bezel_px: f64,
@@ -413,6 +425,8 @@ impl Default for LayoutPolicy {
             splitter: SplitterPolicy::Cascade,
             drag_out: DragOutPolicy::Disabled,
             edge_expand_px: 8.0,
+            expand_thickness_px: 480.0,
+            left_top_expand: ExpandKind::Inner,
             bezel_px: 6.0,
             tab_new_button: false,
         }
@@ -514,8 +528,10 @@ pub enum LayoutHit {
     },
     /// A floating window's content area (belongs to the app's widgets).
     FloatingBody(FloatingWindowId),
-    /// An expand gutter at a window edge. Reserved for the expand brief:
-    /// the engine does not produce it yet.
+    /// An expand gutter at a window edge: produced only while a panel drag
+    /// is live in a window whose host can resize it (`multi_window`, outer
+    /// rect known, not a drag-out micro-window). A release here docks the
+    /// panel into the grown strip.
     EdgeGutter(EdgeSide),
     /// Nothing layout-owned (edge slots, empty dock, outside the window).
     None,
@@ -1043,6 +1059,8 @@ mod tests {
         assert_eq!(p.splitter, SplitterPolicy::Cascade);
         assert_eq!(p.drag_out, DragOutPolicy::Disabled);
         assert_eq!(p.bezel_px, 6.0);
+        assert_eq!(p.expand_thickness_px, 480.0);
+        assert_eq!(p.left_top_expand, ExpandKind::Inner);
     }
 
     fn assert_send<T: Send>() {}

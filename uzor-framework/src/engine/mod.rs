@@ -23,7 +23,7 @@
 //! | [`anim`] | [`AnimationEngine`](anim::AnimationEngine) | typed linear animators (expand, overlay fade) |
 //! | [`input`] | [`InputEngine`](input::InputEngine) | per-window coordinator, cook, focus scopes, capture, hover / press / click, text / IME, caret blink |
 //! | [`keymap`] | [`KeymapEngine`](keymap::KeymapEngine) | key bindings per scope (global / overlay / focused widget) |
-//! | [`layout`] | [`LayoutEngine`](layout::LayoutEngine) | per-window chrome, edge slots, dock trees, solved rects, splitter / tab / header sessions, layout blobs |
+//! | [`layout`] | [`LayoutEngine`](layout::LayoutEngine) | per-window chrome, edge slots, dock trees, solved rects, splitter / tab / header sessions, layout blobs, inner / outer expand, drag-out and dwell |
 //! | [`overlays`] | [`OverlayEngine`](overlays::OverlayEngine) | per-window overlay stacks (Z order, modal shield, outside / Escape dismiss, scopes) and composite widget states |
 //!
 //! ## Visibility

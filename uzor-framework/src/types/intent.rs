@@ -246,8 +246,8 @@ pub enum DockIntent {
         zone: DropZone,
     },
     /// A panel was torn off its leaf: dropped where no dock target was, so
-    /// it now floats in-window (drag-out into its own OS window comes with
-    /// the drag-out brief).
+    /// it now floats in-window (drag-out disabled, a single-window host, or
+    /// a drop inside the viewport).
     PanelTornOff {
         /// Its window.
         win: WindowId,
@@ -255,6 +255,14 @@ pub enum DockIntent {
         leaf: LeafId,
         /// Tab index.
         index: usize,
+    },
+    /// A panel was dragged out of its window into a new micro-window
+    /// (reported once the micro-window id is allocated).
+    PanelDraggedOut {
+        /// Source window and leaf (the leaf may be gone).
+        from: (WindowId, LeafId),
+        /// The micro-window that carries the panel now.
+        to: WindowId,
     },
     /// The user asked for a new panel in a leaf ("+" button).
     NewPanelRequested {

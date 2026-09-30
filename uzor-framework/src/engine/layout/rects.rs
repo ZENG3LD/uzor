@@ -15,7 +15,8 @@ use super::WindowLayout;
 /// Re-solve one window from its viewport, chrome slot, edge slots and dock
 /// tree. Idempotent.
 pub(super) fn solve<P: DockPanel>(w: &mut WindowLayout<P>) {
-    w.solved = solve_layout(w.viewport, &w.chrome_slot, &w.edges, &mut w.tree);
+    let content = super::expand::content_rect(w);
+    w.solved = solve_layout(content, &w.chrome_slot, &w.edges, &mut w.tree);
     w.dock.layout(to_panel(w.solved.dock_area));
 }
 

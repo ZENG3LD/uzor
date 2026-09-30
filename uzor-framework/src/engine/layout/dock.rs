@@ -18,8 +18,10 @@ use crate::types::ops::LayoutEffect;
 use crate::types::snapshot::{DockView, FloatingView, LeafView, PanelRef, SeparatorView};
 use crate::types::window::Point;
 
+use super::dragout::{self, Outbound, Payload};
 use super::{
-    blob, chrome, rects, splitter, DockState, LayoutEffects, Session, WindowLayout, DRAG_START_PX,
+    blob, chrome, rects, splitter, Ctx, DockState, LayoutEffects, Session, WindowLayout,
+    DRAG_START_PX,
 };
 
 /// Hit radius of a splitter crossing, logical px.
@@ -621,12 +623,134 @@ pub(super) fn drag_move<P: DockPanel>(
     }
 }
 
+/// A tab or header session whose library panel drag is live (the only
+/// sessions expand gutters and drag-out apply to).
+pub(super) fn is_live_drag(session: &Session) -> bool {
+    matches!(
+        session,
+        Session::Tab {
+            stage: TabStage::Tear,
+            ..
+        } | Session::Header {
+            stage: HeaderStage::Dragging,
+            ..
+        }
+    )
+}
+
+/// Take the payload of the live library drag out of the dock: the torn tab,
+/// or every panel of the dragged leaf. Ends the library drag. `None` (and
+/// nothing changes) when there is no live drag, or when taking a leaf would
+/// leave the dock without a visible leaf.
+pub(super) fn take_payload<P: DockPanel>(dock: &mut DockState<P>) -> Option<(LeafId, Payload<P>)> {
+    let state = dock.panel_drag_state().cloned()?;
+    let leaf = state.dragged_leaf_id;
+    let size = dock
+        .panel_rects()
+        .get(&leaf)
+        .map(|r| (r.width as f64, r.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let l = dock.tree().leaf(leaf)?;
+    let payload = match state.payload {
+        DragPayload::Tab { tab_idx } => {
+            let panel = l.panels.get(tab_idx)?.clone();
+            dock.cancel_panel_drag();
+            dock.tree_mut().remove_tab(leaf, tab_idx);
+            Payload::new(vec![panel], 0, size)
+        }
+        DragPayload::Leaf => {
+            if dock.tree().visible_leaf_count() <= 1 || l.panels.is_empty() {
+                return None;
+            }
+            let (panels, active) = (l.panels.clone(), l.active_tab);
+            dock.cancel_panel_drag();
+            dock.tree_mut().remove_leaf(leaf);
+            Payload::new(panels, active, size)
+        }
+    };
+    Some((leaf, payload))
+}
+
+/// Put `payload` into `leaf` as tabs (Center), or, without a leaf, at the
+/// dock root (first leaf, or a new one in an empty dock). Returns the leaf
+/// that holds it and activates the payload's active panel there.
+pub(super) fn dock_payload<P: DockPanel>(
+    dock: &mut DockState<P>,
+    leaf: Option<LeafId>,
+    payload: Payload<P>,
+) -> Option<LeafId> {
+    let (panels, active) = payload.into_parts();
+    let target = leaf
+        .filter(|l| dock.tree().leaf(*l).is_some())
+        .or_else(|| dock.tree().leaves().first().map(|l| l.id));
+    let leaf = match target {
+        Some(leaf) => {
+            let base = dock.tree().leaf(leaf).map(|l| l.panels.len()).unwrap_or(0);
+            for p in panels {
+                dock.tree_mut().add_tab(leaf, p);
+            }
+            if let Some(l) = dock.tree_mut().leaf_mut(leaf) {
+                l.active_tab = (base + active).min(l.panels.len().saturating_sub(1));
+            }
+            leaf
+        }
+        None => {
+            if panels.is_empty() {
+                return None;
+            }
+            let leaf = dock.tree_mut().add_leaf_with_panels(panels, active);
+            leaf
+        }
+    };
+    dock.set_active_leaf(leaf);
+    Some(leaf)
+}
+
+/// The leaf whose rect contains `p` (leaves in `LeafId` order).
+pub(super) fn leaf_at<P: DockPanel>(dock: &DockState<P>, p: Point) -> Option<LeafId> {
+    sorted_leaf_rects(dock)
+        .into_iter()
+        .find(|(_, r)| rects::contains_panel(r, p))
+        .map(|(id, _)| id)
+}
+
+/// Take every docked panel out of `dock` (leaves in `LeafId` order; the
+/// first leaf's active tab stays active). The first leaf's id, or `None`
+/// for an empty dock.
+pub(super) fn take_all<P: DockPanel>(dock: &mut DockState<P>) -> Option<(LeafId, Payload<P>)> {
+    let mut leaves: Vec<(LeafId, Vec<P>, usize)> = dock
+        .tree()
+        .leaves()
+        .iter()
+        .map(|l| (l.id, l.panels.clone(), l.active_tab))
+        .collect();
+    leaves.sort_by_key(|l| l.0 .0);
+    let (first, active) = leaves.first().map(|l| (l.0, l.2))?;
+    let size = dock
+        .panel_rects()
+        .get(&first)
+        .map(|r| (r.width as f64, r.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let mut panels = Vec::new();
+    for (id, ps, _) in leaves {
+        dock.tree_mut().remove_leaf(id);
+        panels.extend(ps);
+    }
+    if panels.is_empty() {
+        return None;
+    }
+    Some((first, Payload::new(panels, active, size)))
+}
+
 /// The release of a tab or header session.
 pub(super) fn drag_release<P: DockPanel>(
     win: WindowId,
     w: &mut WindowLayout<P>,
     session: Session,
+    pos: Point,
+    ctx: Ctx<P>,
     fx: &mut LayoutEffects,
+    out: &mut Option<Outbound<P>>,
 ) {
     match session {
         Session::Tab {
@@ -638,14 +762,14 @@ pub(super) fn drag_release<P: DockPanel>(
             tab,
             stage: TabStage::Tear,
             ..
-        } => finish_drag(win, w, leaf, tab, fx),
+        } => finish_drag(win, w, leaf, tab, pos, ctx, fx, out),
         Session::Header {
             leaf,
             stage: HeaderStage::Dragging,
             ..
         } => {
             let index = w.dock.tree().leaf(leaf).map(|l| l.active_tab).unwrap_or(0);
-            finish_drag(win, w, leaf, index, fx);
+            finish_drag(win, w, leaf, index, pos, ctx, fx, out);
         }
         _ => {}
     }
@@ -672,21 +796,33 @@ pub(super) fn drag_cancel<P: DockPanel>(w: &mut WindowLayout<P>, session: Sessio
     }
 }
 
-/// Drop the live library drag. A target → the library restructures the
-/// tree and `PanelMoved` names the leaf that holds the panel now. No
-/// target → a leaf floats in-window (`PanelTornOff`), a torn tab stays in
-/// its stack. (Drag-out seam: a drop outside the viewport becomes a
-/// drag-out session here, next brief.)
+/// Drop the live library drag. A release outside the viewport of a window
+/// that allows drag-out ([`dragout::allowed`]) takes the payload out of the
+/// dock into `out` (the engine docks it into the sibling window under the
+/// cursor or spawns a micro-window). Otherwise: a target → the library
+/// restructures the tree and `PanelMoved` names the leaf that holds the
+/// panel now; no target → a leaf floats in-window (`PanelTornOff`), a torn
+/// tab stays in its stack.
+#[allow(clippy::too_many_arguments)]
 fn finish_drag<P: DockPanel>(
     win: WindowId,
     w: &mut WindowLayout<P>,
     src: LeafId,
     index: usize,
+    pos: Point,
+    ctx: Ctx<P>,
     fx: &mut LayoutEffects,
+    out: &mut Option<Outbound<P>>,
 ) {
     let Some(state) = w.dock.panel_drag_state().cloned() else {
         return;
     };
+    if !rects::contains(w.viewport, pos) && dragout::allowed(w, &ctx) {
+        if let Some((leaf, payload)) = take_payload(&mut w.dock) {
+            *out = Some(Outbound::new(leaf, payload, pos));
+            return;
+        }
+    }
     let before: BTreeSet<u64> = w.dock.tree().leaves().iter().map(|l| l.id.0).collect();
     let wire_before = blob::WireDock::capture(&w.dock);
     let area = w.dock.layout_area();
