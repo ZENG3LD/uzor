@@ -170,6 +170,11 @@ pub struct TextFieldState {
     /// "keystrokes come here"; this says "the user is in it", and only the
     /// second one should be visible.
     pub engaged: bool,
+    /// IME composition in progress, shown over the text at `cursor` and
+    /// never part of `text` until committed.
+    pub preedit: String,
+    /// Cursor inside `preedit`, in chars.
+    pub preedit_cursor: usize,
     /// Field configuration (immutable after registration).
     pub config: TextFieldConfig,
 }
@@ -186,6 +191,8 @@ impl TextFieldState {
             last_char_positions: Vec::new(),
             last_frame: 0,
             engaged: false,
+            preedit: String::new(),
+            preedit_cursor: 0,
             config,
         }
     }
@@ -461,6 +468,8 @@ impl TextFieldStore {
         if let Some(prev) = self.focused.take() {
             if let Some(state) = self.fields.get_mut(&prev) {
                 state.selection_start = None;
+                state.preedit.clear();
+                state.preedit_cursor = 0;
             }
         }
         if let Some(state) = self.fields.get_mut(&id) {
@@ -478,6 +487,8 @@ impl TextFieldStore {
         if let Some(id) = self.focused.take() {
             if let Some(state) = self.fields.get_mut(&id) {
                 state.selection_start = None;
+                state.preedit.clear();
+                state.preedit_cursor = 0;
             }
         }
         self.drag_field = None;
@@ -765,6 +776,57 @@ impl TextFieldStore {
         Some(state.text[byte_lo..byte_hi].to_string())
     }
 
+    /// Cut the selection of field `id` for the clipboard: returns the
+    /// selected text and deletes it. A read-only field returns the text and
+    /// keeps it (a copy). `None` when there is no selection.
+    pub fn cut_selection(&mut self, id: &WidgetId) -> Option<String> {
+        let state = self.fields.get_mut(id)?;
+        let (lo, hi) = state.selection_range()?;
+        let byte_lo = state.char_to_byte(lo);
+        let byte_hi = state.char_to_byte(hi);
+        let selected = state.text[byte_lo..byte_hi].to_string();
+        if !state.config.read_only && state.config.capability != InputCapability::Mouse {
+            state.delete_selection();
+            self.reset_blink();
+        }
+        Some(selected)
+    }
+
+    /// Set the IME composition of field `id`: `text` with the cursor at
+    /// `cursor` chars into it. An empty `text` ends the composition. The
+    /// field's `text` is untouched until [`Self::ime_commit`].
+    pub fn preedit_set(&mut self, id: &WidgetId, text: String, cursor: usize) {
+        if let Some(state) = self.fields.get_mut(id) {
+            state.preedit_cursor = cursor.min(text.chars().count());
+            state.preedit = text;
+        }
+    }
+
+    /// Commit IME text into field `id` at the cursor (replacing the
+    /// selection), with the same filter / max-length / read-only rules as a
+    /// paste, and end the composition.
+    pub fn ime_commit(&mut self, id: &WidgetId, committed: String) -> TextAction {
+        let state = match self.fields.get_mut(id) {
+            Some(s) => s,
+            None => return TextAction::None,
+        };
+        state.preedit.clear();
+        state.preedit_cursor = 0;
+        if state.config.capability == InputCapability::Mouse || state.config.read_only {
+            return TextAction::None;
+        }
+        state.engaged = true;
+        let before = state.text.clone();
+        apply_key(state, KeyPress::Paste(committed));
+        self.reset_blink();
+        let after = &self.fields[id].text;
+        if after != &before {
+            TextAction::TextChanged(after.clone())
+        } else {
+            TextAction::None
+        }
+    }
+
     // =========================================================================
     // Private
     // =========================================================================
@@ -903,6 +965,45 @@ fn apply_key(state: &mut TextFieldState, key: KeyPress) -> bool {
             }
             true
         }
+        KeyPress::WordLeft => {
+            state.cursor = word_left(&state.text, state.cursor);
+            state.selection_start = None;
+            true
+        }
+        KeyPress::WordRight => {
+            state.cursor = word_right(&state.text, state.cursor);
+            state.selection_start = None;
+            true
+        }
+        KeyPress::DeleteWordBack => {
+            if state.selection_range().is_some() {
+                state.delete_selection();
+            } else {
+                let start = word_left(&state.text, state.cursor);
+                if start < state.cursor {
+                    let byte_lo = state.char_to_byte(start);
+                    let byte_hi = state.char_to_byte(state.cursor);
+                    state.text.drain(byte_lo..byte_hi);
+                    state.cursor = start;
+                }
+            }
+            state.selection_start = None;
+            true
+        }
+        KeyPress::DeleteWordForward => {
+            if state.selection_range().is_some() {
+                state.delete_selection();
+            } else {
+                let end = word_right(&state.text, state.cursor);
+                if end > state.cursor {
+                    let byte_lo = state.char_to_byte(state.cursor);
+                    let byte_hi = state.char_to_byte(end);
+                    state.text.drain(byte_lo..byte_hi);
+                }
+            }
+            state.selection_start = None;
+            true
+        }
         KeyPress::Undo | KeyPress::Redo => false,
         KeyPress::ArrowUp
         | KeyPress::ArrowDown
@@ -914,6 +1015,35 @@ fn apply_key(state: &mut TextFieldState, key: KeyPress) -> bool {
         | KeyPress::PageUp
         | KeyPress::PageDown => false,
     }
+}
+
+/// Char index of the start of the word before `cursor`: skip whitespace
+/// backwards, then non-whitespace.
+fn word_left(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let mut pos = cursor.min(chars.len());
+    while pos > 0 && chars[pos - 1].is_whitespace() {
+        pos -= 1;
+    }
+    while pos > 0 && !chars[pos - 1].is_whitespace() {
+        pos -= 1;
+    }
+    pos
+}
+
+/// Char index after the word at or after `cursor`: skip non-whitespace,
+/// then whitespace.
+fn word_right(text: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let mut pos = cursor.min(n);
+    while pos < n && !chars[pos].is_whitespace() {
+        pos += 1;
+    }
+    while pos < n && chars[pos].is_whitespace() {
+        pos += 1;
+    }
+    pos
 }
 
 /// Encode a printable character as PTY bytes.
@@ -989,6 +1119,150 @@ mod tests {
 
     fn id(s: &str) -> WidgetId {
         WidgetId::new(s)
+    }
+
+    fn focused_with(text: &str, cursor: usize) -> TextFieldStore {
+        let mut s = store();
+        s.register("f", TextFieldConfig::text());
+        s.focus("f");
+        s.set_text(&id("f"), text);
+        s.field_state_mut(&id("f")).unwrap().cursor = cursor;
+        s
+    }
+
+    // H2 §7 scenario 8 — word movement over "hello world foo".
+    #[test]
+    fn word_right_and_left_land_on_each_word_boundary() {
+        let mut s = focused_with("hello world foo", 0);
+        let mut stops = Vec::new();
+        for _ in 0..4 {
+            s.on_key(KeyPress::WordRight);
+            stops.push(s.cursor(&id("f")));
+        }
+        assert_eq!(stops, vec![6, 12, 15, 15]);
+        let mut stops = Vec::new();
+        for _ in 0..4 {
+            s.on_key(KeyPress::WordLeft);
+            stops.push(s.cursor(&id("f")));
+        }
+        assert_eq!(stops, vec![12, 6, 0, 0]);
+    }
+
+    #[test]
+    fn word_movement_clears_the_selection() {
+        let mut s = focused_with("hello world", 0);
+        s.on_key(KeyPress::SelectAll);
+        s.on_key(KeyPress::WordLeft);
+        assert_eq!(s.selection_range(&id("f")), None);
+    }
+
+    #[test]
+    fn delete_word_back_removes_the_previous_word() {
+        let mut s = focused_with("hello world foo", 11);
+        let action = s.on_key(KeyPress::DeleteWordBack);
+        assert_eq!(action, TextAction::TextChanged("hello  foo".into()));
+        assert_eq!(s.cursor(&id("f")), 6);
+        // at the start: nothing to delete
+        let mut s = focused_with("hello", 0);
+        assert_eq!(s.on_key(KeyPress::DeleteWordBack), TextAction::None);
+    }
+
+    #[test]
+    fn delete_word_forward_removes_the_next_word_and_keeps_the_cursor() {
+        let mut s = focused_with("hello world foo", 6);
+        s.on_key(KeyPress::DeleteWordForward);
+        assert_eq!(s.text(&id("f")), "hello foo");
+        assert_eq!(s.cursor(&id("f")), 6);
+    }
+
+    #[test]
+    fn word_deletion_with_a_selection_deletes_only_the_selection() {
+        let mut s = focused_with("hello world foo", 0);
+        let st = s.field_state_mut(&id("f")).unwrap();
+        st.selection_start = Some(6);
+        st.cursor = 8; // "wo"
+        s.on_key(KeyPress::DeleteWordBack);
+        assert_eq!(s.text(&id("f")), "hello rld foo");
+        assert_eq!(s.cursor(&id("f")), 6);
+        let st = s.field_state_mut(&id("f")).unwrap();
+        st.selection_start = Some(6);
+        st.cursor = 9; // "rld"
+        s.on_key(KeyPress::DeleteWordForward);
+        assert_eq!(s.text(&id("f")), "hello  foo");
+    }
+
+    #[test]
+    fn word_movement_counts_chars_not_bytes() {
+        let mut s = focused_with("привет мир", 0);
+        s.on_key(KeyPress::WordRight);
+        assert_eq!(s.cursor(&id("f")), 7);
+        s.on_key(KeyPress::DeleteWordForward);
+        assert_eq!(s.text(&id("f")), "привет ");
+    }
+
+    // H2 §7 scenario 6, store level — preedit is an overlay, commit inserts.
+    #[test]
+    fn preedit_stays_out_of_the_text_until_commit() {
+        let mut s = focused_with("x", 1);
+        s.preedit_set(&id("f"), "ab".into(), 2);
+        let st = s.field_state(&id("f")).unwrap();
+        assert_eq!(st.preedit, "ab");
+        assert_eq!(st.preedit_cursor, 2);
+        assert_eq!(st.text, "x");
+        let action = s.ime_commit(&id("f"), "ab".into());
+        assert_eq!(action, TextAction::TextChanged("xab".into()));
+        let st = s.field_state(&id("f")).unwrap();
+        assert!(st.preedit.is_empty());
+        assert_eq!(st.cursor, 3);
+    }
+
+    #[test]
+    fn ime_commit_obeys_read_only_filter_and_max_len() {
+        let mut s = store();
+        s.register("ro", TextFieldConfig::read_only());
+        s.focus("ro");
+        s.preedit_set(&id("ro"), "zz".into(), 0);
+        assert_eq!(s.ime_commit(&id("ro"), "zz".into()), TextAction::None);
+        assert!(s.field_state(&id("ro")).unwrap().preedit.is_empty());
+
+        let mut s = store();
+        s.register("n", TextFieldConfig::text().with_filter(|c| c.is_ascii_digit()).with_max_len(3));
+        s.focus("n");
+        s.ime_commit(&id("n"), "1a2b34".into());
+        assert_eq!(s.text(&id("n")), "123");
+    }
+
+    #[test]
+    fn preedit_cursor_is_clamped_and_blur_drops_the_composition() {
+        let mut s = focused_with("", 0);
+        s.preedit_set(&id("f"), "日本".into(), 10);
+        assert_eq!(s.field_state(&id("f")).unwrap().preedit_cursor, 2);
+        s.blur();
+        assert!(s.field_state(&id("f")).unwrap().preedit.is_empty());
+    }
+
+    #[test]
+    fn cut_selection_returns_and_removes_the_selected_text() {
+        let mut s = focused_with("hello world", 0);
+        let st = s.field_state_mut(&id("f")).unwrap();
+        st.selection_start = Some(0);
+        st.cursor = 6;
+        assert_eq!(s.cut_selection(&id("f")), Some("hello ".into()));
+        assert_eq!(s.text(&id("f")), "world");
+        assert_eq!(s.cursor(&id("f")), 0);
+        assert_eq!(s.cut_selection(&id("f")), None, "no selection left");
+    }
+
+    #[test]
+    fn cut_on_a_read_only_field_is_a_copy() {
+        let mut s = store();
+        s.register("ro", TextFieldConfig::read_only());
+        s.set_text(&id("ro"), "keep");
+        let st = s.field_state_mut(&id("ro")).unwrap();
+        st.selection_start = Some(0);
+        st.cursor = 4;
+        assert_eq!(s.cut_selection(&id("ro")), Some("keep".into()));
+        assert_eq!(s.text(&id("ro")), "keep");
     }
 
     #[test]
