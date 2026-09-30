@@ -3,8 +3,9 @@
 //!
 //! Pure data plus pure transitions, no clock and no I/O: every method takes
 //! the caller's monotonic time `now` in **seconds**, so the same sequence of
-//! calls always gives the same result. Nothing calls into this module yet;
-//! `InputCoordinator::end_frame` wires it in a later step.
+//! calls always gives the same result. `InputCoordinator::end_frame` drives it
+//! once per frame; multi-click counting needs the host to stamp
+//! `InputState::time` (seconds, > 0).
 //!
 //! Constants match egui's defaults (`max_click_dist = 6`, double-click
 //! window 0.35 s), the same values tessera's cook layer proved.
