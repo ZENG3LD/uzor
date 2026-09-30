@@ -12,16 +12,20 @@ pub const PANEL_GAP: f32 = 0.0;
 /// `set_splitter_policy`.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum SplitterPolicy {
-    /// Today's behaviour (the default).
+    /// Today's behaviour (the default). Never rejects.
     ///
-    /// Closed presets are untouched: single-axis splits cascade the delta
-    /// through siblings down to their pixel minimums, and the two-axis
-    /// presets move `cross_ratio` within `0.05..=0.95`. For a `rows × cols`
-    /// grid line a move that would take either adjacent row / column below
-    /// its minimum is rejected whole (ratios unchanged, `drag_separator`
-    /// returns `false`) and a [`SnapBackAnimation`](super::SnapBackAnimation)
-    /// is queued for the separator with the overshoot.
+    /// Single-axis splits cascade the delta through the siblings on the
+    /// shrinking side, each down to its pixel minimum; the two-axis presets
+    /// move `cross_ratio` within `0.05..=0.95`; a `rows × cols` grid line
+    /// moves its two adjacent tracks and stops at their pixel minimums.
     #[default]
+    Cascade,
+    /// A move that would take a neighbour below its minimum is rejected
+    /// whole: proportions stay unchanged, `drag_separator` returns `false`,
+    /// and a [`SnapBackAnimation`](super::SnapBackAnimation) with the
+    /// overshoot is queued for the separator. Only the two children /
+    /// tracks next to the separator move. For the two-axis presets the
+    /// bounds are `cross_ratio` `0.05..=0.95`.
     RejectSnapBack,
     /// Stop at the limit: only the two children / tracks next to the
     /// separator change, and the one shrinking stops at its minimum —

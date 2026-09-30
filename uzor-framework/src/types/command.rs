@@ -385,7 +385,7 @@ pub struct LayoutPolicy {
 impl Default for LayoutPolicy {
     fn default() -> Self {
         Self {
-            splitter: SplitterPolicy::RejectSnapBack,
+            splitter: SplitterPolicy::Cascade,
             drag_out: DragOutPolicy::Disabled,
             edge_expand_px: 8.0,
             bezel_px: 6.0,
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn layout_policy_default_is_todays_behaviour() {
         let p = LayoutPolicy::default();
-        assert_eq!(p.splitter, SplitterPolicy::RejectSnapBack);
+        assert_eq!(p.splitter, SplitterPolicy::Cascade);
         assert_eq!(p.drag_out, DragOutPolicy::Disabled);
         assert_eq!(p.bezel_px, 6.0);
     }

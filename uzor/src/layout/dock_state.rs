@@ -114,7 +114,7 @@ pub struct DockState<P: DockPanel> {
     /// `(dragged, target, zone)` while a drag is live.
     drop_policy: Option<DropPolicyFn<P>>,
     /// How separator drags treat minimum sizes. Default
-    /// [`SplitterPolicy::RejectSnapBack`] (today's behaviour).
+    /// [`SplitterPolicy::Cascade`] (today's behaviour).
     splitter_policy: SplitterPolicy,
 }
 
@@ -151,7 +151,7 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
-            splitter_policy: SplitterPolicy::RejectSnapBack,
+            splitter_policy: SplitterPolicy::Cascade,
         }
     }
 
@@ -191,7 +191,7 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
-            splitter_policy: SplitterPolicy::RejectSnapBack,
+            splitter_policy: SplitterPolicy::Cascade,
         }
     }
 
@@ -220,7 +220,7 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
-            splitter_policy: SplitterPolicy::RejectSnapBack,
+            splitter_policy: SplitterPolicy::Cascade,
         }
     }
 
@@ -424,9 +424,10 @@ impl<P: DockPanel> DockState<P> {
     /// on one side in order, never going below each child's minimum size.
     /// This allows multi-panel resize without rejecting moves.
     ///
-    /// That is the default [`SplitterPolicy::RejectSnapBack`] behaviour for
-    /// preset layouts; [`SplitterPolicy::Clamp`] instead moves only the two
-    /// neighbours and stops at the limit. A `rows × cols` grid line moves
+    /// That is the default [`SplitterPolicy::Cascade`] behaviour for preset
+    /// layouts; [`SplitterPolicy::Clamp`] moves only the two neighbours and
+    /// stops at the limit; [`SplitterPolicy::RejectSnapBack`] moves only the
+    /// two neighbours and refuses (with a snap-back) a move past a minimum. A `rows × cols` grid line moves
     /// only its two adjacent row / column ratios (see [`SplitterPolicy`] for
     /// how each policy treats minimums there).
     ///
@@ -565,12 +566,13 @@ impl<P: DockPanel> DockState<P> {
 
                 // Ratio bounds: 0.05..=0.95 as always; `Clamp` may tighten them.
                 let (lo, hi) = match self.splitter_policy {
-                    SplitterPolicy::RejectSnapBack => (0.05, 0.95),
+                    SplitterPolicy::Cascade | SplitterPolicy::RejectSnapBack => (0.05, 0.95),
                     SplitterPolicy::Clamp { min_frac } => {
                         let m = sanitize_min_frac(min_frac).max(0.05);
                         (m, 1.0 - m)
                     }
                 };
+                let reject = self.splitter_policy == SplitterPolicy::RejectSnapBack;
                 // Account for the separator gap so the ratio tracks the visible line.
                 let gap = super::docking::presets::PANEL_GAP;
                 let new_xr;
@@ -579,16 +581,26 @@ impl<P: DockPanel> DockState<P> {
                     SeparatorOrientation::Vertical => {
                         // Vertical bar → moves left/right → affects x ratio.
                         let available_w = (full_w - gap).max(1.0);
-                        new_xr = (cur_xr + delta as f64 / available_w as f64)
-                            .clamp(lo, hi);
+                        let raw = cur_xr + delta as f64 / available_w as f64;
+                        if reject && (raw < lo || raw > hi) {
+                            let overshoot = (raw - raw.clamp(lo, hi)) * available_w as f64;
+                            self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot as f32));
+                            return false;
+                        }
+                        new_xr = raw.clamp(lo, hi);
                         new_yr = cur_yr;
                     }
                     SeparatorOrientation::Horizontal => {
                         // Horizontal bar → moves up/down → affects y ratio.
                         let available_h = (full_h - gap).max(1.0);
+                        let raw = cur_yr + delta as f64 / available_h as f64;
+                        if reject && (raw < lo || raw > hi) {
+                            let overshoot = (raw - raw.clamp(lo, hi)) * available_h as f64;
+                            self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot as f32));
+                            return false;
+                        }
                         new_xr = cur_xr;
-                        new_yr = (cur_yr + delta as f64 / available_h as f64)
-                            .clamp(lo, hi);
+                        new_yr = raw.clamp(lo, hi);
                     }
                 }
                 self.tree.set_branch_cross_ratio(parent_id, new_xr, new_yr);
@@ -619,6 +631,26 @@ impl<P: DockPanel> DockState<P> {
             let mut new_props = raw_props;
             new_props[pos_a] = a;
             new_props[pos_b] = b;
+            self.tree.set_branch_proportions(parent_id, new_props);
+            return true;
+        }
+
+        // --- Reject policy: only the two neighbours move; a move past
+        // either minimum is refused with a snap-back. ---
+        if self.splitter_policy == SplitterPolicy::RejectSnapBack {
+            let (a, b) = (raw_props[pos_a], raw_props[pos_b]);
+            let (na, nb) = (a + delta_share, b - delta_share);
+            let a_bad = na < min_shares[pos_a] && na < a;
+            let b_bad = nb < min_shares[pos_b] && nb < b;
+            if a_bad || b_bad {
+                let limit_a = if a_bad { min_shares[pos_a] } else { a + b - min_shares[pos_b] };
+                let overshoot_px = ((na - limit_a) / total_share * branch_size as f64) as f32;
+                self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot_px));
+                return false;
+            }
+            let mut new_props = raw_props;
+            new_props[pos_a] = na;
+            new_props[pos_b] = nb;
             self.tree.set_branch_proportions(parent_id, new_props);
             return true;
         }
@@ -737,6 +769,7 @@ impl<P: DockPanel> DockState<P> {
         let (a, b) = (weights[i], weights[j]);
 
         let (new_a, new_b) = match self.splitter_policy {
+            SplitterPolicy::Cascade => clamp_pair(a, b, delta_w, min_a, min_b),
             SplitterPolicy::Clamp { min_frac } => {
                 let m = sanitize_min_frac(min_frac) * total_w;
                 clamp_pair(a, b, delta_w, min_a.max(m), min_b.max(m))
@@ -2655,9 +2688,9 @@ mod grid_policy_tests {
     fn near(a: f64, b: f64) -> bool { (a - b).abs() < 1e-9 }
 
     #[test]
-    fn default_policy_is_reject_snap_back() {
-        assert_eq!(SplitterPolicy::default(), SplitterPolicy::RejectSnapBack);
-        assert_eq!(DockState::<M>::new().splitter_policy(), SplitterPolicy::RejectSnapBack);
+    fn default_policy_is_cascade() {
+        assert_eq!(SplitterPolicy::default(), SplitterPolicy::Cascade);
+        assert_eq!(DockState::<M>::new().splitter_policy(), SplitterPolicy::Cascade);
         let mut s = DockState::<M>::new();
         s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.1 });
         assert_eq!(s.splitter_policy(), SplitterPolicy::Clamp { min_frac: 0.1 });
@@ -2708,6 +2741,7 @@ mod grid_policy_tests {
     fn reject_snap_back_on_a_grid_rejects_and_queues_a_snap_back() {
         // 2 × 2, 1000 × 1000, every cell at least 200 × 200.
         let mut s = grid_state(2, 2, 1000.0, 1000.0, (200.0, 200.0));
+        s.set_splitter_policy(SplitterPolicy::RejectSnapBack);
         let idx = line(&s, GridAxis::Col, 0);
         // +400 px would leave the right column 100 px < 200 px minimum.
         assert!(!s.drag_separator(idx, 400.0, 1000.0, 1000.0));
@@ -2842,4 +2876,45 @@ mod grid_policy_tests {
         assert_eq!(s.separator_for_edge(leaf, ResizeEdge::E), None);
         assert_eq!(s.separator_for_edge(leaf, ResizeEdge::S), None);
     }
+
+    #[test]
+    fn cascade_on_a_grid_stops_at_the_pixel_minimum_and_never_rejects() {
+        let mut s = grid_state(2, 2, 1000.0, 1000.0, (200.0, 200.0));
+        let idx = line(&s, GridAxis::Col, 0);
+        assert!(s.drag_separator(idx, 400.0, 1000.0, 1000.0));
+        let cols = grid(&s).col_ratios;
+        let total: f64 = cols.iter().sum();
+        let right_px = cols[1] / total * (1000.0 - crate::layout::docking::presets::PANEL_GAP as f64);
+        assert!((right_px - 200.0).abs() < 0.5, "{cols:?} → right {right_px}px");
+        assert!(s.snap_animations().is_empty());
+    }
+
+    #[test]
+    fn reject_snap_back_on_a_single_axis_split_refuses_past_the_minimum() {
+        // Three 300 px columns, each at least 100 px.
+        let mut tree = DockingTree::with_single_leaf(M(100.0, 0.0));
+        tree.add_leaf(M(100.0, 0.0));
+        tree.add_leaf(M(100.0, 0.0));
+        let root = tree.root().id;
+        let mut s = DockState::from_tree(tree);
+        s.layout(PanelRect::new(0.0, 0.0, 900.0, 300.0));
+        s.set_splitter_policy(SplitterPolicy::RejectSnapBack);
+        let first = s.tree().root().children[0].raw_id();
+        let idx = s.separators().iter().position(|sp| sp.child_a() == Some(first)).unwrap();
+
+        // +250 px leaves column 1 at 50 px < 100 px: refused, nothing moves.
+        let before = fractions(&s, root);
+        assert!(!s.drag_separator(idx, 250.0, 900.0, 300.0));
+        assert_eq!(fractions(&s, root), before);
+        assert_eq!(s.snap_animations().len(), 1);
+        assert!(s.snap_animations()[0].offset() > 0.0);
+
+        // +150 px is allowed and moves only the two neighbours.
+        assert!(s.drag_separator(idx, 150.0, 900.0, 300.0));
+        let f = fractions(&s, root);
+        assert!((f[0] - 450.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[1] - 150.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[2] - 300.0 / 900.0).abs() < 1e-6, "{f:?}");
+    }
 }
+
