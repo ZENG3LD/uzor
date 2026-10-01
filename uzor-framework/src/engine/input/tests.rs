@@ -1295,3 +1295,280 @@ fn revision_bumps_exactly_on_state_change() {
     );
     step(&mut e, InputOp::Close(W), true);
 }
+
+
+// ---------------------------------------------------------------------------
+// T2: plain-text selection owner
+// ---------------------------------------------------------------------------
+
+use uzor::input::text::selection::{SelectionLine, TextSelection};
+use uzor::input::{LayerId, WidgetKind};
+
+/// The label fixture text; 11 chars, one word at 0..5.
+const LABEL: &str = "hello world";
+
+fn label_rect() -> Rect {
+    Rect::new(10.0, 10.0, 200.0, 20.0)
+}
+
+/// Report geometry for an already-registered selectable widget (one char
+/// every `CHAR_W` px from the rect's left edge).
+fn report(e: &mut InputEngine, name: &str, rect: Rect, text: &str) {
+    let n = text.chars().count();
+    let boundaries: Vec<f64> = (0..=n).map(|i| rect.x + i as f64 * CHAR_W).collect();
+    let lines = vec![SelectionLine::single(&boundaries, rect.y, rect.height)];
+    e.update_selectable(W, id(name), text, lines);
+}
+
+/// Register a top-level selectable single-line label and report its geometry.
+fn label(e: &mut InputEngine, name: &str, rect: Rect, text: &str) {
+    e.registrar(W)
+        .unwrap()
+        .register(id(name), rect, Sense::HOVER.with_select());
+    report(e, name, rect, text);
+}
+
+/// Two labels inside a `Panel`, one outside — the Ctrl+A escalation scene.
+fn panel_scene(e: &mut InputEngine) {
+    let layer = LayerId::from("base");
+    let c = e.registrar(W).unwrap();
+    c.push_layer(layer.clone(), 0, false);
+    let panel = c.register_composite(
+        "panel",
+        WidgetKind::Panel,
+        Rect::new(0.0, 0.0, 400.0, 90.0),
+        Sense::NONE,
+        &layer,
+    );
+    c.register_child(&panel, "in1", WidgetKind::Custom, rect_a(), Sense::HOVER.with_select());
+    c.register_child(&panel, "in2", WidgetKind::Custom, rect_b(), Sense::HOVER.with_select());
+    drop(c);
+    report(e, "in1", rect_a(), LABEL);
+    report(e, "in2", rect_b(), "inside two");
+    label(e, "out", Rect::new(10.0, 200.0, 200.0, 20.0), "outside");
+}
+
+/// A compose frame whose closure sees the whole engine (registrations plus
+/// selectable reports).
+fn frame_sel(e: &mut InputEngine, t: f64, f: impl FnOnce(&mut InputEngine)) -> InputEffects {
+    e.apply(InputOp::BeginFrame { win: W, now: s(t) });
+    f(e);
+    e.apply(InputOp::EndFrame { win: W, now: s(t) })
+}
+
+fn one_label(e: &mut InputEngine) {
+    label(e, "lbl", label_rect(), LABEL);
+}
+
+fn sel(e: &InputEngine, name: &str) -> Option<TextSelection> {
+    e.view()
+        .selections(W)
+        .and_then(|s| s.iter().find(|(w, _)| w == &id(name)).map(|(_, x)| *x))
+}
+
+fn has_copy(effects: &InputEffects, want: &str) -> bool {
+    effects
+        .iter()
+        .any(|f| matches!(f, InputEffect::CopyText { win, text } if *win == W && text.as_str() == want))
+}
+
+fn has_passed(effects: &InputEffects) -> bool {
+    effects
+        .iter()
+        .any(|f| matches!(f, InputEffect::KeyPassed { win, .. } if *win == W))
+}
+
+#[test]
+fn click_collapses_to_caret() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    click(&mut e, 1.0, 13.0, 15.0);
+    frame_sel(&mut e, 1.05, one_label);
+    // Mid of char 0 is x=14; x=13 is inside char 0.
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::caret(0)));
+}
+
+#[test]
+fn double_click_selects_word_triple_selects_line() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    // x=20 is inside char 1 ("e"), word 0..5, line 0..11.
+    click(&mut e, 1.0, 20.0, 15.0);
+    frame_sel(&mut e, 1.05, one_label);
+    click(&mut e, 1.1, 20.0, 15.0);
+    frame_sel(&mut e, 1.15, one_label);
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(0, 5)));
+    click(&mut e, 1.2, 20.0, 15.0);
+    frame_sel(&mut e, 1.25, one_label);
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(0, 11)));
+}
+
+#[test]
+fn drag_selects_range_and_survives_release() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    to_content(&mut e, 1.0, down(13.0, 15.0));
+    // 37 px past the 6 px threshold arms the drag; x=50 is char 5.
+    to_content(&mut e, 1.01, moved(50.0, 15.0));
+    frame_sel(&mut e, 1.05, one_label);
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(0, 5)));
+    to_content(&mut e, 1.06, up(50.0, 15.0));
+    // The release ended a drag: it must not collapse the selection.
+    frame_sel(&mut e, 1.1, one_label);
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(0, 5)));
+}
+
+#[test]
+fn drag_clamps_beyond_the_rect() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    to_content(&mut e, 1.0, down(13.0, 15.0));
+    to_content(&mut e, 1.01, moved(900.0, 15.0));
+    frame_sel(&mut e, 1.05, one_label);
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(0, 11)));
+    to_content(&mut e, 1.06, up(900.0, 15.0));
+    to_content(&mut e, 1.1, down(60.0, 15.0));
+    to_content(&mut e, 1.11, moved(-500.0, 15.0));
+    frame_sel(&mut e, 1.15, one_label);
+    // Backward drag from char 6 to char 0.
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::new(6, 0)));
+}
+
+#[test]
+fn press_elsewhere_clears() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    to_content(&mut e, 1.0, down(13.0, 15.0));
+    to_content(&mut e, 1.01, moved(50.0, 15.0));
+    frame_sel(&mut e, 1.05, one_label);
+    assert!(sel(&e, "lbl").is_some());
+    // Press on empty space (no widget under the pointer).
+    to_content(&mut e, 1.1, down(500.0, 400.0));
+    to_content(&mut e, 1.11, up(500.0, 400.0));
+    frame_sel(&mut e, 1.15, one_label);
+    assert_eq!(sel(&e, "lbl"), None);
+}
+
+#[test]
+fn ctrl_c_copies_the_selection_reading_order() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, panel_scene);
+    // Hover the top label so the escalation has a context, then
+    // widget-level and panel-level select-all.
+    to_content(&mut e, 0.9, moved(20.0, 15.0));
+    frame_sel(&mut e, 0.95, panel_scene);
+    key(&mut e, 1.0, KeyCode::A, ctrl());
+    key(&mut e, 1.1, KeyCode::A, ctrl());
+    assert_eq!(sel(&e, "in1"), Some(TextSelection::new(0, 11)));
+    assert_eq!(sel(&e, "in2"), Some(TextSelection::new(0, 10)));
+    let fx = key(&mut e, 2.0, KeyCode::C, ctrl());
+    assert!(has_copy(&fx, "hello world\ninside two"), "effects: {fx:?}");
+}
+
+#[test]
+fn ctrl_c_without_selection_passes_the_key() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    let fx = key(&mut e, 1.0, KeyCode::C, ctrl());
+    assert!(has_passed(&fx));
+    assert!(!has_copy(&fx, ""));
+}
+
+#[test]
+fn ctrl_a_escalates_widget_panel_window() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, panel_scene);
+    // Hover the first label so the first Ctrl+A has a context.
+    to_content(&mut e, 0.9, moved(20.0, 15.0));
+    frame_sel(&mut e, 0.95, panel_scene);
+    let fx = key(&mut e, 1.0, KeyCode::A, ctrl());
+    assert_eq!(sel(&e, "in1"), Some(TextSelection::new(0, 11)));
+    assert!(fx.iter().any(|f| matches!(f, InputEffect::InvalidateField { .. })));
+    // Second press: everything inside the panel.
+    key(&mut e, 1.1, KeyCode::A, ctrl());
+    assert_eq!(sel(&e, "in1"), Some(TextSelection::new(0, 11)));
+    assert_eq!(sel(&e, "in2"), Some(TextSelection::new(0, 10)));
+    assert_eq!(sel(&e, "out"), None);
+    // Third press: the whole window.
+    key(&mut e, 1.2, KeyCode::A, ctrl());
+    assert_eq!(sel(&e, "out"), Some(TextSelection::new(0, 7)));
+    // Fourth press: already everywhere, nothing changes.
+    let before = e.revision();
+    key(&mut e, 1.3, KeyCode::A, ctrl());
+    assert_eq!(e.revision(), before);
+}
+
+#[test]
+fn a_focused_field_consumes_ctrl_c() {
+    let mut e = with_fields();
+    frame_sel(&mut e, 0.5, |e| {
+        two_fields(e.registrar(W).unwrap());
+        one_label(e);
+    });
+    // Select label text, then focus a field (via focus op, so the label
+    // selection survives) with no selection of its own.
+    to_content(&mut e, 1.0, down(13.0, 15.0));
+    to_content(&mut e, 1.01, moved(50.0, 15.0));
+    frame_sel(&mut e, 1.05, |e| {
+        two_fields(e.registrar(W).unwrap());
+        one_label(e);
+    });
+    assert!(sel(&e, "lbl").is_some());
+    focus(&mut e, 1.1, FocusOp::Set(id("a")));
+    frame_sel(&mut e, 1.15, |e| {
+        two_fields(e.registrar(W).unwrap());
+        one_label(e);
+    });
+    let fx = key(&mut e, 2.0, KeyCode::C, ctrl());
+    // The field consumed the chord: no field selection -> no copy at all,
+    // and the label selection is not copied either.
+    assert!(!has_copy(&fx, "hello"));
+    assert!(!has_passed(&fx));
+}
+
+#[test]
+fn an_unreported_widget_loses_its_selection() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    to_content(&mut e, 1.0, down(13.0, 15.0));
+    to_content(&mut e, 1.01, moved(50.0, 15.0));
+    frame_sel(&mut e, 1.05, one_label);
+    assert!(sel(&e, "lbl").is_some());
+    // Next frame reports nothing: the label is gone.
+    frame_sel(&mut e, 1.1, |_| {});
+    assert_eq!(e.view().selections(W), Some(&[][..]));
+}
+
+#[test]
+fn selection_changes_are_revisioned() {
+    let mut e = engine();
+    frame_sel(&mut e, 0.5, one_label);
+    let r0 = e.revision();
+    click(&mut e, 1.0, 13.0, 15.0);
+    let fx = frame_sel(&mut e, 1.05, one_label);
+    let r1 = e.revision();
+    assert!(r1 > r0, " InvalidateField effects: {fx:?}");
+    // An unrelated empty frame does not bump.
+    frame_sel(&mut e, 1.1, one_label);
+    assert_eq!(e.revision(), r1);
+}
+
+#[test]
+fn clicking_a_label_does_not_blur_a_focused_field() {
+    // The label sits below the fields — no overlap with rect_a / rect_b.
+    let label_r = Rect::new(10.0, 100.0, 200.0, 20.0);
+    let scene = |e: &mut InputEngine| {
+        two_fields(e.registrar(W).unwrap());
+        label(e, "lbl", label_r, LABEL);
+    };
+    let mut e = with_fields();
+    frame_sel(&mut e, 0.5, scene);
+    click(&mut e, 1.0, 20.0, 15.0); // field "a"
+    frame_sel(&mut e, 1.05, scene);
+    assert!(e.view().text_fields(W).is_some_and(|t| t.focused().is_some()));
+    // Click the label: focus stays in the field, the label gets a caret.
+    click(&mut e, 1.1, 13.0, 115.0);
+    frame_sel(&mut e, 1.15, scene);
+    assert!(e.view().text_fields(W).is_some_and(|t| t.focused().is_some()));
+    assert_eq!(sel(&e, "lbl"), Some(TextSelection::caret(0)));
+}
