@@ -16,6 +16,7 @@
 //! | [`frame`] | frame requests, region plans, loop wake-up, window surfaces |
 //! | [`layout_blob`] | opaque serialized dock layout and its codec error |
 //! | [`ops`] | engine operations and effects (kernel-facing, not app-facing) |
+//! | [`overlay_model`] | app-declared overlay frames the kernel draws around bodies |
 //! | [`spec`] | the app's vocabulary trait [`Spec`](spec::Spec) |
 //! | [`error`] | [`FrameworkError`](error::FrameworkError) |
 
@@ -28,6 +29,7 @@ pub mod ids;
 pub mod intent;
 pub mod layout_blob;
 pub mod ops;
+pub mod overlay_model;
 pub mod snapshot;
 pub mod spec;
 pub mod window;

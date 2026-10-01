@@ -38,7 +38,13 @@
 #![deny(missing_docs)]
 
 pub mod engine;
+pub mod handle;
 pub mod types;
+
+pub use handle::{
+    App, FrameTime, Handle, HandleError, HookOp, HookOps, InitCx, IntentCx, OverlayCx, PanelCx,
+    VisualView, Waker, Widgets,
+};
 
 pub use types::anim::{AnimKey, AnimPolicy, ExpandKind};
 
@@ -64,6 +70,9 @@ pub use types::intent::{
     WindowIntent,
 };
 pub use types::layout_blob::{LayoutBlob, LayoutCodecError, WindowGeometrySnapshot};
+pub use types::overlay_model::{
+    ContextMenuEntry, ContextMenuModel, DropdownModel, ModalModel, OverlayModel, TooltipModel,
+};
 pub use types::snapshot::{
     CadenceView, ChromeView, DockView, EdgeSlotView, FloatingView, InputView, LeafView,
     OverlayView, PanelRef, SeparatorView, VisualSnapshot, WindowView,
