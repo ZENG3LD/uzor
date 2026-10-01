@@ -1109,6 +1109,22 @@ impl InputCoordinator {
         &mut self.text_fields
     }
 
+    /// Ids of the widgets registered this frame that want keyboard focus,
+    /// in registration order; `layer` restricts the listing to one layer,
+    /// `None` lists every layer.
+    ///
+    /// Read-only. The framework's compose phase uses it to refresh a focus
+    /// scope's member list once the scope owner's body has been composed
+    /// and its widgets are known (registration order is the tab order).
+    pub fn focusable_ids(&self, layer: Option<&LayerId>) -> Vec<WidgetId> {
+        self.widgets
+            .iter()
+            .filter(|w| w.sense.focus)
+            .filter(|w| layer.is_none_or(|l| &w.layer == l))
+            .map(|w| w.id.clone())
+            .collect()
+    }
+
     /// Focus next widget (Tab)
     pub fn focus_next(&mut self) {
         let focusable: Vec<_> = self.widgets.iter().filter(|w| w.sense.focus).collect();
