@@ -253,6 +253,10 @@ struct Focused {
 
 struct PerWindowInput {
     coord: InputCoordinator,
+    /// Per-widget persistent typed state (scroll offsets, expand flags);
+    /// the compose-phase door for the app hook's `Widgets` face (design
+    /// §3.4 names it here; F3 had no consumer, F7 does).
+    states: uzor::app_context::StateRegistry,
     cook: CookState,
     pointer: PointerAccum,
     capture: Option<Capture>,
@@ -284,6 +288,7 @@ impl PerWindowInput {
     fn new() -> Self {
         Self {
             coord: InputCoordinator::new(),
+            states: uzor::app_context::StateRegistry::new(),
             cook: CookState::default(),
             pointer: PointerAccum::default(),
             capture: None,
@@ -1464,6 +1469,13 @@ impl InputEngine {
         self.windows.get_mut(&win).map(|w| &mut w.coord)
     }
 
+    /// The compose-phase door for the per-widget typed state store (the
+    /// `Widgets` face of the app hook contexts). Not revisioned: the store
+    /// holds no on-screen truth of its own.
+    pub fn states_mut(&mut self, win: WindowId) -> Option<&mut uzor::app_context::StateRegistry> {
+        self.windows.get_mut(&win).map(|w| &mut w.states)
+    }
+
     /// Compose-phase door (T2): report one selectable plain-text widget's
     /// content and line geometry for this frame — the input the selection
     /// owner resolves presses / drags against, mirroring
@@ -1578,6 +1590,13 @@ impl<'a> InputEngineView<'a> {
     /// The window's coordinator, read-only (hit tests, widget state).
     pub fn coordinator(&self, win: WindowId) -> Option<&'a InputCoordinator> {
         self.w(win).map(|w| &w.coord)
+    }
+
+    /// Scroll accumulated since the last `BeginFrame`, in lines. The
+    /// compose phase reads it into the hook view before `BeginFrame`
+    /// moves it into the coordinator's frame input.
+    pub fn pending_scroll(&self, win: WindowId) -> (f64, f64) {
+        self.w(win).map_or((0.0, 0.0), |w| w.pointer.scroll)
     }
 }
 

@@ -439,6 +439,20 @@ impl<O: Copy + Eq> OverlayEngine<O> {
         }
     }
 
+    /// The compose-phase door for one entry's composite state: the
+    /// library's registration fns take `&mut` (e.g. a draggable modal
+    /// resolves its moved frame). Not revisioned — what registration
+    /// changes is evaluated by the input engine's following `EndFrame`,
+    /// and a body state change surfaces through the composite's own
+    /// `consume_event` path (which reports effects).
+    pub fn body_state_mut(&mut self, win: WindowId, slot: OverlaySlot) -> Option<&mut OverlayBody> {
+        let s = self.windows.get_mut(&win)?;
+        s.entries
+            .iter_mut()
+            .find(|e| e.slot == slot)
+            .map(|e| &mut e.body)
+    }
+
     /// Bumped on every observable state change.
     pub fn revision(&self) -> Revision {
         self.rev

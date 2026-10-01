@@ -1131,6 +1131,12 @@ impl<'a, P: DockPanel> WindowLayoutView<'a, P> {
         &self.w.chrome
     }
 
+    /// The chrome composite's draw state (hover, tab widths); the compose
+    /// phase reads it to paint the same strip the hit-test classifies.
+    pub fn chrome_state(&self) -> &'a ChromeState {
+        &self.w.chrome_state
+    }
+
     /// The dock (tree, solved leaf / header / tab bar / separator rects,
     /// floating windows, drag and snap-back state), read-only.
     pub fn dock(&self) -> &'a DockState<P> {
