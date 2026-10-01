@@ -15,7 +15,7 @@ readme = "../README.md"
 # Leaf types only (Rect, WidgetId, KeyCode, docking ids, tokens, cadence types).
 # `default-features = false` is the workspace default; no uzor feature is
 # needed by `types/` (uzor's serde derives are unconditional).
-uzor = { workspace = true }
+uzor = { workspace = true, features = ["testing"] }
 serde = { workspace = true }
 # The handle's lock-free snapshot slot (SWC: channels + Arc only at the handle).
 arc-swap = "1.7"

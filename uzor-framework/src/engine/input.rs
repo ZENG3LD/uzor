@@ -1476,6 +1476,18 @@ impl InputEngine {
         self.windows.get_mut(&win).map(|w| &mut w.states)
     }
 
+    /// The compose-phase `Widgets` pair, borrow-split: a hook holds both
+    /// halves at once, so the two single doors cannot produce them
+    /// together. Same revision rules as the single doors.
+    pub fn compose_parts(
+        &mut self,
+        win: WindowId,
+    ) -> Option<(&mut InputCoordinator, &mut uzor::app_context::StateRegistry)> {
+        self.windows
+            .get_mut(&win)
+            .map(|w| (&mut w.coord, &mut w.states))
+    }
+
     /// Compose-phase door (T2): report one selectable plain-text widget's
     /// content and line geometry for this frame — the input the selection
     /// owner resolves presses / drags against, mirroring

@@ -24,9 +24,11 @@
 //! intents, the visual snapshot, window commands, frame requests, the layout
 //! blob, the [`Spec`] vocabulary trait, engine ops / effects) and seven
 //! engines in [`engine`] (windows, cadence + deadline wheel, animation,
-//! input, keymap, overlays, layout with expand and drag-out). The kernel, handle, runtime and hosts
-//! follow in later briefs; `Handle`, `App`, `Runtime` and the hosts named in
-//! the header above do not exist yet.
+//! input, keymap, overlays, layout with expand and drag-out). F7: the kernel
+//! (phase pipeline, conduction per design §3.8, routing per §4.3), the
+//! [`App`] contract with the hook contexts, [`Handle`], [`Runtime`] and the
+//! headless host in [`host`]. Native / web hosts and the library widget
+//! functions of the hook contexts follow in later briefs.
 //!
 //! ## Data flow
 //!
@@ -39,12 +41,17 @@
 
 pub mod engine;
 pub mod handle;
+pub mod host;
+mod kernel;
+mod runtime;
 pub mod types;
 
 pub use handle::{
     App, FrameTime, Handle, HandleError, HookOp, HookOps, InitCx, IntentCx, OverlayCx, PanelCx,
     VisualView, Waker, Widgets,
 };
+pub use host::HeadlessHost;
+pub use runtime::{MAX_SETTLE, Runtime, RuntimeConfig, TickOutput};
 
 pub use types::anim::{AnimKey, AnimPolicy, ExpandKind};
 
