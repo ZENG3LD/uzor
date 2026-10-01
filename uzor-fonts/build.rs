@@ -4,6 +4,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
 
     // (filename in OUT_DIR, download URL, min expected size in bytes)
     let downloads: &[(&str, &str, u64)] = &[
@@ -30,6 +31,25 @@ fn main() {
     ];
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
+
+    // docs.rs builds in a network-isolated sandbox, so the downloads below can
+    // never succeed there — and `cargo doc` only needs the crates to compile,
+    // not to render text. Emit empty placeholder files so `include_bytes!`
+    // resolves and skip the fetch entirely. Real builds are unaffected.
+    if std::env::var_os("DOCS_RS").is_some() {
+        for (name, _, _) in downloads {
+            let dest = std::path::Path::new(&out_dir).join(name);
+            if !dest.exists() {
+                std::fs::write(&dest, [])
+                    .expect("build.rs: failed to write docs.rs placeholder font");
+            }
+        }
+        println!(
+            "cargo:warning=DOCS_RS detected: skipping font downloads; \
+             embedding empty placeholders (documentation build only)"
+        );
+        return;
+    }
 
     for (name, url, min_size) in downloads {
         let dest = std::path::Path::new(&out_dir).join(name);
