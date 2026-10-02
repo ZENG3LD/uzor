@@ -460,6 +460,11 @@ impl InputCoordinator {
         self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.kind)
     }
 
+    /// Returns the `Sense` of a registered widget (current frame only).
+    pub fn widget_sense(&self, id: &WidgetId) -> Option<Sense> {
+        self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.sense)
+    }
+
     /// Current pointer position in screen coordinates, if any cursor
     /// data has been received this frame.
     /// Read-only access to the current frame's `InputState`.

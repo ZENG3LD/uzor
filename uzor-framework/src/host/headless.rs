@@ -103,7 +103,9 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
                     WindowInput::Created {
                         size: spec.inner_size,
                         dpr: self.dpr,
-                        position: None,
+                        // A known position: expand gutters and drag-out
+                        // need a known outer rect.
+                        position: Some((100, 100)),
                         caps: self.caps,
                     },
                 )),
@@ -122,7 +124,7 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
             let more = self.rt.tick(self.now);
             out.window_commands.extend(more.window_commands);
             out.frames.extend(more.frames);
-            out.wake = more.wake;
+            out.wake = earliest(out.wake, more.wake);
         }
 
         let frames = std::mem::take(&mut out.frames);
@@ -152,5 +154,16 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
     /// The runtime, mutably.
     pub fn runtime_mut(&mut self) -> &mut Runtime<S, A> {
         &mut self.rt
+    }
+}
+
+/// The sooner of two wake hints (`Immediate` < `At(t)` < `Idle`).
+fn earliest(a: crate::types::frame::Wake, b: crate::types::frame::Wake) -> crate::types::frame::Wake {
+    use crate::types::frame::Wake;
+    match (a, b) {
+        (Wake::Immediate, _) | (_, Wake::Immediate) => Wake::Immediate,
+        (Wake::At(x), Wake::At(y)) => Wake::At(if x.get() <= y.get() { x } else { y }),
+        (Wake::At(x), Wake::Idle) | (Wake::Idle, Wake::At(x)) => Wake::At(x),
+        (Wake::Idle, Wake::Idle) => Wake::Idle,
     }
 }

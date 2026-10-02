@@ -587,6 +587,18 @@ impl PerWindowInput {
                 self.drag_ended = false;
             }
         }
+        // A drag starting on a pressed drag-sensitive widget captures the
+        // pointer for it (design §4.3, routing step 2): from here every
+        // event goes to the widget until pointer-up.
+        if drag_started {
+            let grab = self
+                .pressed
+                .clone()
+                .filter(|id| self.coord.widget_sense(id).is_some_and(|s| s.drag));
+            if let Some(id) = grab {
+                changed = self.set_capture(Some(Capture::Widget(id)));
+            }
+        }
         let cooked = CookedPointer {
             win,
             input,
@@ -991,7 +1003,19 @@ impl PerWindowInput {
         }
         let mut changed = hover != self.hover || clicked != self.clicked;
         self.hover = hover;
-        self.clicked = clicked;
+        self.clicked = clicked.clone();
+        // A click on a focusable widget inside the active scope focuses
+        // it (design §4.3, routing step 6); text fields reconcile below.
+        let clicked_focus = clicked
+            .iter()
+            .map(|(id, _)| id.clone())
+            .find(|id| self.allowed(id) && self.coord.widget_sense(id).is_some_and(|s| s.focus));
+        if let Some(id) = clicked_focus {
+            if self.focused_id() != Some(&id) {
+                self.focus_raw(id);
+                changed = true;
+            }
+        }
         changed |= self.selection_frame(win, fx);
         changed |= self.reconcile_focus();
         changed

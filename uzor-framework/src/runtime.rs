@@ -221,6 +221,11 @@ impl<S: Spec, A: App<Spec = S>> Runtime<S, A> {
     pub fn app_mut(&mut self) -> &mut A {
         &mut self.app
     }
+
+    /// The kernel (crate-internal: the §9.2 tests read the `RouteTrace`).
+    pub(crate) fn kernel(&self) -> &Kernel<S> {
+        &self.kernel
+    }
 }
 
 /// The earlier of two wakes (`Immediate` < `At(t)` < `Idle`).

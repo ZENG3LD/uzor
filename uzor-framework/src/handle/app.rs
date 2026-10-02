@@ -228,6 +228,11 @@ impl<S: Spec> VisualView<S> {
             .unwrap_or(0)
     }
 
+    /// Every widget clicked in the last evaluated frame, with counts.
+    pub fn clicks(&self) -> &[(WidgetId, u8)] {
+        &self.clicked
+    }
+
     /// Scroll delta accumulated for this frame, in lines.
     pub fn scroll(&self) -> (f64, f64) {
         self.scroll

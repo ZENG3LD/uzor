@@ -7,3 +7,6 @@
 mod headless;
 
 pub use headless::HeadlessHost;
+
+#[cfg(test)]
+mod tests;
