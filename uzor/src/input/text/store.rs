@@ -576,6 +576,8 @@ impl TextFieldStore {
                     state.text.drain(byte_pos..byte_end);
                     state.cursor -= 1;
                 }
+                // Same collapse rule as typing: backspace ends at a caret.
+                state.selection_start = None;
                 self.reset_blink();
                 let text = self.fields[&id].text.clone();
                 TextAction::TextChanged(text)
@@ -604,6 +606,10 @@ impl TextFieldStore {
                 let byte_pos = state.char_to_byte(state.cursor);
                 state.text.insert(byte_pos, c);
                 state.cursor += 1;
+                // A collapsed anchor survives `delete_selection` (its range
+                // is empty); left armed, it would silently select the just
+                // typed char. Typing always collapses to the caret.
+                state.selection_start = None;
                 self.reset_blink();
                 let text = self.fields[&id].text.clone();
                 TextAction::TextChanged(text)
@@ -1034,6 +1040,9 @@ fn apply_key(state: &mut TextFieldState, key: KeyPress) -> bool {
                 state.text.insert(byte_pos, ch);
                 state.cursor += 1;
             }
+            // Same collapse rule as typing (see `on_char`): a paste ends
+            // with a caret, never with a selection over the pasted text.
+            state.selection_start = None;
             true
         }
         KeyPress::WordLeft => {

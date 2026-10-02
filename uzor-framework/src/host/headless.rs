@@ -34,6 +34,7 @@ pub struct HeadlessHost<S: Spec, A: App<Spec = S>> {
     /// [`RecordingRenderContext`] accessors per test section).
     pub ctx: RecordingRenderContext,
     last: TickOutput,
+    command_log: Vec<(WindowId, WindowCommand)>,
 }
 
 impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
@@ -52,6 +53,7 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
             dpr: 1.0,
             ctx: RecordingRenderContext::new(),
             last: TickOutput::default(),
+            command_log: Vec::new(),
         };
         (host, handle)
     }
@@ -132,6 +134,7 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
             self.rt.paint(req, &mut self.ctx);
         }
         out.frames = frames;
+        self.command_log.extend(out.window_commands.iter().cloned());
         self.last = out;
         &self.last
     }
@@ -144,6 +147,13 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
     /// The host-bound window commands of the last `advance`.
     pub fn window_commands(&self) -> &[(WindowId, WindowCommand)] {
         &self.last.window_commands
+    }
+
+    /// Every host-bound window command since construction, in order (the
+    /// executor's own log — assertions over a whole script read this, not
+    /// the last tick's slice).
+    pub fn command_log(&self) -> &[(WindowId, WindowCommand)] {
+        &self.command_log
     }
 
     /// The runtime (tests drive app-level tools through it).

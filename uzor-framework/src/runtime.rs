@@ -152,6 +152,11 @@ impl<S: Spec, A: App<Spec = S>> Runtime<S, A> {
             settles += 1;
             self.pass(now, &mut out, false);
         }
+        // Work outlived the settle budget: the loop must not sleep on it
+        // (the cadence hint only covers frames and timers).
+        if self.last_pass_changed || !self.cmds.is_empty() {
+            out.wake = Wake::Immediate;
+        }
         out
     }
 

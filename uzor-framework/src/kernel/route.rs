@@ -179,7 +179,9 @@ impl<S: Spec> Kernel<S> {
                 .filter(|e| !matches!(e, InputEffect::Content { .. }))
                 .collect(),
         );
-        if target.is_none() && matches!(input, PointerInput::Down { .. }) {
+        // `Some(None)` = the engine answered "delivered to no widget"
+        // (routing step 6); a missing Content effect is not a report.
+        if matches!(target, Some(None)) && matches!(input, PointerInput::Down { .. }) {
             self.outbox.intents.push(Intent::Unhandled(UnhandledInput::Pointer {
                 win,
                 pointer: input,
@@ -248,7 +250,7 @@ impl<S: Spec> Kernel<S> {
                 .filter(|e| !matches!(e, InputEffect::Content { .. }))
                 .collect(),
         );
-        if target == None {
+        if matches!(target, Some(None)) {
             self.outbox.intents.push(Intent::Unhandled(UnhandledInput::Wheel {
                 win,
                 wheel: input,
