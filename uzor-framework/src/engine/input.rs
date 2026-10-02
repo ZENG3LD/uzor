@@ -165,6 +165,8 @@ pub type InputEffects = SmallVec<[InputEffect; 2]>;
 pub const INPUT_TICKET_BASE: u64 = 1 << 63;
 
 /// One caret blink phase (visible or hidden), the store's 500 ms.
+// Caret blink cadence a host applies when painting text fields.
+#[allow(dead_code)]
 pub const CARET_BLINK_INTERVAL: Seconds = Seconds(0.5);
 
 const CARET_BLINK_MS: u64 = 500;
@@ -669,11 +671,15 @@ impl PerWindowInput {
         if self.drag_ended {
             return false;
         }
-        let Some(p) = self.press_sel.clone() else { return false };
+        let Some(p) = self.press_sel.clone() else {
+            return false;
+        };
         if target != Some(&p.widget) {
             return false;
         }
-        let Some(st) = self.selectables.get(&p.widget) else { return false };
+        let Some(st) = self.selectables.get(&p.widget) else {
+            return false;
+        };
         let sel = TextSelection::for_click_count(&st.text, p.anchor, self.cook.click_count.max(1));
         let changed = self.set_selection(win, &p.widget, sel, fx);
         self.escalation = Some((p.widget, EscLevel::Widget));
@@ -698,7 +704,10 @@ impl PerWindowInput {
     // -- plain-text selection (T2) -------------------------------------------
 
     fn sel_get(&self, widget: &WidgetId) -> Option<TextSelection> {
-        self.selections.iter().find(|(w, _)| w == widget).map(|(_, s)| *s)
+        self.selections
+            .iter()
+            .find(|(w, _)| w == widget)
+            .map(|(_, s)| *s)
     }
 
     fn sel_set(&mut self, widget: WidgetId, sel: TextSelection) -> bool {
@@ -957,8 +966,8 @@ impl PerWindowInput {
             .clone()
             .filter(|h| self.selectables.contains_key(h))
             .or_else(|| (self.selections.len() == 1).then(|| self.selections[0].0.clone()));
-        let Some(w) = start else { return None };
-        let Some(st) = self.selectables.get(&w) else { return None };
+        let w = start?;
+        let st = self.selectables.get(&w)?;
         let sel = TextSelection::all(&st.text);
         let changed = self.set_selection(win, &w, sel, fx);
         self.escalation = Some((w, EscLevel::Widget));
@@ -1489,6 +1498,8 @@ impl InputEngine {
     /// layers). Not revisioned: what registration changes is evaluated by
     /// the following [`InputOp::EndFrame`]. Lib brief L6 narrows what this
     /// reference can reach (see the module docs).
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn registrar(&mut self, win: WindowId) -> Option<&mut InputCoordinator> {
         self.windows.get_mut(&win).map(|w| &mut w.coord)
     }
@@ -1496,6 +1507,8 @@ impl InputEngine {
     /// The compose-phase door for the per-widget typed state store (the
     /// `Widgets` face of the app hook contexts). Not revisioned: the store
     /// holds no on-screen truth of its own.
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn states_mut(&mut self, win: WindowId) -> Option<&mut uzor::app_context::StateRegistry> {
         self.windows.get_mut(&win).map(|w| &mut w.states)
     }
@@ -1518,6 +1531,8 @@ impl InputEngine {
     /// `TextFieldStore::update_field`. A widget not reported in a frame
     /// stops being selectable and loses its selection. Not revisioned: the
     /// change is evaluated by the following [`InputOp::EndFrame`].
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn update_selectable(
         &mut self,
         win: WindowId,
@@ -1553,6 +1568,8 @@ pub struct InputEngineView<'a> {
     e: &'a InputEngine,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a> InputEngineView<'a> {
     fn w(&self, win: WindowId) -> Option<&'a PerWindowInput> {
         self.e.windows.get(&win)

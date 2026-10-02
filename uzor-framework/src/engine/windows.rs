@@ -489,6 +489,8 @@ pub struct WindowEngineView<'a> {
     e: &'a WindowEngine,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a> WindowEngineView<'a> {
     /// Every known window id (pending, open and closing), ascending.
     pub fn ids(&self) -> impl Iterator<Item = WindowId> + 'a {
@@ -583,11 +585,15 @@ impl<'a> WindowEngineView<'a> {
 
 /// Read access to one window of the [`WindowEngine`].
 #[derive(Clone, Copy, Debug)]
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 pub struct WindowRead<'a> {
     id: WindowId,
     st: &'a WindowState,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a> WindowRead<'a> {
     /// The window id.
     pub fn id(&self) -> WindowId {

@@ -107,7 +107,9 @@ impl<S: Spec> Kernel<S> {
                     let Some(leaf) = wv.dock().tree().leaf(leaf_view.leaf) else {
                         continue;
                     };
-                    let Some(panel) = leaf.active_panel() else { continue };
+                    let Some(panel) = leaf.active_panel() else {
+                        continue;
+                    };
                     let mut hooks = HookOps::default();
                     {
                         let Some((coord, states)) = self.input.compose_parts(win) else {

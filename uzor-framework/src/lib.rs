@@ -23,8 +23,9 @@
 //! Briefs F1-F6: the `types` role (the input bus, the command vocabulary,
 //! intents, the visual snapshot, window commands, frame requests, the layout
 //! blob, the [`Spec`] vocabulary trait, engine ops / effects) and seven
-//! engines in [`engine`] (windows, cadence + deadline wheel, animation,
-//! input, keymap, overlays, layout with expand and drag-out). F7: the kernel
+//! engines in the crate-internal `engine` module (windows, cadence +
+//! deadline wheel, animation, input, keymap, overlays, layout with expand
+//! and drag-out). F7: the kernel
 //! (phase pipeline, conduction per design §3.8, routing per §4.3), the
 //! [`App`] contract with the hook contexts, [`Handle`], [`Runtime`] and the
 //! headless host in [`host`]. Native / web hosts and the library widget
@@ -39,7 +40,7 @@
 
 #![deny(missing_docs)]
 
-pub mod engine;
+pub(crate) mod engine;
 pub mod handle;
 pub mod host;
 mod kernel;
@@ -51,7 +52,7 @@ pub use handle::{
     VisualView, Waker, Widgets,
 };
 pub use host::HeadlessHost;
-pub use runtime::{MAX_SETTLE, Runtime, RuntimeConfig, TickOutput};
+pub use runtime::{Runtime, RuntimeConfig, TickOutput, MAX_SETTLE};
 
 pub use types::anim::{AnimKey, AnimPolicy, ExpandKind};
 

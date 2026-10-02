@@ -5,13 +5,13 @@
 use std::sync::Arc;
 
 use uzor::input::{KeyCode, ModifierKeys, MouseButton, Sense, TextFieldConfig};
-use uzor::layout::OverlayKind;
 use uzor::layout::docking::DockPanel;
+use uzor::layout::OverlayKind;
 use uzor::render::{InvalidateBits, TickRate};
 use uzor::{Rect, WidgetId};
 
 use crate::handle::{App, IntentCx, OverlayCx, PanelCx};
-use crate::runtime::{MAX_SETTLE, RuntimeConfig};
+use crate::runtime::{RuntimeConfig, MAX_SETTLE};
 use crate::types::bus::{ImeInput, InputEvent, KeyInput, PointerInput};
 use crate::types::command::{
     AppCommand, Binding, CadenceCmd, DockTarget, DragOutChrome, DragOutPolicy, FocusCmd, KeymapCmd,
@@ -235,7 +235,13 @@ fn click(h: &mut Host<TS, TestApp>, win: WindowId, x: f64, y: f64) {
     h.advance(0.017);
 }
 
-fn key(h: &mut Host<TS, TestApp>, win: WindowId, code: KeyCode, mods: ModifierKeys, text: Option<&str>) {
+fn key(
+    h: &mut Host<TS, TestApp>,
+    win: WindowId,
+    code: KeyCode,
+    mods: ModifierKeys,
+    text: Option<&str>,
+) {
     h.input(
         win,
         InputEvent::Key(KeyInput {
@@ -259,7 +265,14 @@ fn key(h: &mut Host<TS, TestApp>, win: WindowId, code: KeyCode, mods: ModifierKe
     h.advance(0.017);
 }
 
-fn open_overlay(h: &mut Host<TS, TestApp>, handle: &Handle<TS>, win: WindowId, id: Ov, kind: OverlayKind, policy: OverlayPolicy) {
+fn open_overlay(
+    h: &mut Host<TS, TestApp>,
+    handle: &Handle<TS>,
+    win: WindowId,
+    id: Ov,
+    kind: OverlayKind,
+    policy: OverlayPolicy,
+) {
     handle
         .dispatch(AppCommand::Overlay(OverlayCmd::Open {
             win,
@@ -296,13 +309,18 @@ fn overlay_closed(app: &TestApp, id: Ov) -> Option<CloseCause> {
 }
 
 fn has_unhandled_pointer(app: &TestApp) -> bool {
-    app.intents
-        .iter()
-        .any(|i| matches!(i, Intent::Unhandled(crate::types::intent::UnhandledInput::Pointer { .. })))
+    app.intents.iter().any(|i| {
+        matches!(
+            i,
+            Intent::Unhandled(crate::types::intent::UnhandledInput::Pointer { .. })
+        )
+    })
 }
 
 fn focused(h: &Host<TS, TestApp>, win: WindowId) -> Option<WidgetId> {
-    h.snapshot().window(win).and_then(|w| w.input.focused.clone())
+    h.snapshot()
+        .window(win)
+        .and_then(|w| w.input.focused.clone())
 }
 
 // -- §9.2: overlay routing ---------------------------------------------------
@@ -318,7 +336,14 @@ fn modal_shield_blocks_content_clicks() {
         Rect::new(10.0, 100.0, 60.0, 24.0),
         Sense::CLICK,
     ));
-    open_overlay(&mut h, &handle, win, Ov::Modal, OverlayKind::Modal, policy(true, false, true, true));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Modal,
+        OverlayKind::Modal,
+        policy(true, false, true, true),
+    );
 
     click(&mut h, win, 20.0, 112.0);
 
@@ -333,7 +358,10 @@ fn modal_shield_blocks_content_clicks() {
         "a shielded click is consumed, not unhandled: {:?}",
         app.intents
     );
-    assert!(h.snapshot().window(win).is_some_and(|w| w.overlays.len() == 1));
+    assert!(h
+        .snapshot()
+        .window(win)
+        .is_some_and(|w| w.overlays.len() == 1));
 }
 
 /// Pointer-up outside a dismissible overlay closes it with
@@ -347,14 +375,31 @@ fn outside_click_dismisses_dropdown() {
         Rect::new(500.0, 400.0, 60.0, 24.0),
         Sense::CLICK,
     ));
-    open_overlay(&mut h, &handle, win, Ov::Menu, OverlayKind::Dropdown, policy(false, true, true, true));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Menu,
+        OverlayKind::Dropdown,
+        policy(false, true, true, true),
+    );
 
     click(&mut h, win, 520.0, 410.0);
 
-    assert_eq!(overlay_closed(h.runtime().app(), Ov::Menu), Some(CloseCause::Outside));
-    assert!(h.snapshot().window(win).is_some_and(|w| w.overlays.is_empty()));
+    assert_eq!(
+        overlay_closed(h.runtime().app(), Ov::Menu),
+        Some(CloseCause::Outside)
+    );
+    assert!(h
+        .snapshot()
+        .window(win)
+        .is_some_and(|w| w.overlays.is_empty()));
     assert!(
-        !h.runtime().app().seen_clicks.iter().any(|(id, _)| *id == wid("btn")),
+        !h.runtime()
+            .app()
+            .seen_clicks
+            .iter()
+            .any(|(id, _)| *id == wid("btn")),
         "the dismissing click must be consumed, not delivered"
     );
 }
@@ -365,18 +410,51 @@ fn outside_click_dismisses_dropdown() {
 fn escape_closes_overlays_top_first() {
     let (mut h, handle) = host();
     let win = open_with_panel(&mut h, &handle);
-    open_overlay(&mut h, &handle, win, Ov::Modal, OverlayKind::Modal, policy(true, true, true, true));
-    open_overlay(&mut h, &handle, win, Ov::Second, OverlayKind::Modal, policy(true, true, true, true));
-    assert!(h.snapshot().window(win).is_some_and(|w| w.overlays.len() == 2));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Modal,
+        OverlayKind::Modal,
+        policy(true, true, true, true),
+    );
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Second,
+        OverlayKind::Modal,
+        policy(true, true, true, true),
+    );
+    assert!(h
+        .snapshot()
+        .window(win)
+        .is_some_and(|w| w.overlays.len() == 2));
 
     key(&mut h, win, KeyCode::Escape, ModifierKeys::default(), None);
-    assert_eq!(overlay_closed(h.runtime().app(), Ov::Second), Some(CloseCause::Escape));
-    assert_eq!(overlay_closed(h.runtime().app(), Ov::Modal), None, "one Escape, one close");
-    assert!(h.snapshot().window(win).is_some_and(|w| w.overlays.len() == 1));
+    assert_eq!(
+        overlay_closed(h.runtime().app(), Ov::Second),
+        Some(CloseCause::Escape)
+    );
+    assert_eq!(
+        overlay_closed(h.runtime().app(), Ov::Modal),
+        None,
+        "one Escape, one close"
+    );
+    assert!(h
+        .snapshot()
+        .window(win)
+        .is_some_and(|w| w.overlays.len() == 1));
 
     key(&mut h, win, KeyCode::Escape, ModifierKeys::default(), None);
-    assert_eq!(overlay_closed(h.runtime().app(), Ov::Modal), Some(CloseCause::Escape));
-    assert!(h.snapshot().window(win).is_some_and(|w| w.overlays.is_empty()));
+    assert_eq!(
+        overlay_closed(h.runtime().app(), Ov::Modal),
+        Some(CloseCause::Escape)
+    );
+    assert!(h
+        .snapshot()
+        .window(win)
+        .is_some_and(|w| w.overlays.is_empty()));
 }
 
 /// Focus saved at scope push returns when the overlay closes with a
@@ -392,13 +470,31 @@ fn focus_restores_after_overlay_scope() {
     ));
     h.advance(0.017);
     click(&mut h, win, 20.0, 112.0);
-    assert_eq!(focused(&h, win), Some(wid("fld")), "click focuses a FOCUSABLE widget");
+    assert_eq!(
+        focused(&h, win),
+        Some(wid("fld")),
+        "click focuses a FOCUSABLE widget"
+    );
 
-    open_overlay(&mut h, &handle, win, Ov::Modal, OverlayKind::Modal, policy(true, true, true, true));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Modal,
+        OverlayKind::Modal,
+        policy(true, true, true, true),
+    );
     key(&mut h, win, KeyCode::Escape, ModifierKeys::default(), None);
 
-    assert_eq!(overlay_closed(h.runtime().app(), Ov::Modal), Some(CloseCause::Escape));
-    assert_eq!(focused(&h, win), Some(wid("fld")), "the scope's saved focus must return");
+    assert_eq!(
+        overlay_closed(h.runtime().app(), Ov::Modal),
+        Some(CloseCause::Escape)
+    );
+    assert_eq!(
+        focused(&h, win),
+        Some(wid("fld")),
+        "the scope's saved focus must return"
+    );
 }
 
 // -- §9.2: keymap ------------------------------------------------------------
@@ -434,7 +530,11 @@ fn keymap_precedence_focused_global_modal() {
     assert_eq!(focused(&h, win), Some(wid("fld")));
     key(&mut h, win, KeyCode::S, mods_ctrl(), None);
     assert!(
-        h.runtime().app().intents.iter().any(|i| matches!(i, Intent::Action(Act::Quit))),
+        h.runtime()
+            .app()
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::Action(Act::Quit))),
         "the focused binding must win: {:?}",
         h.runtime().app().intents
     );
@@ -446,12 +546,23 @@ fn keymap_precedence_focused_global_modal() {
     h.advance(0.017);
     key(&mut h, win, KeyCode::S, mods_ctrl(), None);
     assert!(
-        h.runtime().app().intents.iter().any(|i| matches!(i, Intent::Action(Act::Save))),
+        h.runtime()
+            .app()
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::Action(Act::Save))),
         "the global binding must resolve once blurred"
     );
 
     // A modal shields the global (no `through_modal`).
-    open_overlay(&mut h, &handle, win, Ov::Modal, OverlayKind::Modal, policy(true, true, true, true));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Modal,
+        OverlayKind::Modal,
+        policy(true, true, true, true),
+    );
     let before = h.runtime().app().intents.len();
     key(&mut h, win, KeyCode::S, mods_ctrl(), None);
     assert!(
@@ -483,7 +594,9 @@ fn click_cook_counts_double_click() {
 
     let app = h.runtime().app();
     assert!(
-        app.seen_clicks.iter().any(|(id, n)| *id == wid("btn") && *n == 2),
+        app.seen_clicks
+            .iter()
+            .any(|(id, n)| *id == wid("btn") && *n == 2),
         "expected a double click in {:?}",
         app.seen_clicks
     );
@@ -532,7 +645,14 @@ fn route_hops_stay_within_three() {
         Rect::new(10.0, 100.0, 60.0, 24.0),
         Sense::CLICK,
     ));
-    open_overlay(&mut h, &handle, win, Ov::Modal, OverlayKind::Modal, policy(true, true, true, true));
+    open_overlay(
+        &mut h,
+        &handle,
+        win,
+        Ov::Modal,
+        OverlayKind::Modal,
+        policy(true, true, true, true),
+    );
     click(&mut h, win, 20.0, 112.0); // shielded by the modal
     key(&mut h, win, KeyCode::Escape, ModifierKeys::default(), None);
     click(&mut h, win, 20.0, 112.0); // reaches content
@@ -698,7 +818,14 @@ fn determinism_same_script_same_snapshot() {
         h.advance(0.017);
         click(&mut h, win, 20.0, 112.0);
         key(&mut h, win, KeyCode::S, mods_ctrl(), None);
-        open_overlay(&mut h, &handle, win, Ov::Menu, OverlayKind::Dropdown, policy(false, true, true, true));
+        open_overlay(
+            &mut h,
+            &handle,
+            win,
+            Ov::Menu,
+            OverlayKind::Dropdown,
+            policy(false, true, true, true),
+        );
         click(&mut h, win, 400.0, 300.0); // dismisses the dropdown
         h.advance(0.017);
         h
@@ -716,7 +843,11 @@ fn determinism_same_script_same_snapshot() {
 // -- §9.2: dock interactions --------------------------------------------------------
 
 /// Split one leaf into two columns; returns (left leaf id, separator rect).
-fn split_two_columns(h: &mut Host<TS, TestApp>, handle: &Handle<TS>, win: WindowId) -> (uzor::layout::docking::LeafId, Rect) {
+fn split_two_columns(
+    h: &mut Host<TS, TestApp>,
+    handle: &Handle<TS>,
+    win: WindowId,
+) -> (uzor::layout::docking::LeafId, Rect) {
     let leaf = h.snapshot().window(win).expect("window").dock.leaves[0].leaf;
     handle
         .dispatch(AppCommand::Layout(LayoutCmd::Split {
@@ -745,7 +876,13 @@ fn splitter_drag_moves_and_clamps() {
     let left_width = |h: &Host<TS, TestApp>| {
         h.snapshot()
             .window(win)
-            .and_then(|w| w.dock.leaves.iter().find(|l| l.leaf == left_leaf).map(|l| l.rect.width))
+            .and_then(|w| {
+                w.dock
+                    .leaves
+                    .iter()
+                    .find(|l| l.leaf == left_leaf)
+                    .map(|l| l.rect.width)
+            })
             .expect("the left leaf survives")
     };
     let before = left_width(&h);
@@ -759,7 +896,10 @@ fn splitter_drag_moves_and_clamps() {
     up(&mut h, win, cx + 150.0, cy);
     h.advance(0.017);
     let grown = left_width(&h);
-    assert!(grown > before, "the separator follows the drag: {before} -> {grown}");
+    assert!(
+        grown > before,
+        "the separator follows the drag: {before} -> {grown}"
+    );
 
     // Slam far past the neighbour's minimum, twice: the second slam is a no-op.
     for _ in 0..2 {
@@ -795,8 +935,18 @@ fn dock_tab_merge_via_drag() {
     let (from, to) = {
         let snap = h.snapshot();
         let dock = &snap.window(win).expect("window").dock;
-        let from = dock.leaves.iter().find(|l| l.leaf != left_leaf).expect("right leaf").rect;
-        let to = dock.leaves.iter().find(|l| l.leaf == left_leaf).expect("left leaf").rect;
+        let from = dock
+            .leaves
+            .iter()
+            .find(|l| l.leaf != left_leaf)
+            .expect("right leaf")
+            .rect;
+        let to = dock
+            .leaves
+            .iter()
+            .find(|l| l.leaf == left_leaf)
+            .expect("left leaf")
+            .rect;
         (from, to)
     };
 
@@ -811,7 +961,12 @@ fn dock_tab_merge_via_drag() {
 
     let snap = h.snapshot();
     let dock = &snap.window(win).expect("window").dock;
-    assert_eq!(dock.leaves.len(), 1, "the drop merged the leaves: {:?}", dock.leaves);
+    assert_eq!(
+        dock.leaves.len(),
+        1,
+        "the drop merged the leaves: {:?}",
+        dock.leaves
+    );
     assert_eq!(dock.leaves[0].panels.len(), 2, "two tabs in the survivor");
 }
 
@@ -881,7 +1036,9 @@ fn drag_out_spawns_window() {
     h.advance(0.017);
 
     assert!(
-        h.command_log().iter().any(|(_, c)| matches!(c, WindowCommand::Spawn(_))),
+        h.command_log()
+            .iter()
+            .any(|(_, c)| matches!(c, WindowCommand::Spawn(_))),
         "the tear-off asked the host for a window"
     );
     assert_eq!(
@@ -890,7 +1047,10 @@ fn drag_out_spawns_window() {
         "the torn-off panel lives in its own window"
     );
     assert!(
-        h.snapshot().windows.iter().all(|w| w.id == win || !w.dock.leaves.is_empty()),
+        h.snapshot()
+            .windows
+            .iter()
+            .all(|w| w.id == win || !w.dock.leaves.is_empty()),
         "the new window holds a docked panel"
     );
 }
@@ -941,7 +1101,11 @@ fn layout_blob_roundtrip() {
 
     let leaf = h.snapshot().window(win).expect("window").dock.leaves[0].leaf;
     handle
-        .dispatch(AppCommand::Layout(LayoutCmd::ClosePanel { win, leaf, index: 1 }))
+        .dispatch(AppCommand::Layout(LayoutCmd::ClosePanel {
+            win,
+            leaf,
+            index: 1,
+        }))
         .expect("dispatch");
     h.advance(0.017);
     assert_eq!(panel_count(&h), 1, "the close mutated the layout");
@@ -951,7 +1115,11 @@ fn layout_blob_roundtrip() {
         .expect("dispatch");
     h.advance(0.017);
     assert!(
-        h.runtime().app().intents.iter().any(|i| matches!(i, Intent::Dock(DockIntent::LayoutRestored { .. }))),
+        h.runtime()
+            .app()
+            .intents
+            .iter()
+            .any(|i| matches!(i, Intent::Dock(DockIntent::LayoutRestored { .. }))),
         "restore reports success: {:?}",
         h.runtime().app().intents
     );
@@ -975,7 +1143,11 @@ fn text_ime_clipboard_flow() {
     h.advance(0.017); // registers and initialises the field
 
     click(&mut h, win, 30.0, 112.0); // past "hi" (2 glyphs x 8 px): caret at the end
-    assert_eq!(focused(&h, win), Some(wid("field")), "click focuses the field");
+    assert_eq!(
+        focused(&h, win),
+        Some(wid("field")),
+        "click focuses the field"
+    );
 
     key(&mut h, win, KeyCode::A, ModifierKeys::default(), Some("a"));
     assert!(
@@ -1034,10 +1206,3 @@ fn text_ime_clipboard_flow() {
         h.runtime().app().intents
     );
 }
-
-
-
-
-
-
-

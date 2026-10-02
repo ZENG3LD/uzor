@@ -5,9 +5,7 @@ use crate::types::bus::{HostEvent, InputEnvelope, InputEvent};
 use crate::types::command::{AppCommand, Domain};
 use crate::types::ids::Seconds;
 use crate::types::intent::Intent;
-use crate::types::ops::{
-    CadenceOp, FocusOp, InputOp, KeymapOp, LayoutOp, OverlayOp, WindowOp,
-};
+use crate::types::ops::{CadenceOp, FocusOp, InputOp, KeymapOp, LayoutOp, OverlayOp, WindowOp};
 use crate::types::spec::Spec;
 
 use super::Kernel;
@@ -26,7 +24,9 @@ impl<S: Spec> Kernel<S> {
                         AppCommand::Theme(c) => WindowOp::Theme(c),
                         AppCommand::Render(c) => WindowOp::Render(c),
                         AppCommand::Clipboard(c) => WindowOp::Clipboard(c),
-                        AppCommand::Screenshot { win, ticket } => WindowOp::Screenshot { win, ticket },
+                        AppCommand::Screenshot { win, ticket } => {
+                            WindowOp::Screenshot { win, ticket }
+                        }
                         AppCommand::Shutdown => WindowOp::Shutdown,
                         other => unreachable!("Domain::Window target, got {other:?}"),
                     };
@@ -77,7 +77,7 @@ impl<S: Spec> Kernel<S> {
     /// Phase 2 — Lifecycle: window echoes land in the WindowEngine before
     /// any pointer event of the same tick is routed against stale rects;
     /// host facts become intents or window ops.
-    pub(super) fn lifecycle(&mut self, now: Seconds, inputs: &mut Vec<InputEnvelope>) {
+    pub(super) fn lifecycle(&mut self, now: Seconds, inputs: &[InputEnvelope]) {
         for env in inputs.iter() {
             match &env.event {
                 InputEvent::Window(input) => {

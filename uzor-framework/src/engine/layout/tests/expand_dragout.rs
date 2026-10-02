@@ -579,7 +579,7 @@ fn drag_out_b(e: &mut E) -> (WindowSpec, Rect) {
 }
 
 fn leaf_b(e: &E) -> LeafId {
-    e.view().drag_out().expect("session").from_leaf()
+    e.view().drag_out().expect("session").leaf()
 }
 
 #[test]

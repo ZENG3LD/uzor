@@ -115,6 +115,8 @@ impl<O: Copy + Eq + Hash, A: Copy + Eq> KeymapEngine<O, A> {
     }
 
     /// Read-only projection.
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn view(&self) -> KeymapEngineView<'_, O, A> {
         KeymapEngineView { e: self }
     }
@@ -154,6 +156,8 @@ impl<O: Copy + Eq + Hash, A: Copy + Eq> KeymapEngine<O, A> {
 
 /// Read-only projection of the [`KeymapEngine`].
 #[derive(Debug)]
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 pub struct KeymapEngineView<'a, O, A: Clone> {
     e: &'a KeymapEngine<O, A>,
 }
@@ -166,6 +170,8 @@ impl<O, A: Clone> Clone for KeymapEngineView<'_, O, A> {
 
 impl<O, A: Clone> Copy for KeymapEngineView<'_, O, A> {}
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<O: Copy + Eq + Hash, A: Copy + Eq> KeymapEngineView<'_, O, A> {
     /// Number of bindings across every scope.
     pub fn len(&self) -> usize {

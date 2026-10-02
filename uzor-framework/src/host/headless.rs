@@ -168,7 +168,10 @@ impl<S: Spec, A: App<Spec = S>> HeadlessHost<S, A> {
 }
 
 /// The sooner of two wake hints (`Immediate` < `At(t)` < `Idle`).
-fn earliest(a: crate::types::frame::Wake, b: crate::types::frame::Wake) -> crate::types::frame::Wake {
+fn earliest(
+    a: crate::types::frame::Wake,
+    b: crate::types::frame::Wake,
+) -> crate::types::frame::Wake {
     use crate::types::frame::Wake;
     match (a, b) {
         (Wake::Immediate, _) | (_, Wake::Immediate) => Wake::Immediate,

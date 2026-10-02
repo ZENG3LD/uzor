@@ -133,7 +133,7 @@ impl<S: Spec> Kernel<S> {
     pub(crate) fn new(cfg: &KernelConfig) -> Self {
         Self {
             windows: WindowEngine::new(cfg.tokens.clone(), cfg.dark, cfg.close),
-            layout: LayoutEngine::with_policy(S::decode_panel, cfg.layout.clone()),
+            layout: LayoutEngine::with_policy(S::decode_panel, cfg.layout),
             overlays: OverlayEngine::new(),
             input: InputEngine::new(),
             keymap: KeymapEngine::new(),
@@ -162,10 +162,13 @@ impl<S: Spec> Kernel<S> {
     ) {
         self.clock.begin(Phase::Drain);
         self.drain(now, cmds);
+        self.clock.idle();
         self.clock.begin(Phase::Lifecycle);
         self.lifecycle(now, inputs);
+        self.clock.idle();
         self.clock.begin(Phase::Route);
         self.route(now, inputs);
+        self.clock.idle();
         self.clock.begin(Phase::Engines);
         self.engines(now);
         self.clock.idle();
@@ -184,12 +187,16 @@ impl<S: Spec> Kernel<S> {
 
     /// Hop names of the last routed event, route-phase crossings only
     /// (design §4.4 `RouteTrace`).
+    // Test doors (hop-count assertions in host::tests).
+    #[allow(dead_code)]
     pub(crate) fn last_trace(&self) -> &[&'static str] {
         &self.trace
     }
 
     /// The longest per-event trace since construction; the hop-count test
     /// asserts `trace_max() + 1 <= 3` (the `+ 1` is the `push_input` hop).
+    // Test doors (hop-count assertions in host::tests).
+    #[allow(dead_code)]
     pub(crate) fn trace_max(&self) -> usize {
         self.trace_max
     }
@@ -254,9 +261,9 @@ impl<S: Spec> Kernel<S> {
                 let fx = self.anim.apply(AnimOp::DropWindow(win));
                 self.conduct_anim(now, fx);
                 self.last_frame.remove(&win);
-                self.outbox.intents.push(Intent::Window(WindowIntent::Closed {
-                    win,
-                }));
+                self.outbox
+                    .intents
+                    .push(Intent::Window(WindowIntent::Closed { win }));
             }
             WindowEffect::CloseRequested(win) => {
                 self.outbox
@@ -320,7 +327,9 @@ impl<S: Spec> Kernel<S> {
                     self.conduct_anim(now, effects);
                 }
                 LayoutEffect::ExpandDone { win, kind } => {
-                    let effects = self.anim.apply(AnimOp::Remove(AnimKey::Expand { win, kind }));
+                    let effects = self
+                        .anim
+                        .apply(AnimOp::Remove(AnimKey::Expand { win, kind }));
                     self.conduct_anim(now, effects);
                 }
                 LayoutEffect::SpawnWindow { spec, .. } => {
@@ -332,7 +341,11 @@ impl<S: Spec> Kernel<S> {
     }
 
     /// Every consequence of an OverlayEngine op, conducted.
-    fn conduct_overlay(&mut self, now: Seconds, effects: crate::engine::overlays::OverlayEffects<S::Overlay>) {
+    fn conduct_overlay(
+        &mut self,
+        now: Seconds,
+        effects: crate::engine::overlays::OverlayEffects<S::Overlay>,
+    ) {
         for fx in effects {
             match fx {
                 OverlayEffect::Opened {
@@ -430,7 +443,9 @@ impl<S: Spec> Kernel<S> {
     fn conduct_input(&mut self, now: Seconds, effects: crate::engine::input::InputEffects) {
         for fx in effects {
             match fx {
-                InputEffect::Pointer(_) | InputEffect::Content { .. } | InputEffect::KeyPassed { .. } => {
+                InputEffect::Pointer(_)
+                | InputEffect::Content { .. }
+                | InputEffect::KeyPassed { .. } => {
                     debug_assert!(false, "routing answers are consumed by the route phase");
                 }
                 InputEffect::Text(text) => {
@@ -541,14 +556,21 @@ impl<S: Spec> Kernel<S> {
     }
 
     /// A chrome control click, mapped (design §3.8 row `LayoutEffect::Chrome`).
-    fn chrome_action(&mut self, now: Seconds, win: WindowId, action: uzor::widgets::composite::chrome::ChromeAction) {
+    fn chrome_action(
+        &mut self,
+        now: Seconds,
+        win: WindowId,
+        action: uzor::widgets::composite::chrome::ChromeAction,
+    ) {
         use uzor::widgets::composite::chrome::ChromeAction as A;
         match action {
             A::Minimize => {
-                let fx = self.windows.apply(WindowOp::Cmd(crate::types::command::WindowCmd::Minimize {
-                    win,
-                    minimized: true,
-                }));
+                let fx =
+                    self.windows
+                        .apply(WindowOp::Cmd(crate::types::command::WindowCmd::Minimize {
+                            win,
+                            minimized: true,
+                        }));
                 self.conduct_window_all(now, fx);
             }
             A::MaximizeRestore => {
@@ -557,10 +579,12 @@ impl<S: Spec> Kernel<S> {
                     .view()
                     .window(win)
                     .is_some_and(|w| w.geometry().maximized);
-                let fx = self.windows.apply(WindowOp::Cmd(crate::types::command::WindowCmd::Maximize {
-                    win,
-                    maximized: !maximized,
-                }));
+                let fx =
+                    self.windows
+                        .apply(WindowOp::Cmd(crate::types::command::WindowCmd::Maximize {
+                            win,
+                            maximized: !maximized,
+                        }));
                 self.conduct_window_all(now, fx);
             }
             A::CloseWindow => {
@@ -576,7 +600,9 @@ impl<S: Spec> Kernel<S> {
             A::NewWindow => {
                 self.outbox
                     .intents
-                    .push(Intent::Window(WindowIntent::NewWindowRequested { from: win }));
+                    .push(Intent::Window(WindowIntent::NewWindowRequested {
+                        from: win,
+                    }));
             }
             A::SelectTab(index) => {
                 self.outbox
@@ -584,10 +610,12 @@ impl<S: Spec> Kernel<S> {
                     .push(Intent::Overlay(OverlayIntent::ChromeTab { win, index }));
             }
             A::OpenMenu => {
-                self.outbox.intents.push(Intent::Overlay(OverlayIntent::ChromeControl {
-                    win,
-                    control: uzor::layout::ChromeWindowControl::Menu,
-                }));
+                self.outbox
+                    .intents
+                    .push(Intent::Overlay(OverlayIntent::ChromeControl {
+                        win,
+                        control: uzor::layout::ChromeWindowControl::Menu,
+                    }));
             }
             A::NewTab | A::CloseTab(_) | A::WindowDragStart | A::BeginResize(_) | A::None => {
                 // Tab creation is the app's (it owns the panel values);
@@ -598,8 +626,15 @@ impl<S: Spec> Kernel<S> {
     }
 
     /// One invalidation into the cadence engine, conducted.
-    fn invalidate(&mut self, win: WindowId, region: Option<crate::types::ids::RegionId>, bits: InvalidateBits) {
-        let fx = self.cadence.apply(CadenceOp::Invalidate { win, region, bits });
+    fn invalidate(
+        &mut self,
+        win: WindowId,
+        region: Option<crate::types::ids::RegionId>,
+        bits: InvalidateBits,
+    ) {
+        let fx = self
+            .cadence
+            .apply(CadenceOp::Invalidate { win, region, bits });
         // Invalidate produces no effects that need conduction; drain for
         // completeness (Armed is only produced by Arm).
         let _ = fx;
@@ -639,7 +674,11 @@ impl PhaseClock {
     }
 
     fn begin(&mut self, phase: Phase) {
-        debug_assert!(self.active.is_none(), "phase {phase:?} began inside {:?}", self.active);
+        debug_assert!(
+            self.active.is_none(),
+            "phase {phase:?} began inside {:?}",
+            self.active
+        );
         #[cfg(debug_assertions)]
         {
             self.active = Some(phase);

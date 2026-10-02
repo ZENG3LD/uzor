@@ -149,8 +149,14 @@ use crate::types::snapshot::{ChromeView, DockView, EdgeSlotView};
 use crate::types::spec::{PanelHome, Spec};
 use crate::types::window::{Point, WindowCommand};
 
+// Flat re-export surface for later briefs; not all items are used in-crate yet.
+#[allow(unused_imports)]
 pub use blob::BLOB_VERSION;
+// Flat re-export surface for later briefs; not all items are used in-crate yet.
+#[allow(unused_imports)]
 pub use dragout::{DragOutView, DWELL_S, MOVE_FRESH_S, STALE_S};
+// Flat re-export surface for later briefs; not all items are used in-crate yet.
+#[allow(unused_imports)]
 pub use expand::{ExpandState, ExpandTarget};
 pub use uzor::layout::DockState;
 
@@ -398,6 +404,8 @@ pub struct LayoutEngine<P: DockPanel> {
 impl<P: DockPanel> LayoutEngine<P> {
     /// An engine with no windows, the default [`LayoutPolicy`] and the
     /// app's panel factory for layout restore.
+    // Convenience constructors; the kernel uses `with_policy`.
+    #[allow(dead_code)]
     pub fn new(decode: PanelDecoder<P>) -> Self {
         Self::with_policy(decode, LayoutPolicy::default())
     }
@@ -417,6 +425,8 @@ impl<P: DockPanel> LayoutEngine<P> {
     }
 
     /// An engine whose restore uses `S::decode_panel`.
+    // Convenience constructors; the kernel uses `with_policy`.
+    #[allow(dead_code)]
     pub fn for_spec<S: Spec<Panel = P>>() -> Self {
         Self::new(S::decode_panel)
     }
@@ -1044,6 +1054,8 @@ impl<P: DockPanel> Clone for LayoutEngineView<'_, P> {
 
 impl<P: DockPanel> Copy for LayoutEngineView<'_, P> {}
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a, P: DockPanel> LayoutEngineView<'a, P> {
     /// Windows the engine tracks, in id order.
     pub fn ids(&self) -> impl Iterator<Item = WindowId> + 'a {
@@ -1099,6 +1111,8 @@ impl<P: DockPanel> Clone for WindowLayoutView<'_, P> {
 
 impl<P: DockPanel> Copy for WindowLayoutView<'_, P> {}
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a, P: DockPanel> WindowLayoutView<'a, P> {
     /// The logical viewport.
     pub fn viewport(&self) -> Rect {

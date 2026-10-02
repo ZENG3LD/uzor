@@ -93,6 +93,8 @@ pub struct DeadlineWheel {
     next_token: u64,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl DeadlineWheel {
     /// An empty wheel.
     pub fn new() -> Self {
@@ -276,6 +278,8 @@ impl WindowCadence {
         }
     }
 
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     fn dirty(&self) -> bool {
         self.whole.is_some() || self.force_all || self.regions.iter().any(|r| r.spec.dirty)
     }
@@ -580,6 +584,8 @@ pub struct CadenceEngineView<'a> {
     e: &'a CadenceEngine,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a> CadenceEngineView<'a> {
     /// Scheduled windows, ascending.
     pub fn ids(&self) -> impl Iterator<Item = WindowId> + 'a {

@@ -1296,7 +1296,6 @@ fn revision_bumps_exactly_on_state_change() {
     step(&mut e, InputOp::Close(W), true);
 }
 
-
 // ---------------------------------------------------------------------------
 // T2: plain-text selection owner
 // ---------------------------------------------------------------------------
@@ -1340,8 +1339,20 @@ fn panel_scene(e: &mut InputEngine) {
         Sense::NONE,
         &layer,
     );
-    c.register_child(&panel, "in1", WidgetKind::Custom, rect_a(), Sense::HOVER.with_select());
-    c.register_child(&panel, "in2", WidgetKind::Custom, rect_b(), Sense::HOVER.with_select());
+    c.register_child(
+        &panel,
+        "in1",
+        WidgetKind::Custom,
+        rect_a(),
+        Sense::HOVER.with_select(),
+    );
+    c.register_child(
+        &panel,
+        "in2",
+        WidgetKind::Custom,
+        rect_b(),
+        Sense::HOVER.with_select(),
+    );
     drop(c);
     report(e, "in1", rect_a(), LABEL);
     report(e, "in2", rect_b(), "inside two");
@@ -1367,9 +1378,9 @@ fn sel(e: &InputEngine, name: &str) -> Option<TextSelection> {
 }
 
 fn has_copy(effects: &InputEffects, want: &str) -> bool {
-    effects
-        .iter()
-        .any(|f| matches!(f, InputEffect::CopyText { win, text } if *win == W && text.as_str() == want))
+    effects.iter().any(
+        |f| matches!(f, InputEffect::CopyText { win, text } if *win == W && text.as_str() == want),
+    )
 }
 
 fn has_passed(effects: &InputEffects) -> bool {
@@ -1483,7 +1494,9 @@ fn ctrl_a_escalates_widget_panel_window() {
     frame_sel(&mut e, 0.95, panel_scene);
     let fx = key(&mut e, 1.0, KeyCode::A, ctrl());
     assert_eq!(sel(&e, "in1"), Some(TextSelection::new(0, 11)));
-    assert!(fx.iter().any(|f| matches!(f, InputEffect::InvalidateField { .. })));
+    assert!(fx
+        .iter()
+        .any(|f| matches!(f, InputEffect::InvalidateField { .. })));
     // Second press: everything inside the panel.
     key(&mut e, 1.1, KeyCode::A, ctrl());
     assert_eq!(sel(&e, "in1"), Some(TextSelection::new(0, 11)));
@@ -1565,10 +1578,16 @@ fn clicking_a_label_does_not_blur_a_focused_field() {
     frame_sel(&mut e, 0.5, scene);
     click(&mut e, 1.0, 20.0, 15.0); // field "a"
     frame_sel(&mut e, 1.05, scene);
-    assert!(e.view().text_fields(W).is_some_and(|t| t.focused().is_some()));
+    assert!(e
+        .view()
+        .text_fields(W)
+        .is_some_and(|t| t.focused().is_some()));
     // Click the label: focus stays in the field, the label gets a caret.
     click(&mut e, 1.1, 13.0, 115.0);
     frame_sel(&mut e, 1.15, scene);
-    assert!(e.view().text_fields(W).is_some_and(|t| t.focused().is_some()));
+    assert!(e
+        .view()
+        .text_fields(W)
+        .is_some_and(|t| t.focused().is_some()));
     assert_eq!(sel(&e, "lbl"), Some(TextSelection::caret(0)));
 }

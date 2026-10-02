@@ -9,7 +9,7 @@ use uzor::tokens::{ColorValue, Tokens};
 use crate::engine::cadence::CadenceTickView;
 use crate::types::frame::{FrameRequest, Wake};
 use crate::types::ids::{Seconds, WindowId};
-use crate::types::snapshot::{CadenceView, ChromeView, DockView, InputView, VisualSnapshot, WindowView};
+use crate::types::snapshot::{ChromeView, DockView, VisualSnapshot, WindowView};
 use crate::types::spec::Spec;
 use crate::types::window::WindowCommand;
 
@@ -70,7 +70,9 @@ impl<S: Spec> Kernel<S> {
         let wview = self.windows.view();
         let mut windows = Vec::new();
         for win in wview.ids() {
-            let Some(wread) = wview.window(win) else { continue };
+            let Some(wread) = wview.window(win) else {
+                continue;
+            };
             let lview = self.layout.view().window(win);
             windows.push(WindowView {
                 id: win,
@@ -78,16 +80,16 @@ impl<S: Spec> Kernel<S> {
                 geometry: *wread.geometry(),
                 focused: wread.geometry().focused,
                 cursor: wread.cursor(),
-                chrome: lview.as_ref().map_or_else(ChromeView::default, |wv| wv.chrome_view()),
+                chrome: lview
+                    .as_ref()
+                    .map_or_else(ChromeView::default, |wv| wv.chrome_view()),
                 edges: lview.as_ref().map_or_else(Vec::new, |wv| wv.edge_views()),
-                dock: lview.as_ref().map_or_else(DockView::default, |wv| wv.dock_view()),
+                dock: lview
+                    .as_ref()
+                    .map_or_else(DockView::default, |wv| wv.dock_view()),
                 overlays: self.overlays.view().snapshot(win),
-                input: self.input.view().window(win).unwrap_or_else(InputView::default),
-                cadence: self
-                    .cadence
-                    .view()
-                    .window(win)
-                    .unwrap_or_else(CadenceView::default),
+                input: self.input.view().window(win).unwrap_or_default(),
+                cadence: self.cadence.view().window(win).unwrap_or_default(),
             });
         }
         VisualSnapshot {

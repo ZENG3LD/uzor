@@ -192,6 +192,8 @@ pub struct DragOutView {
     dwell: Option<(WindowId, Seconds)>,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl DragOutView {
     /// The window the panel came from.
     pub fn src(&self) -> WindowId {
@@ -199,7 +201,7 @@ impl DragOutView {
     }
 
     /// The leaf it left (may be gone).
-    pub fn from_leaf(&self) -> LeafId {
+    pub fn leaf(&self) -> LeafId {
         self.from
     }
 

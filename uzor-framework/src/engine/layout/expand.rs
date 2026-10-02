@@ -78,6 +78,8 @@ pub struct ExpandTarget {
     thickness_px: f64,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl ExpandTarget {
     /// The gutter side.
     pub fn side(&self) -> EdgeSide {
@@ -116,6 +118,8 @@ impl ExpandTarget {
 
 /// Published state of a latched expand.
 #[derive(Clone, Copy, Debug, PartialEq)]
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 pub struct ExpandState {
     kind: ExpandKind,
     target: ExpandTarget,
@@ -124,6 +128,8 @@ pub struct ExpandState {
     inset: Point,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl ExpandState {
     /// Outer or inner.
     pub fn kind(&self) -> ExpandKind {

@@ -67,6 +67,8 @@ pub struct Linear {
     secs: f64,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl Linear {
     /// An animator at value `t`, heading for `target`, last stepped at
     /// `last_tick`, sweeping one unit in `secs`.
@@ -237,6 +239,8 @@ pub struct AnimationEngineView<'a> {
     e: &'a AnimationEngine,
 }
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a> AnimationEngineView<'a> {
     /// One animator.
     pub fn get(&self, key: AnimKey) -> Option<&'a Linear> {

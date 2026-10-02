@@ -6,14 +6,14 @@
 //! never sees it (ban F8 — the app reaches on-screen state only through
 //! the [`Handle`] and the hook contexts).
 
-use std::sync::Arc;
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use uzor::render::{RenderContext, TickRate};
 use uzor::tokens::Tokens;
 
-use crate::handle::{App, Handle, INBOX_CAP, InitCx, IntentCx, Waker};
+use crate::handle::{App, Handle, InitCx, IntentCx, Waker, INBOX_CAP};
 use crate::kernel::{Kernel, KernelConfig};
 use crate::types::anim::AnimPolicy;
 use crate::types::bus::InputEnvelope;
@@ -198,7 +198,9 @@ impl<S: Spec, A: App<Spec = S>> Runtime<S, A> {
     /// Paint one due frame request (phases 5-6 for its window). The
     /// commands the hooks declare apply from the next tick's drain.
     pub fn paint(&mut self, req: &FrameRequest, ctx: &mut dyn RenderContext) {
-        let out = self.kernel.compose(self.now, req.window, &mut self.app, ctx);
+        let out = self
+            .kernel
+            .compose(self.now, req.window, &mut self.app, ctx);
         self.cmds.extend(out.commands);
     }
 
@@ -228,6 +230,8 @@ impl<S: Spec, A: App<Spec = S>> Runtime<S, A> {
     }
 
     /// The kernel (crate-internal: the §9.2 tests read the `RouteTrace`).
+    // Test doors (hop-count assertions in host::tests).
+    #[allow(dead_code)]
     pub(crate) fn kernel(&self) -> &Kernel<S> {
         &self.kernel
     }

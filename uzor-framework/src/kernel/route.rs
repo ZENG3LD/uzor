@@ -86,7 +86,9 @@ impl<S: Spec> Kernel<S> {
             }
             PointerTarget::Captured(Capture::Engine(EngineTarget::Overlay(slot))) => {
                 self.trace_push("capture:overlay");
-                let fx = self.overlays.apply(OverlayOp::Captured { win, slot, input });
+                let fx = self
+                    .overlays
+                    .apply(OverlayOp::Captured { win, slot, input });
                 self.conduct_overlay(now, fx);
                 return;
             }
@@ -182,10 +184,12 @@ impl<S: Spec> Kernel<S> {
         // `Some(None)` = the engine answered "delivered to no widget"
         // (routing step 6); a missing Content effect is not a report.
         if matches!(target, Some(None)) && matches!(input, PointerInput::Down { .. }) {
-            self.outbox.intents.push(Intent::Unhandled(UnhandledInput::Pointer {
-                win,
-                pointer: input,
-            }));
+            self.outbox
+                .intents
+                .push(Intent::Unhandled(UnhandledInput::Pointer {
+                    win,
+                    pointer: input,
+                }));
         }
     }
 
@@ -251,10 +255,12 @@ impl<S: Spec> Kernel<S> {
                 .collect(),
         );
         if matches!(target, Some(None)) {
-            self.outbox.intents.push(Intent::Unhandled(UnhandledInput::Wheel {
-                win,
-                wheel: input,
-            }));
+            self.outbox
+                .intents
+                .push(Intent::Unhandled(UnhandledInput::Wheel {
+                    win,
+                    wheel: input,
+                }));
         }
     }
 
@@ -319,9 +325,9 @@ impl<S: Spec> Kernel<S> {
         if key.state != KeyState::Up {
             let chord = KeyboardShortcut::new(key.mods, key.code);
             let focused = self.input.view().focused(win).cloned();
-            if let Some(action) = self
-                .keymap
-                .resolve(&chord, focused.as_ref(), top_overlay.as_ref(), modal_open)
+            if let Some(action) =
+                self.keymap
+                    .resolve(&chord, focused.as_ref(), top_overlay.as_ref(), modal_open)
             {
                 self.trace_push("keymap");
                 self.outbox.intents.push(Intent::Action(action));
@@ -330,7 +336,9 @@ impl<S: Spec> Kernel<S> {
             // Step 4 (the focused widget's raw key) has no widget-facing
             // door: the driver method is the input engine's alone (ban
             // F7). What passes everything is reported.
-            self.outbox.intents.push(Intent::Unhandled(UnhandledInput::Key { win, key }));
+            self.outbox
+                .intents
+                .push(Intent::Unhandled(UnhandledInput::Key { win, key }));
         }
     }
 
@@ -345,11 +353,7 @@ impl<S: Spec> Kernel<S> {
     /// The host's clipboard answer returns to the engine that asked.
     fn route_clipboard(&mut self, now: Seconds, win: WindowId, result: ClipboardResult) {
         self.trace_push("route::clipboard");
-        let fx = self.input.apply(InputOp::Clipboard {
-            win,
-            now,
-            result,
-        });
+        let fx = self.input.apply(InputOp::Clipboard { win, now, result });
         self.conduct_input(now, fx);
     }
 
@@ -362,7 +366,9 @@ impl<S: Spec> Kernel<S> {
     fn route_drop(&mut self, now: Seconds, win: WindowId, input: DropInput) {
         let _ = now;
         self.trace_push("route::drop");
-        let DropInput::Dropped(file) = input else { return };
+        let DropInput::Dropped(file) = input else {
+            return;
+        };
         let target = self
             .input
             .view()

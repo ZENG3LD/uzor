@@ -222,6 +222,8 @@ struct ZKey {
 
 /// One open overlay instance.
 #[derive(Clone, Debug)]
+// Fields surface through the OverlayEntryView doors below.
+#[allow(dead_code)]
 struct Entry<O> {
     id: O,
     slot: OverlaySlot,
@@ -419,6 +421,8 @@ impl<O: Copy + Eq> OverlayEngine<O> {
 
     /// What is under `p` in `win` after Z order and the modal shield. The
     /// same walk decides every pointer verdict; routing never re-derives Z.
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn hit(&self, win: WindowId, p: Point) -> OverlayHit<O> {
         self.windows
             .get(&win)
@@ -427,6 +431,8 @@ impl<O: Copy + Eq> OverlayEngine<O> {
 
     /// The topmost overlay that takes `p` (the [`OverlayHit::Overlay`] case
     /// of [`Self::hit`]); `None` when the point is shielded or free.
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn topmost_at(&self, win: WindowId, p: Point) -> Option<OverlayEntryView<'_, O>> {
         let s = self.windows.get(&win)?;
         match hit_walk(s, p) {
@@ -445,6 +451,8 @@ impl<O: Copy + Eq> OverlayEngine<O> {
     /// changes is evaluated by the input engine's following `EndFrame`,
     /// and a body state change surfaces through the composite's own
     /// `consume_event` path (which reports effects).
+    // Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+    #[allow(dead_code)]
     pub fn body_state_mut(&mut self, win: WindowId, slot: OverlaySlot) -> Option<&mut OverlayBody> {
         let s = self.windows.get_mut(&win)?;
         s.entries
@@ -1126,6 +1134,8 @@ impl<O> Clone for OverlayEngineView<'_, O> {
 
 impl<O> Copy for OverlayEngineView<'_, O> {}
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a, O: Copy + Eq> OverlayEngineView<'a, O> {
     /// The window's overlays, bottom → top (draw order).
     pub fn stack(&self, win: WindowId) -> impl Iterator<Item = OverlayEntryView<'a, O>> + 'a {
@@ -1243,6 +1253,8 @@ impl<'a, O: Copy + Eq> OverlayEngineView<'a, O> {
 
 /// Read-only view of one open overlay.
 #[derive(Debug)]
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 pub struct OverlayEntryView<'a, O> {
     e: &'a Entry<O>,
 }
@@ -1255,6 +1267,8 @@ impl<O> Clone for OverlayEntryView<'_, O> {
 
 impl<O> Copy for OverlayEntryView<'_, O> {}
 
+// Read doors for the native/web host briefs (F8+) - unused in-crate until then.
+#[allow(dead_code)]
 impl<'a, O: Copy> OverlayEntryView<'a, O> {
     /// App identity.
     pub fn id(&self) -> O {
