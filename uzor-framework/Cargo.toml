@@ -29,3 +29,9 @@ thiserror = "1.0"
 # (browser RAF) host in F10; neither pulls a dependency yet.
 native = []
 web = []
+
+[dev-dependencies]
+# CPU context for the F8 widget golden (compares against the committed
+# uzor-render-tiny-skia widget PNGs; this crate does not store images).
+uzor-render-tiny-skia = { workspace = true }
+tiny-skia = "0.11"

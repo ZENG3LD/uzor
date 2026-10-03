@@ -54,6 +54,14 @@ impl TokenTheme {
         Self(tokens)
     }
 
+    /// Shared theme over a copy of `tokens`.
+    ///
+    /// Hook contexts lend a [`Tokens`] borrow. This wraps a clone so those
+    /// callers do not build an [`Arc`] themselves.
+    pub fn from_tokens(tokens: &Tokens) -> Self {
+        Self(Arc::new(tokens.clone()))
+    }
+
     /// The underlying resolved token set.
     pub fn tokens(&self) -> &Tokens {
         &self.0

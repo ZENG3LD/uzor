@@ -28,8 +28,9 @@
 //! and drag-out). F7: the kernel
 //! (phase pipeline, conduction per design §3.8, routing per §4.3), the
 //! [`App`] contract with the hook contexts, [`Handle`], [`Runtime`] and the
-//! headless host in [`host`]. Native / web hosts and the library widget
-//! functions of the hook contexts follow in later briefs.
+//! headless host in [`host`]. F8: [`widgets`] convenience functions over the
+//! hook contexts, [`flex`] and [`profiler`]. Native / web hosts and the demo
+//! app follow in later briefs.
 //!
 //! ## Data flow
 //!
@@ -41,11 +42,14 @@
 #![deny(missing_docs)]
 
 pub(crate) mod engine;
+pub mod flex;
 pub mod handle;
 pub mod host;
 mod kernel;
+pub mod profiler;
 mod runtime;
 pub mod types;
+pub mod widgets;
 
 pub use handle::{
     App, FrameTime, Handle, HandleError, HookOp, HookOps, InitCx, IntentCx, OverlayCx, PanelCx,
