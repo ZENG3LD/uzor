@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish = false
 description = "PNG/JPEG → SVG tracer for flat-color graphics (uzor). Inverse of uzor-icon."
 keywords = ["uzor", "svg", "png", "vectorize", "trace"]
 categories = ["graphics"]

@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-publish = false
 description = "GPU-first computer vision frontend (uzor). Denoise + superpixels; CPU fallback. Consumed by uzor-vectorize and later MV."
 keywords = ["uzor", "gpu", "vision", "slic", "segmentation"]
 categories = ["graphics", "science"]
