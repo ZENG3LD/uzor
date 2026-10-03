@@ -14,11 +14,12 @@ path = "src/lib.rs"
 [dependencies]
 uzor = { workspace = true }
 uzor-framework = { workspace = true }
+env_logger = { version = "0.11", optional = true }
 
 [features]
 # Native host for the dashboard bin. Not a default feature: `cargo test`
 # stays on the headless host and does not pull winit or a render backend.
-native = ["uzor-framework/native"]
+native = ["uzor-framework/native", "dep:env_logger"]
 
 [[bin]]
 name = "l4-dashboard"
