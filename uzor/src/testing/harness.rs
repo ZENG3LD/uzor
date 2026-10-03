@@ -1,6 +1,7 @@
 //! Headless per-frame widget test harness.
 
 use crate::a11y::A11yTree;
+use crate::input::driver::CoordinatorDriver;
 use crate::input::{InputCoordinator, WidgetResponse};
 use crate::types::WidgetId;
 
@@ -98,6 +99,7 @@ impl TestHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::driver::CoordinatorDriver;
     use crate::input::pointer::state::{InputState, MouseButton};
     use crate::input::Sense;
     use crate::types::{Rect, WidgetState};

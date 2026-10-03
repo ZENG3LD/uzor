@@ -13,6 +13,7 @@
 //! drag ghost and the focus ring (`furniture`). Overlay frames stay plain
 //! boxes; the app's `overlay_body` draws the body.
 
+use uzor::input::driver::CoordinatorDriver;
 use uzor::input::{LayerId, Sense};
 use uzor::render::{InvalidateBits, RenderContext};
 

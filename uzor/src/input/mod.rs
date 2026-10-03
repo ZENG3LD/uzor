@@ -4,6 +4,7 @@
 //! drag, touch, tooltips, and widget focus management.
 
 pub mod core;
+pub mod driver;
 pub mod text;
 pub mod keyboard;
 pub mod pointer;

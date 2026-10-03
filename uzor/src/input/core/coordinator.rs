@@ -201,56 +201,6 @@ impl InputCoordinator {
         self.default_layer = layer;
     }
 
-    /// Start new frame — clear widget registrations and layers, keep persistent state.
-    ///
-    /// Propagates the input state to all registered scoped regions, converting
-    /// the pointer position to region-local coordinates.  If the pointer is
-    /// outside a region its position is set to `None` in the child's
-    /// `InputState` so widgets inside do not spuriously report hover.
-    pub fn begin_frame(&mut self, input: InputState) {
-        // Bake the persistent hover snapshot from the COMPLETE previous
-        // frame's widget accumulation at the FRESH pointer position
-        // (z-order + modal-barrier aware). `end_frame` used to bake this
-        // mid-frame — before top layers (dropdowns/modals rendered after
-        // it) had registered — so widgets under an open popup kept
-        // reporting `is_hovered() == true` (systemic z-order leak,
-        // 2026-07-28). Baking here sees every layer of the finished frame.
-        let hovered = self.pointer_target(input.pointer.pos);
-        self.bake_pressed(&hovered, input.pointer.button_down);
-        self.widget_state.hover.set_hovered(hovered);
-
-        self.widgets.clear();
-        self.layers.clear();
-        self.default_layer = None;
-        self.layers.push(Layer {
-            id: LayerId::main(),
-            z_order: 0,
-            modal: false,
-            chrome: false,
-        });
-        self.input = input.clone();
-        self.frame += 1;
-        self.text_fields.begin_frame();
-
-        // Propagate to scoped regions with coordinate conversion.
-        for region in &mut self.scoped_regions {
-            let mut local_input = input.clone();
-            if let Some((px, py)) = input.pointer.pos {
-                if region.rect.contains(px, py) {
-                    let (lx, ly) = (px - region.rect.x, py - region.rect.y);
-                    local_input.pointer.pos = Some((lx, ly));
-                    if let Some((ppx, ppy)) = input.pointer.prev_pos {
-                        local_input.pointer.prev_pos = Some((ppx - region.rect.x, ppy - region.rect.y));
-                    }
-                } else {
-                    // Pointer is outside — hide it from the child coordinator.
-                    local_input.pointer.pos = None;
-                    local_input.pointer.prev_pos = None;
-                }
-            }
-            region.coordinator.begin_frame(local_input);
-        }
-    }
 
     /// Begin a new frame WITHOUT overwriting the current pointer/click state.
     ///
@@ -478,12 +428,6 @@ impl InputCoordinator {
         self.input.pointer.pos
     }
 
-    /// Update the cursor position for the current frame without a full
-    /// `begin_frame` call.  Used by L3 `on_pointer_move/down/up` so
-    /// hover/hit-test sees the latest cursor without waiting for begin_frame.
-    pub fn set_cursor_pos(&mut self, x: f64, y: f64) {
-        self.input.pointer.pos = Some((x, y));
-    }
 
     /// Debug accessor — current cursor position from internal input state.
     pub fn input_pos(&self) -> Option<(f64, f64)> {
@@ -500,12 +444,6 @@ impl InputCoordinator {
         self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())
     }
 
-    /// Push a new layer (for modals/popups). Chrome defaults to `false` —
-    /// use [`Self::push_layer_ex`] to mark a layer as application chrome
-    /// that must keep responding underneath an active modal.
-    pub fn push_layer(&mut self, id: LayerId, z_order: u32, modal: bool) {
-        self.push_layer_ex(id, z_order, modal, false);
-    }
 
     /// Push a new layer with an explicit `chrome` flag.
     ///
@@ -518,13 +456,6 @@ impl InputCoordinator {
         self.layers.push(Layer { id, z_order, modal, chrome });
     }
 
-    /// Pop a layer — no-op, layers persist until begin_frame clears them.
-    ///
-    /// Layers must remain alive for click handling after render completes.
-    /// They will be cleared on the next begin_frame().
-    pub fn pop_layer(&mut self, _id: &LayerId) {
-        // No-op: layers accumulate during render and are cleared in begin_frame
-    }
 
     // -------------------------------------------------------------------------
     // Scoped-region management
@@ -570,177 +501,6 @@ impl InputCoordinator {
             .map(|r| &mut r.coordinator)
     }
 
-    /// Process all registered widgets against current input state.
-    ///
-    /// Returns responses for widgets that had interactions.  Responses from
-    /// scoped regions are included first with their widget IDs prefixed by
-    /// `"{region_id}:"`.
-    pub fn end_frame(&mut self) -> Vec<(WidgetId, WidgetResponse)> {
-        let mut responses = Vec::new();
-
-        // Collect responses from scoped regions first (highest Z = last region).
-        // We iterate in order so the caller receives them before global widgets.
-        // Widget IDs are prefixed so the caller can route them to the right panel.
-        for region in &mut self.scoped_regions {
-            let region_id = region.id.clone();
-            let child_responses = region.coordinator.end_frame();
-            for (wid, resp) in child_responses {
-                let prefixed_id = WidgetId::new(format!("{}:{}", region_id, wid.0));
-                // Rebuild response with prefixed id (keep all other fields).
-                let mut prefixed_resp = resp;
-                prefixed_resp.id = prefixed_id.clone();
-                responses.push((prefixed_id, prefixed_resp));
-            }
-        }
-
-        let mouse_pos = self.input.pointer.pos;
-        let clicked = self.input.pointer.clicked;
-        let button_down = self.input.pointer.button_down;
-
-        // 0. Cook this frame's pointer edges (press / motion / release):
-        // click count, drag arm.
-        self.feed_cook();
-
-        // 1. Determine hovered widget (Z-order aware hit test; a pointer
-        // grab wins over the hit test)
-        let hovered_id = self.pointer_target(mouse_pos);
-
-        // Track if we already generated a response for drag start
-        let mut drag_started_this_frame = false;
-
-        // 2. Update hover state for all widgets (except those being dragged)
-        for widget in &self.widgets {
-            // Skip if this widget is currently being dragged (handled in section 3)
-            if self.widget_state.drag.dragging.as_ref() == Some(&widget.id) {
-                continue;
-            }
-
-            let is_hovered = hovered_id.as_ref() == Some(&widget.id);
-            let was_hovered = self.hover_prev.as_ref() == Some(&widget.id);
-
-            if (widget.sense.hover || widget.sense.click || widget.sense.drag)
-                && (is_hovered || was_hovered) {
-                    let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
-                    response.hovered = is_hovered;
-                    response.hover_started = is_hovered && !was_hovered;
-                    response.hover_ended = !is_hovered && was_hovered;
-
-                    // Check click
-                    if is_hovered && clicked.is_some() && widget.sense.click {
-                        response.clicked = true;
-                        response.double_clicked = self.cook.click_count == 2;
-                        response.triple_clicked = self.cook.click_count >= 3;
-                        if widget.sense.text && self.cook_drag_release.is_none() {
-                            // Place the caret at the hit character instead of
-                            // only arming focus — the coordinator already
-                            // knows exactly which widget was hit (z-order +
-                            // modal-barrier aware), so hand that straight to
-                            // the text store instead of making it re-derive
-                            // the same answer from a geometric `last_rect`
-                            // search the way `on_drag_start` does for callers
-                            // that don't already have a hit-test of their own.
-                            // A double / triple click selects the word / line
-                            // (needs `InputState::time`, else always 1).
-                            //
-                            // A release that ENDS a drag is skipped here: it
-                            // must not collapse the selection the drag made
-                            // (handled below, after the loop).
-                            if let Some((mx, _my)) = mouse_pos {
-                                self.text_fields.select_at_click_count(widget.id.clone(), mx, self.cook.click_count);
-                            } else {
-                                self.text_fields.focus(widget.id.clone());
-                            }
-                        }
-                    }
-
-                    // Check drag start
-                    if is_hovered && button_down.is_some() && widget.sense.drag
-                        && self.widget_state.drag.dragging.is_none() {
-                            response.drag_started = true;
-                            drag_started_this_frame = true;
-                        }
-
-                    if response.clicked
-                        || response.hovered
-                        || response.hover_started
-                        || response.hover_ended
-                        || response.drag_started
-                    {
-                        responses.push((widget.id.clone(), response));
-                    }
-                }
-        }
-
-        // 2b. Drag-select end: a release that ended a drag which began on a
-        // text field selects press → release in that field (wherever the
-        // release landed — the boundaries clamp), keeping any selection a
-        // host built live via `on_drag_move` instead of collapsing it to a
-        // caret at the release point.
-        if let (Some((ox, oy)), Some((mx, _))) = (self.cook_drag_release, mouse_pos) {
-            let origin = self
-                .hit_test_at(ox, oy)
-                .filter(|w| w.sense.text)
-                .map(|w| w.id.clone());
-            if let Some(id) = origin {
-                self.text_fields.select_drag(id, ox, mx);
-            }
-        }
-
-        // 3. Handle ongoing drag (but not if we just started it this frame)
-        if !drag_started_this_frame {
-            if let Some(drag_id) = self.widget_state.drag.dragging.clone() {
-                if button_down.is_some() {
-                    // Drag continues
-                    if mouse_pos.is_some() {
-                        if let Some(widget) = self.widgets.iter().find(|w| w.id == drag_id) {
-                            let mut response = WidgetResponse::new(drag_id.clone(), widget.rect, widget.sense);
-                            response.dragged = true;
-                            response.drag_delta = self.widget_state.drag.delta();
-                            responses.push((drag_id.clone(), response));
-                        }
-                    }
-                } else {
-                    // Drag ended (button released)
-                    if let Some(widget) = self.widgets.iter().find(|w| w.id == drag_id) {
-                        let mut response = WidgetResponse::new(drag_id.clone(), widget.rect, widget.sense);
-                        response.drag_stopped = true;
-                        responses.push((drag_id.clone(), response));
-                        self.widget_state.drag.end();
-                    }
-                }
-            }
-        }
-
-        // 4. Handle scroll — route wheel delta to scroll-sensitive widgets
-        let (scroll_dx, scroll_dy) = self.input.scroll_delta;
-        if scroll_dx != 0.0 || scroll_dy != 0.0 {
-            if let Some(hovered) = &hovered_id {
-                if let Some(widget) = self.widgets.iter().find(|w| &w.id == hovered) {
-                    if widget.sense.scroll {
-                        let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
-                        response.scrolled = true;
-                        response.scroll_delta = (scroll_dx, scroll_dy);
-                        responses.push((widget.id.clone(), response));
-                    }
-                }
-            }
-        }
-
-        // 5. Persistent hover state is NO LONGER baked here — end_frame runs
-        // mid-frame, before top layers (dropdowns/modals) register, so its
-        // view is incomplete and widgets under popups leaked hover. The
-        // visual snapshot is baked in `begin_frame` from the finished
-        // previous frame instead (2026-07-28). This frame's local view is
-        // stashed as the NEXT end_frame's hover-transition baseline.
-        self.hover_prev = hovered_id;
-
-        // A grab lasts one press: the release that ends it ends the grab.
-        if clicked.is_some() {
-            self.cook.release_grab();
-        }
-
-        responses
-    }
 
     /// Feed this frame's pointer snapshot into the cook state. A press and
     /// its release inside one frame (`clicked` set, button already up)
@@ -796,17 +556,7 @@ impl InputCoordinator {
         &self.cook
     }
 
-    /// Route pointer input to `id` regardless of what is under the cursor,
-    /// until [`Self::release_pointer`] or the release of the current press.
-    /// Use on press for splitters, resize handles, scrollbar thumbs.
-    pub fn grab_pointer(&mut self, id: impl Into<WidgetId>) {
-        self.cook.grab(id.into());
-    }
 
-    /// End a pointer grab early.
-    pub fn release_pointer(&mut self) {
-        self.cook.release_grab();
-    }
 
     /// Hit test at point (Z-order aware)
     fn hit_test_at(&self, x: f64, y: f64) -> Option<&RegisteredWidget> {
@@ -1042,22 +792,7 @@ impl InputCoordinator {
         }
     }
 
-    /// Set focus to a specific widget.
-    ///
-    /// If the target is not a registered text field, any focused text field is blurred.
-    pub fn set_focus(&mut self, id: impl Into<WidgetId>) {
-        let id = id.into();
-        if !self.text_fields.has_field(&id) {
-            self.text_fields.blur();
-        }
-        self.widget_state.focus.set_focus(id);
-    }
 
-    /// Clear focus from all widgets
-    pub fn clear_focus(&mut self) {
-        self.widget_state.focus.clear_focus();
-        self.text_fields.blur();
-    }
 
     /// Register a widget as a text field on the widget's own layer — the
     /// layer plain [`Self::register`] calls land on (main unless overridden
@@ -1094,15 +829,7 @@ impl InputCoordinator {
         }
     }
 
-    /// Forward a printable character to the focused text field.
-    pub fn on_char(&mut self, ch: char) -> TextAction {
-        self.text_fields.on_char(ch)
-    }
 
-    /// Forward a named key press to the focused text field.
-    pub fn on_key(&mut self, key: crate::input::keyboard::keyboard::KeyPress) -> TextAction {
-        self.text_fields.on_key(key)
-    }
 
     /// Read-only access to the text field store.
     pub fn text_fields(&self) -> &TextFieldStore {
@@ -1130,54 +857,7 @@ impl InputCoordinator {
             .collect()
     }
 
-    /// Focus next widget (Tab)
-    pub fn focus_next(&mut self) {
-        let focusable: Vec<_> = self.widgets.iter().filter(|w| w.sense.focus).collect();
 
-        if focusable.is_empty() {
-            return;
-        }
-
-        let current_idx = if let Some(ref focused) = self.widget_state.focus.focused {
-            focusable.iter().position(|w| &w.id == focused)
-        } else {
-            None
-        };
-
-        let next_idx = match current_idx {
-            Some(idx) => (idx + 1) % focusable.len(),
-            None => 0,
-        };
-
-        self.widget_state
-            .focus
-            .set_focus(focusable[next_idx].id.clone());
-    }
-
-    /// Focus previous widget (Shift+Tab)
-    pub fn focus_prev(&mut self) {
-        let focusable: Vec<_> = self.widgets.iter().filter(|w| w.sense.focus).collect();
-
-        if focusable.is_empty() {
-            return;
-        }
-
-        let current_idx = if let Some(ref focused) = self.widget_state.focus.focused {
-            focusable.iter().position(|w| &w.id == focused)
-        } else {
-            None
-        };
-
-        let prev_idx = match current_idx {
-            Some(idx) if idx > 0 => idx - 1,
-            Some(_) => focusable.len() - 1,
-            None => focusable.len() - 1,
-        };
-
-        self.widget_state
-            .focus
-            .set_focus(focusable[prev_idx].id.clone());
-    }
 
     /// Internal: hit-test at `(x, y)` with scoped-region + modal logic, filtered by sense.
     ///
@@ -1251,6 +931,396 @@ impl InputCoordinator {
         None
     }
 
+
+
+
+
+
+
+
+
+
+    /// Check if a point is inside any modal layer's registered area.
+    /// Returns true if the point hits a modal layer but misses all widgets on it.
+    /// This is useful for "click outside modal content to close" behavior.
+    pub fn is_point_in_modal_layer(&self, x: f64, y: f64) -> bool {
+        // Check if highest modal layer exists and point is NOT on any widget
+        let hit = self.hit_test_at(x, y);
+        let has_modal = self.layers.iter().any(|l| l.modal);
+        has_modal && hit.is_none()
+    }
+
+    /// Check if a point is blocked from reaching non-modal layers.
+    /// Returns true if any modal layer is active AND the point is either:
+    /// - On a widget registered to the modal layer or above, OR
+    /// - In the modal's blocking zone (no widget hit, modal blocks lower layers)
+    ///
+    /// Use this for drag blocking: when a modal is open, drags on/above the modal
+    /// should not pass through to panel separators/headers on lower layers.
+    pub fn is_blocked_by_modal(&self, x: f64, y: f64) -> bool {
+        let modal_z = self.layers.iter()
+            .filter(|l| l.modal)
+            .map(|l| l.z_order)
+            .min();
+        let Some(modal_z) = modal_z else { return false };
+
+        match self.hit_test_at(x, y) {
+            None => true,
+            Some(widget) => {
+                self.layers.iter()
+                    .find(|l| l.id == widget.layer)
+                    .map(|l| l.z_order >= modal_z)
+                    .unwrap_or(false)
+            }
+        }
+    }
+
+    /// Get the topmost modal layer ID (if any active)
+    pub fn topmost_modal_layer(&self) -> Option<&LayerId> {
+        self.layers.iter().rev().find(|l| l.modal).map(|l| &l.id)
+    }
+}
+
+impl Default for InputCoordinator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::input::driver::CoordinatorDriver for InputCoordinator {
+    /// Start new frame — clear widget registrations and layers, keep persistent state.
+    ///
+    /// Propagates the input state to all registered scoped regions, converting
+    /// the pointer position to region-local coordinates.  If the pointer is
+    /// outside a region its position is set to `None` in the child's
+    /// `InputState` so widgets inside do not spuriously report hover.
+    fn begin_frame(&mut self, input: InputState) {
+        // Bake the persistent hover snapshot from the COMPLETE previous
+        // frame's widget accumulation at the FRESH pointer position
+        // (z-order + modal-barrier aware). `end_frame` used to bake this
+        // mid-frame — before top layers (dropdowns/modals rendered after
+        // it) had registered — so widgets under an open popup kept
+        // reporting `is_hovered() == true` (systemic z-order leak,
+        // 2026-07-28). Baking here sees every layer of the finished frame.
+        let hovered = self.pointer_target(input.pointer.pos);
+        self.bake_pressed(&hovered, input.pointer.button_down);
+        self.widget_state.hover.set_hovered(hovered);
+
+        self.widgets.clear();
+        self.layers.clear();
+        self.default_layer = None;
+        self.layers.push(Layer {
+            id: LayerId::main(),
+            z_order: 0,
+            modal: false,
+            chrome: false,
+        });
+        self.input = input.clone();
+        self.frame += 1;
+        self.text_fields.begin_frame();
+
+        // Propagate to scoped regions with coordinate conversion.
+        for region in &mut self.scoped_regions {
+            let mut local_input = input.clone();
+            if let Some((px, py)) = input.pointer.pos {
+                if region.rect.contains(px, py) {
+                    let (lx, ly) = (px - region.rect.x, py - region.rect.y);
+                    local_input.pointer.pos = Some((lx, ly));
+                    if let Some((ppx, ppy)) = input.pointer.prev_pos {
+                        local_input.pointer.prev_pos = Some((ppx - region.rect.x, ppy - region.rect.y));
+                    }
+                } else {
+                    // Pointer is outside — hide it from the child coordinator.
+                    local_input.pointer.pos = None;
+                    local_input.pointer.prev_pos = None;
+                }
+            }
+            region.coordinator.begin_frame(local_input);
+        }
+    }
+
+    /// Update the cursor position for the current frame without a full
+    /// `begin_frame` call.  Used by L3 `on_pointer_move/down/up` so
+    /// hover/hit-test sees the latest cursor without waiting for begin_frame.
+    fn set_cursor_pos(&mut self, x: f64, y: f64) {
+        self.input.pointer.pos = Some((x, y));
+    }
+
+    /// Push a new layer (for modals/popups). Chrome defaults to `false` —
+    /// use [`Self::push_layer_ex`] to mark a layer as application chrome
+    /// that must keep responding underneath an active modal.
+    fn push_layer(&mut self, id: LayerId, z_order: u32, modal: bool) {
+        self.push_layer_ex(id, z_order, modal, false);
+    }
+
+    /// Pop a layer — no-op, layers persist until begin_frame clears them.
+    ///
+    /// Layers must remain alive for click handling after render completes.
+    /// They will be cleared on the next begin_frame().
+    fn pop_layer(&mut self, _id: &LayerId) {
+        // No-op: layers accumulate during render and are cleared in begin_frame
+    }
+
+    /// Process all registered widgets against current input state.
+    ///
+    /// Returns responses for widgets that had interactions.  Responses from
+    /// scoped regions are included first with their widget IDs prefixed by
+    /// `"{region_id}:"`.
+    fn end_frame(&mut self) -> Vec<(WidgetId, WidgetResponse)> {
+        let mut responses = Vec::new();
+
+        // Collect responses from scoped regions first (highest Z = last region).
+        // We iterate in order so the caller receives them before global widgets.
+        // Widget IDs are prefixed so the caller can route them to the right panel.
+        for region in &mut self.scoped_regions {
+            let region_id = region.id.clone();
+            let child_responses = region.coordinator.end_frame();
+            for (wid, resp) in child_responses {
+                let prefixed_id = WidgetId::new(format!("{}:{}", region_id, wid.0));
+                // Rebuild response with prefixed id (keep all other fields).
+                let mut prefixed_resp = resp;
+                prefixed_resp.id = prefixed_id.clone();
+                responses.push((prefixed_id, prefixed_resp));
+            }
+        }
+
+        let mouse_pos = self.input.pointer.pos;
+        let clicked = self.input.pointer.clicked;
+        let button_down = self.input.pointer.button_down;
+
+        // 0. Cook this frame's pointer edges (press / motion / release):
+        // click count, drag arm.
+        self.feed_cook();
+
+        // 1. Determine hovered widget (Z-order aware hit test; a pointer
+        // grab wins over the hit test)
+        let hovered_id = self.pointer_target(mouse_pos);
+
+        // Track if we already generated a response for drag start
+        let mut drag_started_this_frame = false;
+
+        // 2. Update hover state for all widgets (except those being dragged)
+        for widget in &self.widgets {
+            // Skip if this widget is currently being dragged (handled in section 3)
+            if self.widget_state.drag.dragging.as_ref() == Some(&widget.id) {
+                continue;
+            }
+
+            let is_hovered = hovered_id.as_ref() == Some(&widget.id);
+            let was_hovered = self.hover_prev.as_ref() == Some(&widget.id);
+
+            if (widget.sense.hover || widget.sense.click || widget.sense.drag)
+                && (is_hovered || was_hovered) {
+                    let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
+                    response.hovered = is_hovered;
+                    response.hover_started = is_hovered && !was_hovered;
+                    response.hover_ended = !is_hovered && was_hovered;
+
+                    // Check click
+                    if is_hovered && clicked.is_some() && widget.sense.click {
+                        response.clicked = true;
+                        response.double_clicked = self.cook.click_count == 2;
+                        response.triple_clicked = self.cook.click_count >= 3;
+                        if widget.sense.text && self.cook_drag_release.is_none() {
+                            // Place the caret at the hit character instead of
+                            // only arming focus — the coordinator already
+                            // knows exactly which widget was hit (z-order +
+                            // modal-barrier aware), so hand that straight to
+                            // the text store instead of making it re-derive
+                            // the same answer from a geometric `last_rect`
+                            // search the way `on_drag_start` does for callers
+                            // that don't already have a hit-test of their own.
+                            // A double / triple click selects the word / line
+                            // (needs `InputState::time`, else always 1).
+                            //
+                            // A release that ENDS a drag is skipped here: it
+                            // must not collapse the selection the drag made
+                            // (handled below, after the loop).
+                            if let Some((mx, _my)) = mouse_pos {
+                                self.text_fields.select_at_click_count(widget.id.clone(), mx, self.cook.click_count);
+                            } else {
+                                self.text_fields.focus(widget.id.clone());
+                            }
+                        }
+                    }
+
+                    // Check drag start
+                    if is_hovered && button_down.is_some() && widget.sense.drag
+                        && self.widget_state.drag.dragging.is_none() {
+                            response.drag_started = true;
+                            drag_started_this_frame = true;
+                        }
+
+                    if response.clicked
+                        || response.hovered
+                        || response.hover_started
+                        || response.hover_ended
+                        || response.drag_started
+                    {
+                        responses.push((widget.id.clone(), response));
+                    }
+                }
+        }
+
+        // 2b. Drag-select end: a release that ended a drag which began on a
+        // text field selects press → release in that field (wherever the
+        // release landed — the boundaries clamp), keeping any selection a
+        // host built live via `on_drag_move` instead of collapsing it to a
+        // caret at the release point.
+        if let (Some((ox, oy)), Some((mx, _))) = (self.cook_drag_release, mouse_pos) {
+            let origin = self
+                .hit_test_at(ox, oy)
+                .filter(|w| w.sense.text)
+                .map(|w| w.id.clone());
+            if let Some(id) = origin {
+                self.text_fields.select_drag(id, ox, mx);
+            }
+        }
+
+        // 3. Handle ongoing drag (but not if we just started it this frame)
+        if !drag_started_this_frame {
+            if let Some(drag_id) = self.widget_state.drag.dragging.clone() {
+                if button_down.is_some() {
+                    // Drag continues
+                    if mouse_pos.is_some() {
+                        if let Some(widget) = self.widgets.iter().find(|w| w.id == drag_id) {
+                            let mut response = WidgetResponse::new(drag_id.clone(), widget.rect, widget.sense);
+                            response.dragged = true;
+                            response.drag_delta = self.widget_state.drag.delta();
+                            responses.push((drag_id.clone(), response));
+                        }
+                    }
+                } else {
+                    // Drag ended (button released)
+                    if let Some(widget) = self.widgets.iter().find(|w| w.id == drag_id) {
+                        let mut response = WidgetResponse::new(drag_id.clone(), widget.rect, widget.sense);
+                        response.drag_stopped = true;
+                        responses.push((drag_id.clone(), response));
+                        self.widget_state.drag.end();
+                    }
+                }
+            }
+        }
+
+        // 4. Handle scroll — route wheel delta to scroll-sensitive widgets
+        let (scroll_dx, scroll_dy) = self.input.scroll_delta;
+        if scroll_dx != 0.0 || scroll_dy != 0.0 {
+            if let Some(hovered) = &hovered_id {
+                if let Some(widget) = self.widgets.iter().find(|w| &w.id == hovered) {
+                    if widget.sense.scroll {
+                        let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
+                        response.scrolled = true;
+                        response.scroll_delta = (scroll_dx, scroll_dy);
+                        responses.push((widget.id.clone(), response));
+                    }
+                }
+            }
+        }
+
+        // 5. Persistent hover state is NO LONGER baked here — end_frame runs
+        // mid-frame, before top layers (dropdowns/modals) register, so its
+        // view is incomplete and widgets under popups leaked hover. The
+        // visual snapshot is baked in `begin_frame` from the finished
+        // previous frame instead (2026-07-28). This frame's local view is
+        // stashed as the NEXT end_frame's hover-transition baseline.
+        self.hover_prev = hovered_id;
+
+        // A grab lasts one press: the release that ends it ends the grab.
+        if clicked.is_some() {
+            self.cook.release_grab();
+        }
+
+        responses
+    }
+
+    /// Route pointer input to `id` regardless of what is under the cursor,
+    /// until [`Self::release_pointer`] or the release of the current press.
+    /// Use on press for splitters, resize handles, scrollbar thumbs.
+    fn grab_pointer(&mut self, id: impl Into<WidgetId>) {
+        self.cook.grab(id.into());
+    }
+
+    /// End a pointer grab early.
+    fn release_pointer(&mut self) {
+        self.cook.release_grab();
+    }
+
+    /// Set focus to a specific widget.
+    ///
+    /// If the target is not a registered text field, any focused text field is blurred.
+    fn set_focus(&mut self, id: impl Into<WidgetId>) {
+        let id = id.into();
+        if !self.text_fields.has_field(&id) {
+            self.text_fields.blur();
+        }
+        self.widget_state.focus.set_focus(id);
+    }
+
+    /// Clear focus from all widgets
+    fn clear_focus(&mut self) {
+        self.widget_state.focus.clear_focus();
+        self.text_fields.blur();
+    }
+
+    /// Forward a printable character to the focused text field.
+    fn on_char(&mut self, ch: char) -> TextAction {
+        self.text_fields.on_char(ch)
+    }
+
+    /// Forward a named key press to the focused text field.
+    fn on_key(&mut self, key: crate::input::keyboard::keyboard::KeyPress) -> TextAction {
+        self.text_fields.on_key(key)
+    }
+
+    /// Focus next widget (Tab)
+    fn focus_next(&mut self) {
+        let focusable: Vec<_> = self.widgets.iter().filter(|w| w.sense.focus).collect();
+
+        if focusable.is_empty() {
+            return;
+        }
+
+        let current_idx = if let Some(ref focused) = self.widget_state.focus.focused {
+            focusable.iter().position(|w| &w.id == focused)
+        } else {
+            None
+        };
+
+        let next_idx = match current_idx {
+            Some(idx) => (idx + 1) % focusable.len(),
+            None => 0,
+        };
+
+        self.widget_state
+            .focus
+            .set_focus(focusable[next_idx].id.clone());
+    }
+
+    /// Focus previous widget (Shift+Tab)
+    fn focus_prev(&mut self) {
+        let focusable: Vec<_> = self.widgets.iter().filter(|w| w.sense.focus).collect();
+
+        if focusable.is_empty() {
+            return;
+        }
+
+        let current_idx = if let Some(ref focused) = self.widget_state.focus.focused {
+            focusable.iter().position(|w| &w.id == focused)
+        } else {
+            None
+        };
+
+        let prev_idx = match current_idx {
+            Some(idx) if idx > 0 => idx - 1,
+            Some(_) => focusable.len() - 1,
+            None => focusable.len() - 1,
+        };
+
+        self.widget_state
+            .focus
+            .set_focus(focusable[prev_idx].id.clone());
+    }
+
     /// Process a click at `(x, y)` against registered widgets.
     ///
     /// Returns the top-most widget ID that contains the point (Z-order + modal
@@ -1270,7 +1340,7 @@ impl InputCoordinator {
     /// see [`Self::hit_test_with_sense`] for the known gap this leaves (a
     /// region has no z-order, so it cannot be proven to sit below a modal
     /// that visually covers it).
-    pub fn process_click(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_click(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.click)
     }
 
@@ -1278,7 +1348,7 @@ impl InputCoordinator {
     ///
     /// Returns the top-most widget ID with `sense.right_click` set, applying the
     /// same scoped-region and modal logic as `process_click`.
-    pub fn process_right_click(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_right_click(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.right_click)
     }
 
@@ -1286,7 +1356,7 @@ impl InputCoordinator {
     ///
     /// Returns the top-most widget ID with `sense.double_click` set, applying the
     /// same scoped-region and modal logic as `process_click`.
-    pub fn process_double_click(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_double_click(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.double_click)
     }
 
@@ -1295,7 +1365,7 @@ impl InputCoordinator {
     /// Returns the top-most widget ID with `sense.scroll` set.  Use this to
     /// route a scroll-wheel event to the correct widget when your platform
     /// delivers scroll events separately from the frame loop.
-    pub fn process_scroll(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_scroll(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.scroll)
     }
 
@@ -1306,7 +1376,7 @@ impl InputCoordinator {
     /// a `mouse-down` handler when you want to start a drag interaction
     /// (scrollbar thumb, modal header, splitter, etc.) — `process_click`
     /// filters by `sense.click` only and so misses drag-only widgets.
-    pub fn process_drag_press(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_drag_press(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.drag)
     }
 
@@ -1314,7 +1384,7 @@ impl InputCoordinator {
     ///
     /// Returns the top-most widget ID with `sense.hover` set.  The implicit
     /// hover tracking in `end_frame` still works independently.
-    pub fn process_hover(&self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_hover(&self, x: f64, y: f64) -> Option<WidgetId> {
         self.hit_test_with_sense(x, y, &|s| s.hover)
     }
 
@@ -1335,7 +1405,7 @@ impl InputCoordinator {
     /// duplicates that ordering (rather than calling `hit_test_with_sense`
     /// directly) because it also has to mutate drag state (`start_drag`),
     /// which needs `&mut self`.
-    pub fn process_drag_start(&mut self, x: f64, y: f64) -> Option<WidgetId> {
+    fn process_drag_start(&mut self, x: f64, y: f64) -> Option<WidgetId> {
         // Build the scoped-region + modal + sense logic inline (needs &mut self).
         let has_modal = self.layers.iter().any(|l| l.modal);
 
@@ -1393,7 +1463,7 @@ impl InputCoordinator {
     ///
     /// Returns `(widget_id, dx, dy)` where `dx`/`dy` are the delta from the
     /// drag-start position.  Returns `None` when no drag is active.
-    pub fn process_drag_move(&mut self, x: f64, y: f64) -> Option<(WidgetId, f64, f64)> {
+    fn process_drag_move(&mut self, x: f64, y: f64) -> Option<(WidgetId, f64, f64)> {
         let id = self.widget_state.drag.dragging.clone()?;
         self.widget_state.drag.update(x, y);
         let (dx, dy) = self.widget_state.drag.delta();
@@ -1404,61 +1474,16 @@ impl InputCoordinator {
     ///
     /// Clears drag state and returns the widget ID that was being dragged.
     /// Returns `None` when no drag is active.
-    pub fn process_drag_end(&mut self) -> Option<WidgetId> {
+    fn process_drag_end(&mut self) -> Option<WidgetId> {
         let id = self.widget_state.drag.dragging.clone()?;
         self.widget_state.drag.end();
         Some(id)
-    }
-
-    /// Check if a point is inside any modal layer's registered area.
-    /// Returns true if the point hits a modal layer but misses all widgets on it.
-    /// This is useful for "click outside modal content to close" behavior.
-    pub fn is_point_in_modal_layer(&self, x: f64, y: f64) -> bool {
-        // Check if highest modal layer exists and point is NOT on any widget
-        let hit = self.hit_test_at(x, y);
-        let has_modal = self.layers.iter().any(|l| l.modal);
-        has_modal && hit.is_none()
-    }
-
-    /// Check if a point is blocked from reaching non-modal layers.
-    /// Returns true if any modal layer is active AND the point is either:
-    /// - On a widget registered to the modal layer or above, OR
-    /// - In the modal's blocking zone (no widget hit, modal blocks lower layers)
-    ///
-    /// Use this for drag blocking: when a modal is open, drags on/above the modal
-    /// should not pass through to panel separators/headers on lower layers.
-    pub fn is_blocked_by_modal(&self, x: f64, y: f64) -> bool {
-        let modal_z = self.layers.iter()
-            .filter(|l| l.modal)
-            .map(|l| l.z_order)
-            .min();
-        let Some(modal_z) = modal_z else { return false };
-
-        match self.hit_test_at(x, y) {
-            None => true,
-            Some(widget) => {
-                self.layers.iter()
-                    .find(|l| l.id == widget.layer)
-                    .map(|l| l.z_order >= modal_z)
-                    .unwrap_or(false)
-            }
-        }
-    }
-
-    /// Get the topmost modal layer ID (if any active)
-    pub fn topmost_modal_layer(&self) -> Option<&LayerId> {
-        self.layers.iter().rev().find(|l| l.modal).map(|l| &l.id)
-    }
-}
-
-impl Default for InputCoordinator {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::input::driver::CoordinatorDriver;
     use crate::input::*;
     use crate::input::pointer::state::MouseButton;
     use crate::types::{Rect, WidgetState};

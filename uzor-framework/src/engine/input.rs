@@ -9,17 +9,18 @@
 //! pointer capture and the caret-blink phase. Pure and deterministic: every
 //! time-dependent op carries the host clock.
 //!
-//! ## Coordinator access and the future driver trait
+//! ## Coordinator access
 //!
-//! The coordinator's state-mutating methods (`begin_frame`, `end_frame`,
+//! State-mutating coordinator methods (`begin_frame`, `end_frame`,
 //! `set_focus`, `clear_focus`, `focus_next` / `focus_prev`,
-//! `focus_text_field`, `grab_pointer` / `release_pointer`, `on_char`,
-//! `on_key`, `text_fields_mut`) are called only from this file. Lib brief L6
-//! moves them behind `CoordinatorDriver` (ban F7 keeps that trait inside
-//! this engine and the kernel); until then they are plain inherent calls.
-//! [`InputEngine::registrar`] is the compose-phase door for widget
-//! registration; after L6 the `&mut InputCoordinator` it returns can no
-//! longer reach those methods.
+//! `grab_pointer` / `release_pointer`, `on_char`, `on_key`, `process_*`,
+//! `push_layer` / `pop_layer`, `set_cursor_pos`) live on
+//! [`CoordinatorDriver`](uzor::input::driver::CoordinatorDriver). This
+//! engine is the one writer; ban F7 keeps that trait out of every other
+//! framework module except `kernel/`. [`InputEngine::registrar`] hands
+//! compose a `&mut InputCoordinator` for registration and reads only.
+//! `focus_text_field` and `text_fields_mut` stay inherent (L-F1 does not
+//! move them).
 //!
 //! ## Pointer (routing, design §4.3)
 //!
@@ -140,6 +141,7 @@ use std::fmt;
 
 use smallvec::SmallVec;
 use uzor::input::core::cook::CookState;
+use uzor::input::driver::CoordinatorDriver;
 use uzor::input::text::selection::{char_at_point, SelectionLine, TextSelection};
 use uzor::input::{
     InputCoordinator, InputState, KeyCode, KeyPress, ModifierKeys, MouseButton, TextAction,
