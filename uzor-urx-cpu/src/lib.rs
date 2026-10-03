@@ -17,14 +17,10 @@
 //! - `PushClipRoundedRect`/`PopClip` — real per-pixel rounded-clip
 //!   coverage masks (`rounded.rs`)
 //! - `PushBlendLayer`/`PopBlendLayer` — real offscreen-pixmap group
-//!   isolation (`blend.rs`, URX Wave 3 Commit 1,
-//!   `nemo/docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
-//!   §5) — content between the two composites as ONE translucent unit
+//!   isolation (`blend.rs`, URX Wave 3 Commit 1) — content between the two composites as ONE translucent unit
 //!   (correct group opacity/blending), not each primitive fading
 //!   independently against whatever's already drawn.
-//! - `gradient.rs` (URX Wave 4 Commit 1,
-//!   `nemo/docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
-//!   §0.1/§2.2) — three targeted correctness fixes: `FillRect` gradient
+//! - `gradient.rs` (URX Wave 4 Commit 1) — three targeted correctness fixes: `FillRect` gradient
 //!   fills now consult the rounded-clip mask (previously silently
 //!   ignored `radii`); the gradient's own axis/center/radius/angles now
 //!   transform with the rect (previously anchored to the untransformed

@@ -6,6 +6,11 @@ pub trait TextTheme: Send + Sync {
     fn text_color(&self) -> &str;
     /// Text color when hovered.
     fn text_color_hover(&self) -> &str;
+    /// Fill of the selection highlight drawn under selected glyphs (only
+    /// by [`draw_text_with_selection`](super::render::draw_text_with_selection)
+    /// with a non-empty selection). Token `text.selection_color`, aliased to
+    /// the `selection` role.
+    fn selection_color(&self) -> &str;
 }
 
 // =============================================================================

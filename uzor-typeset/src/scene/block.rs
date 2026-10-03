@@ -1,9 +1,7 @@
 //! [`Block`]/[`BlockNode`]/[`BlockId`] — the runtime scene tree's flow-unit
 //! (borrowed, matches `uzor_text::Paragraph<'a>`'s own convention).
 //!
-//! P0 built only the `Paragraph`/`Spacer` variants
-//! (`nemo/docs/uzor-engines/uzor_typeset_arc4_design.md` §2.1/§7 P0 phase
-//! entry) — additive-only law. P1 adds `Figure`/`Image`/`Table`/`List` as
+//! P0 built only the `Paragraph`/`Spacer` variants — additive-only law. P1 adds `Figure`/`Image`/`Table`/`List` as
 //! NEW variants (this crate's own task scope narrows the doc's §2.1
 //! sketch: `Interactive` is NOT built this phase either — no P1 consumer
 //! or gate needs a reserved-rect placeholder yet, deferred with the same
@@ -96,8 +94,7 @@ pub enum Block<'a> {
 
 /// A [`BlockNode`] tagged as a document-outline / table-of-contents entry
 /// via [`BlockNode::with_outline`] (document-navigation feature pass —
-/// `nemo/docs/uzor-engines/research_typesetting_sota_2026.md`'s
-/// counter-introspection item: one mechanism powers counters/TOC/
+/// counter introspection: one mechanism powers counters/TOC/
 /// cross-refs, this crate's own narrow slice of that is "collect every
 /// tagged block's own resolved page number," the page-slicing pass
 /// itself being the counter). `title` is explicit, never derived from the

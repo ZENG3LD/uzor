@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use super::{DockingTree, DockPanel, Leaf, Branch, PanelNode, WindowLayout, LeafId, BranchId};
+use super::{DockingTree, DockPanel, Leaf, Branch, PanelNode, WindowLayout, LeafId, BranchId, GridSpec};
 
 /// Serialized tree layout (structure only, no panel content)
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,7 +36,52 @@ pub enum SerializedNodeType {
         layout: String,      // WindowLayout name (serialized)
         proportions: Vec<f64>,
         cross_ratio: Option<(f64, f64)>,
+        /// Absent in snapshots written before the field existed; those load
+        /// as `true`, the behaviour they were saved with.
+        #[serde(default = "default_magnetic")]
+        magnetic: bool,
+        /// `rows × cols` grid shape and ratios. Absent (and not written) for
+        /// branches that are not grids, so snapshots of preset-only trees
+        /// are unchanged and older snapshots load with no grid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grid: Option<SerializedGrid>,
     },
+}
+
+/// Wire form of a [`GridSpec`]: a branch laid out as `rows × cols` cells
+/// (row-major children) with independent row and column weights.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SerializedGrid {
+    pub rows: usize,
+    pub cols: usize,
+    pub row_ratios: Vec<f64>,
+    pub col_ratios: Vec<f64>,
+}
+
+impl From<&GridSpec> for SerializedGrid {
+    fn from(g: &GridSpec) -> Self {
+        Self { rows: g.rows, cols: g.cols, row_ratios: g.row_ratios.clone(), col_ratios: g.col_ratios.clone() }
+    }
+}
+
+impl SerializedGrid {
+    /// Back to a [`GridSpec`]. Ratio blocks of the wrong length or with a
+    /// non-positive weight are replaced by equal ratios; a zero dimension
+    /// yields `None` (the branch loads as a plain preset).
+    fn to_spec(&self) -> Option<GridSpec> {
+        let mut spec = GridSpec::new(self.rows, self.cols)?;
+        if self.row_ratios.len() == self.rows && GridSpec::valid_block(&self.row_ratios) {
+            spec.row_ratios = self.row_ratios.clone();
+        }
+        if self.col_ratios.len() == self.cols && GridSpec::valid_block(&self.col_ratios) {
+            spec.col_ratios = self.col_ratios.clone();
+        }
+        Some(spec)
+    }
+}
+
+fn default_magnetic() -> bool {
+    true
 }
 
 impl LayoutSnapshot {
@@ -69,6 +114,8 @@ impl LayoutSnapshot {
                 layout: Self::layout_to_string(branch.layout),
                 proportions: branch.proportions.clone(),
                 cross_ratio: branch.cross_ratio,
+                magnetic: branch.magnetic,
+                grid: branch.grid.as_ref().map(SerializedGrid::from),
             },
         });
 
@@ -210,7 +257,7 @@ impl LayoutSnapshot {
         F: FnMut(u64, &str) -> Option<P>,
     {
         match &node.node_type {
-            SerializedNodeType::Branch { children, layout, proportions, cross_ratio } => {
+            SerializedNodeType::Branch { children, layout, proportions, cross_ratio, magnetic, grid } => {
                 let layout_enum = Self::string_to_layout(layout)?;
 
                 // Restore children
@@ -230,6 +277,11 @@ impl LayoutSnapshot {
                     child_nodes.push(panel_node);
                 }
 
+                // Kept only while it still fits the restored children.
+                let restored_grid = grid.as_ref()
+                    .and_then(SerializedGrid::to_spec)
+                    .filter(|g| g.cell_count() == child_nodes.len());
+
                 Ok(Branch {
                     id: BranchId(node.id),
                     children: child_nodes,
@@ -242,6 +294,8 @@ impl LayoutSnapshot {
                     // tree-walk hook.  Defaulting to false matches the
                     // pre-existing aggressive-collapse behavior.
                     preserve_if_empty: false,
+                    magnetic: *magnetic,
+                    grid: restored_grid,
                 })
             }
             _ => Err(format!("Expected branch node, got leaf for id {}", node.id)),
@@ -340,5 +394,132 @@ mod tests {
 
         assert_eq!(restored_tree.leaf_count(), 1);
         assert_eq!(restored_tree.layout(), WindowLayout::Single);
+    }
+
+    #[test]
+    fn magnetic_round_trips_and_old_snapshots_load_as_magnetic() {
+        let panel = TestPanel { title: "T".to_string(), type_id: "test" };
+        let mut tree = DockingTree::with_single_leaf(panel.clone());
+        tree.add_leaf(panel.clone());
+        let root_id = tree.root().id;
+        tree.find_branch_mut(root_id).unwrap().magnetic = false;
+
+        let json = LayoutSnapshot::from_tree(&tree, "m").to_json().unwrap();
+        let restored = LayoutSnapshot::from_json(&json)
+            .unwrap()
+            .restore_tree(|_| Some(panel.clone()))
+            .unwrap();
+        assert!(!restored.root().magnetic);
+
+        // A snapshot written before the field existed: drop every "magnetic" key.
+        fn strip(v: &mut serde_json::Value) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    map.remove("magnetic");
+                    map.values_mut().for_each(strip);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(strip),
+                _ => {}
+            }
+        }
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(json.contains("magnetic"), "the field is written: {json}");
+        strip(&mut value);
+        let old = value.to_string();
+        assert!(!old.contains("magnetic"));
+        let restored = LayoutSnapshot::from_json(&old)
+            .unwrap()
+            .restore_tree(|_| Some(panel.clone()))
+            .unwrap();
+        assert!(restored.root().magnetic);
+    }
+}
+
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct T;
+    impl DockPanel for T {
+        fn title(&self) -> &str { "t" }
+        fn type_id(&self) -> &'static str { "t" }
+    }
+
+    fn strip_key(v: &mut serde_json::Value, key: &str) {
+        match v {
+            serde_json::Value::Object(map) => {
+                map.remove(key);
+                map.values_mut().for_each(|x| strip_key(x, key));
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(|x| strip_key(x, key)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn rxc_branch_round_trips_rows_cols_and_ratios() {
+        // Root split: leaf | 2×3 grid with uneven rows and columns.
+        let mut tree = DockingTree::with_single_leaf(T);
+        let second = tree.add_leaf(T);
+        let (grid_id, cells) = tree.wrap_leaf_in_grid(second, 2, 3, vec![T; 5]).unwrap();
+        assert!(tree.set_grid_row_ratios(grid_id, vec![0.25, 0.75]));
+        assert!(tree.set_grid_col_ratios(grid_id, vec![0.2, 0.5, 0.3]));
+
+        let json = LayoutSnapshot::from_tree(&tree, "g").to_json().unwrap();
+        let restored = LayoutSnapshot::from_json(&json).unwrap()
+            .restore_tree(|_| Some(T)).unwrap();
+
+        let g = restored.branch_grid(grid_id).expect("grid restored");
+        assert_eq!((g.rows, g.cols), (2, 3));
+        assert_eq!(g.row_ratios, vec![0.25, 0.75]);
+        assert_eq!(g.col_ratios, vec![0.2, 0.5, 0.3]);
+        assert_eq!(restored.find_branch(grid_id).unwrap().layout, WindowLayout::Custom);
+        for id in &cells {
+            assert_eq!(
+                restored.rect_for_leaf(*id, 1000.0, 800.0),
+                tree.rect_for_leaf(*id, 1000.0, 800.0),
+            );
+        }
+    }
+
+    #[test]
+    fn preset_only_snapshots_carry_no_grid_key_and_old_snapshots_load_without_a_grid() {
+        let mut tree = DockingTree::with_single_leaf(T);
+        tree.add_leaf(T);
+        tree.add_leaf(T);
+        let json = LayoutSnapshot::from_tree(&tree, "p").to_json().unwrap();
+        assert!(!json.contains("grid"), "non-grid branches write nothing new: {json}");
+
+        // A snapshot written before the field existed (grid key removed from
+        // a grid tree's snapshot) loads as today's preset branch.
+        let mut grid_tree = DockingTree::with_grid(1, 3, vec![T; 3]).unwrap();
+        let root = grid_tree.root().id;
+        assert!(grid_tree.set_grid_col_ratios(root, vec![1.0, 2.0, 1.0]));
+        let mut value: serde_json::Value = serde_json::from_str(
+            &LayoutSnapshot::from_tree(&grid_tree, "g").to_json().unwrap(),
+        ).unwrap();
+        strip_key(&mut value, "grid");
+        let old = value.to_string();
+        assert!(!old.contains("grid"));
+        let restored = LayoutSnapshot::from_json(&old).unwrap()
+            .restore_tree(|_| Some(T)).unwrap();
+        assert!(restored.root().grid.is_none());
+        assert_eq!(restored.layout(), WindowLayout::Custom);
+        assert!(restored.root().magnetic);
+    }
+
+    #[test]
+    fn a_grid_that_no_longer_fits_its_children_is_dropped_on_restore() {
+        let tree = DockingTree::with_grid(2, 2, vec![T; 4]).unwrap();
+        let mut snap = LayoutSnapshot::from_tree(&tree, "g");
+        for node in &mut snap.nodes {
+            if let SerializedNodeType::Branch { grid: Some(g), .. } = &mut node.node_type {
+                g.cols = 3; // 2 × 3 = 6 ≠ 4 children
+            }
+        }
+        let restored = snap.restore_tree(|_| Some(T)).unwrap();
+        assert!(restored.root().grid.is_none());
     }
 }

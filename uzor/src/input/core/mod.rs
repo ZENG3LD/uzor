@@ -1,5 +1,7 @@
+pub mod cook;
 pub mod coordinator;
 pub mod event_processor;
+pub mod keymap;
 pub mod response;
 pub mod sense;
 pub mod widget_kind;

@@ -26,6 +26,23 @@ pub struct Sense {
     pub double_click: bool,
     /// Widget receives non-text keyboard events (arrows, escape, shortcuts) when focused
     pub keyboard: bool,
+    /// Widget takes IME composition (preedit / commit) while focused
+    pub ime: bool,
+    /// Widget is a drop target for file / drag-and-drop payloads
+    pub drop: bool,
+    /// Widget responds to multi-finger gestures (pinch, rotate, two-finger pan)
+    pub gesture: bool,
+    /// Widget responds to raw touch contacts
+    pub touch: bool,
+    /// Widget's (non-editable) text can be selected with the pointer
+    /// (drag, double / triple click) and copied.
+    ///
+    /// Off in every named sense except [`Sense::ALL`]: plain text is not
+    /// selectable unless the widget opts in, or the app-wide
+    /// [`TextPolicy`](crate::input::text::TextPolicy) turns it on — see
+    /// [`is_selectable`](crate::input::text::is_selectable). Text inputs
+    /// (`text`) own their selection in the text store and do not need it.
+    pub select: bool,
 }
 
 // Predefined constants
@@ -41,6 +58,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Only hover detection
@@ -54,6 +76,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Click and hover (for buttons, checkboxes)
@@ -67,6 +94,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Drag and hover (for sliders, scrollbars)
@@ -80,6 +112,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Both click and drag (introduces latency)
@@ -93,6 +130,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Can receive keyboard focus but no mouse interaction
@@ -106,6 +148,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Scroll-sensitive (for scrollable container viewports)
@@ -119,9 +166,15 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
-    /// Full interaction - click, drag, hover, focus, scroll, right_click, double_click, keyboard
+    /// Full interaction - click, drag, hover, focus, scroll, right_click,
+    /// double_click, keyboard, ime, drop, gesture, touch, select (not text)
     pub const ALL: Sense = Sense {
         click: true,
         drag: true,
@@ -132,6 +185,11 @@ impl Sense {
         right_click: true,
         double_click: true,
         keyboard: true,
+        ime: true,
+        drop: true,
+        gesture: true,
+        touch: true,
+        select: true,
     };
 
     /// Text input — click, drag, hover, focus, and text
@@ -145,6 +203,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Right-click and hover (for context menus)
@@ -158,6 +221,11 @@ impl Sense {
         right_click: true,
         double_click: false,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Double-click and hover
@@ -171,6 +239,11 @@ impl Sense {
         right_click: false,
         double_click: true,
         keyboard: false,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 
     /// Keyboard events when focused (arrows, escape, shortcuts), includes hover and focus
@@ -184,6 +257,11 @@ impl Sense {
         right_click: false,
         double_click: false,
         keyboard: true,
+        ime: false,
+        drop: false,
+        gesture: false,
+        touch: false,
+        select: false,
     };
 }
 
@@ -259,6 +337,11 @@ impl Sense {
             right_click: self.right_click || other.right_click,
             double_click: self.double_click || other.double_click,
             keyboard: self.keyboard || other.keyboard,
+            ime: self.ime || other.ime,
+            drop: self.drop || other.drop,
+            gesture: self.gesture || other.gesture,
+            touch: self.touch || other.touch,
+            select: self.select || other.select,
         }
     }
 
@@ -275,6 +358,11 @@ impl Sense {
             right_click: self.right_click && other.right_click,
             double_click: self.double_click && other.double_click,
             keyboard: self.keyboard && other.keyboard,
+            ime: self.ime && other.ime,
+            drop: self.drop && other.drop,
+            gesture: self.gesture && other.gesture,
+            touch: self.touch && other.touch,
+            select: self.select && other.select,
         }
     }
 
@@ -342,11 +430,53 @@ impl Sense {
         self.hover = true;
         self
     }
+    /// Add IME composition sensing (also adds focus and hover — IME text
+    /// only ever reaches the focused widget)
+    #[inline]
+    pub fn with_ime(mut self) -> Self {
+        self.ime = true;
+        self.focus = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add drop-target sensing (also adds hover)
+    #[inline]
+    pub fn with_drop(mut self) -> Self {
+        self.drop = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add multi-finger gesture sensing (also adds hover)
+    #[inline]
+    pub fn with_gesture(mut self) -> Self {
+        self.gesture = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add raw touch sensing (also adds hover)
+    #[inline]
+    pub fn with_touch(mut self) -> Self {
+        self.touch = true;
+        self.hover = true;
+        self
+    }
+
+    /// Opt this widget's text into pointer selection (also adds hover —
+    /// the selection drag starts from a press over the widget).
+    #[inline]
+    pub fn with_select(mut self) -> Self {
+        self.select = true;
+        self.hover = true;
+        self
+    }
 }
 
 // Query methods
 impl Sense {
-    /// Check if any interaction is sensed (click, drag, focus, scroll, text, right_click, double_click, or keyboard)
+    /// Check if any interaction is sensed (everything except bare hover)
     #[inline]
     pub fn interactive(&self) -> bool {
         self.click
@@ -357,6 +487,11 @@ impl Sense {
             || self.right_click
             || self.double_click
             || self.keyboard
+            || self.ime
+            || self.drop
+            || self.gesture
+            || self.touch
+            || self.select
     }
 
     /// Check if both click and drag are sensed (has latency)
@@ -376,6 +511,11 @@ impl Sense {
             && !self.right_click
             && !self.double_click
             && !self.keyboard
+            && !self.ime
+            && !self.drop
+            && !self.gesture
+            && !self.touch
+            && !self.select
     }
 }
 
@@ -774,5 +914,72 @@ mod tests {
 
         assert_eq!(original, cloned);
         assert_eq!(original, copied);
+    }
+
+    #[test]
+    fn new_bits_are_off_in_named_senses_and_on_in_all() {
+        for sense in [Sense::NONE, Sense::HOVER, Sense::CLICK, Sense::DRAG, Sense::TEXT_INPUT, Sense::KEYBOARD] {
+            assert!(!sense.ime && !sense.drop && !sense.gesture && !sense.touch, "{sense:?}");
+        }
+        let all = Sense::ALL;
+        assert!(all.ime && all.drop && all.gesture && all.touch);
+    }
+
+    #[test]
+    fn new_builders_set_their_bit_and_hover_and_count_as_interactive() {
+        let ime = Sense::NONE.with_ime();
+        assert!(ime.ime && ime.focus && ime.hover);
+        for sense in [Sense::NONE.with_drop(), Sense::NONE.with_gesture(), Sense::NONE.with_touch()] {
+            assert!(sense.hover);
+            assert!(sense.interactive());
+            assert!(!sense.is_passive());
+        }
+        assert!(Sense::NONE.with_drop().drop);
+        assert!(Sense::NONE.with_gesture().gesture);
+        assert!(Sense::NONE.with_touch().touch);
+    }
+
+    #[test]
+    fn union_and_intersection_carry_the_new_bits() {
+        let a = Sense::NONE.with_touch().with_ime();
+        let b = Sense::NONE.with_touch().with_drop();
+        let u = a.union(b);
+        assert!(u.touch && u.ime && u.drop && !u.gesture);
+        let i = a.intersection(b);
+        assert!(i.touch && !i.ime && !i.drop);
+    }
+
+    #[test]
+    fn select_bit_is_off_in_named_senses_and_on_in_all() {
+        for sense in [
+            Sense::NONE, Sense::HOVER, Sense::CLICK, Sense::DRAG, Sense::CLICK_AND_DRAG,
+            Sense::FOCUSABLE, Sense::SCROLL, Sense::TEXT_INPUT, Sense::RIGHT_CLICK,
+            Sense::DOUBLE_CLICK, Sense::KEYBOARD, Sense::default(),
+        ] {
+            assert!(!sense.select, "{sense:?}");
+        }
+        assert!(Sense::ALL.select);
+    }
+
+    #[test]
+    fn with_select_sets_the_bit_and_hover_and_counts_as_interactive() {
+        let s = Sense::NONE.with_select();
+        assert!(s.select && s.hover);
+        assert!(!s.click && !s.drag && !s.focus && !s.text);
+        assert!(s.interactive());
+        assert!(!s.is_passive());
+        // a hover-only label stays passive until it opts in
+        assert!(Sense::HOVER.is_passive());
+        assert!(!Sense::HOVER.with_select().is_passive());
+    }
+
+    #[test]
+    fn union_and_intersection_carry_the_select_bit() {
+        let a = Sense::HOVER.with_select();
+        let b = Sense::CLICK;
+        assert!(a.union(b).select);
+        assert!((b | a).select);
+        assert!(!a.intersection(b).select);
+        assert!(a.intersection(Sense::ALL).select);
     }
 }

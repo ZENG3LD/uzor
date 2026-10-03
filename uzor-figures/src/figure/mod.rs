@@ -7,8 +7,7 @@
 //! is a later milestone — see the crate-root docs.
 //!
 //! `pie`/`waterfall`/`heatmap` (V4, business-chart set) apply the FT/
-//! Economist chart-hygiene rules from
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6 as DEFAULT
+//! Economist chart-hygiene rules as DEFAULT
 //! behavior, not opt-in flags — see each module's own docs.
 //!
 //! `scatter`/`boxplot`/`kpi` (typography-gap WAVE 4, statistical/business

@@ -1,9 +1,8 @@
 //! `LogScale` — log10 domain mapping, guarded against non-positive
 //! domains.
 //!
-//! Ported and generalized from `PriceScale`'s `Logarithmic` mode dispatch
-//! (`mlc-core/src/chart/types/price_scale.rs:502-519` for the map,
-//! `604-635` for tick generation) — same log10-space linear interpolation,
+//! Ported and generalized from `mylittlechart`'s `PriceScale`
+//! `Logarithmic` mode (map and tick generation) — same log10-space linear interpolation,
 //! same non-positive-domain floor, "price" vocabulary removed.
 
 use super::linear::format_value;

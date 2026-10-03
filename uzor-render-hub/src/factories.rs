@@ -20,24 +20,24 @@ use uzor::layout::window::RawHandle;
 
 use crate::{RenderBackend, RenderSurfaceFactory, SurfaceError, SurfaceSize, WindowRenderState};
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "tiny-skia", feature = "vello-cpu")))]
 use std::sync::Mutex;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 use vello::{AaSupport, Renderer, RendererOptions};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 use crate::factory::GpuDevicePool;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 use vello::wgpu::PresentMode;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "tiny-skia", feature = "vello-cpu")))]
 use uzor::layout::window::SoftwarePresenter;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 use uzor_window_desktop::SendSyncHandlePair;
 
 // ─── Internal surface target helper (desktop only) ───────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 /// Minimal `HasWindowHandle + HasDisplayHandle` wrapper around raw handles.
 ///
 /// Allows calling `GpuDevicePool::create_surface` from a copied
@@ -58,12 +58,12 @@ struct WinitSurfaceTarget {
 // `Arc<Window>` in `WinitWindowProvider` keeps them alive for the entire
 // runtime duration).  No thread-local state is accessed during wgpu surface
 // creation on desktop platforms (Win32, X11, Wayland).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 unsafe impl Send for WinitSurfaceTarget {}
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 unsafe impl Sync for WinitSurfaceTarget {}
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 impl winit::raw_window_handle::HasWindowHandle for WinitSurfaceTarget {
     fn window_handle(
         &self,
@@ -74,7 +74,7 @@ impl winit::raw_window_handle::HasWindowHandle for WinitSurfaceTarget {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
     fn display_handle(
         &self,
@@ -95,7 +95,7 @@ impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
 /// ~3s of startup latency.  The remaining work after the HWND is
 /// available (`Instance::create_surface` + `surface.configure` +
 /// target_texture) is only ~50ms.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 pub struct GpuPrewarm {
     pub gpu_pool: GpuDevicePool,
     pub dev_id:   usize,
@@ -108,7 +108,7 @@ pub struct GpuPrewarm {
 /// wgpu skeleton (CPU-rasterised frame uploaded each tick) on the
 /// surface while [`Renderer::new`] continues compiling pipelines on
 /// another thread.  See `start_renderer_in_background`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 pub struct GpuDeviceReady {
     pub gpu_pool: GpuDevicePool,
     pub dev_id:   usize,
@@ -116,7 +116,7 @@ pub struct GpuDeviceReady {
 
 /// Build a wgpu device pool — Instance + Adapter + Device only.
 /// Safe to call before `winit::Window` exists.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 pub fn prewarm_device() -> Result<GpuDeviceReady, SurfaceError> {
     let t_total = std::time::Instant::now();
     let mut gpu_pool = GpuDevicePool::new();
@@ -135,7 +135,7 @@ pub fn prewarm_device() -> Result<GpuDeviceReady, SurfaceError> {
 /// Build a vello `Renderer` against a pre-warmed device.  ~2.7s on a
 /// 4060 Ti.  Run this on a background thread alongside skeleton
 /// rendering on the main thread.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 pub fn build_renderer(device: &wgpu::Device) -> Result<vello::Renderer, SurfaceError> {
     let t_renderer = std::time::Instant::now();
     let n_threads = std::thread::available_parallelism()
@@ -158,7 +158,7 @@ pub fn build_renderer(device: &wgpu::Device) -> Result<vello::Renderer, SurfaceE
 
 /// Combined helper: device prewarm + renderer build, all-in-one.
 /// Used when no skeleton is wanted (legacy path).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 pub fn prewarm_vello_gpu() -> Result<GpuPrewarm, SurfaceError> {
     let ready = prewarm_device()?;
     let renderer = build_renderer(&ready.gpu_pool.devices[ready.dev_id].device)?;
@@ -175,7 +175,7 @@ pub fn prewarm_vello_gpu() -> Result<GpuPrewarm, SurfaceError> {
 /// on a background thread.  When the renderer arrives, call
 /// [`attach_renderer_to_render_state`] to slot it into the existing
 /// `WindowRenderState`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 pub fn build_surface_from_device(
     ready: GpuDeviceReady,
     handle: &RawHandle,
@@ -269,7 +269,7 @@ pub fn build_surface_from_device(
 /// window handle.  Only the surface-bound work runs here (typically
 /// 30–80ms): `instance.create_surface`, alpha-mode probe + configure,
 /// target_texture + blitter.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 fn finalize_gpu_surface(
     prewarm: GpuPrewarm,
     pair: &SendSyncHandlePair,
@@ -375,7 +375,7 @@ fn finalize_gpu_surface(
 /// alpha=0 pixels.  See `docs/research/transparency-dcomp-research.md`.
 ///
 /// On non-Windows platforms returns a plain default `Instance`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 fn build_dcomp_instance() -> wgpu::Instance {
     #[cfg(target_os = "windows")]
     {
@@ -420,7 +420,7 @@ fn build_dcomp_instance() -> wgpu::Instance {
 /// Create a `GpuDevicePool` + `RenderSurface` from a `SendSyncHandlePair`.
 ///
 /// Shared by all GPU-backed factories (VelloGpu, VelloHybrid, WgpuInstanced).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), all(feature = "gpu", any(feature = "tiny-skia", feature = "vello-cpu", feature = "vello-gpu", feature = "vello-hybrid", feature = "wgpu-instanced", feature = "urx"))))]
 fn init_gpu_surface(
     pair: &SendSyncHandlePair,
     size: SurfaceSize,
@@ -571,7 +571,7 @@ fn init_gpu_surface(
 }
 
 /// Extract a `SendSyncHandlePair` from a `RawHandle::RawWindowHandle`.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 fn extract_handle_pair<'a>(
     handle: &'a RawHandle,
     backend: RenderBackend,
@@ -589,6 +589,16 @@ fn extract_handle_pair<'a>(
     })
 }
 
+/// Error for a CPU factory asked to present through the wgpu swapchain in a
+/// build without the `gpu` feature (no presenter was supplied).
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "gpu"), any(feature = "tiny-skia", feature = "vello-cpu")))]
+fn no_gpu_swapchain(backend: RenderBackend) -> SurfaceError {
+    SurfaceError::InitFailed(format!(
+        "{backend:?}: no SoftwarePresenter supplied and uzor-render-hub was built \
+         without the `gpu` feature, so the wgpu swapchain path is unavailable"
+    ))
+}
+
 // ─── Desktop-only factories ───────────────────────────────────────────────────
 // VelloGpuSurfaceFactory, TinySkiaSurfaceFactory, VelloCpuSurfaceFactory,
 // VelloHybridSurfaceFactory, and WgpuInstancedSurfaceFactory all require a
@@ -604,10 +614,10 @@ fn extract_handle_pair<'a>(
 /// 2. Creates a `RenderSurface` bound to the OS window handle.
 /// 3. Creates a vello `Renderer`.
 /// 4. Moves **all three** into [`WindowRenderState::Gpu`].
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 pub struct VelloGpuSurfaceFactory;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 impl VelloGpuSurfaceFactory {
     /// Create a new factory.
     pub fn new() -> Self {
@@ -615,7 +625,7 @@ impl VelloGpuSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 impl VelloGpuSurfaceFactory {
     /// Fast path: build the per-window `WindowRenderState` from a
     /// pre-warmed `GpuPrewarm` (Instance + Adapter + Device + vello
@@ -634,14 +644,14 @@ impl VelloGpuSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 impl Default for VelloGpuSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-gpu"))]
 impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
     fn create_render_state(
         &self,
@@ -704,12 +714,12 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
 /// Build via [`TinySkiaSurfaceFactory::with_presenter`] when a software surface
 /// is needed, or [`TinySkiaSurfaceFactory::new`] when the presenter will be
 /// supplied separately.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia"))]
 pub struct TinySkiaSurfaceFactory {
     presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia"))]
 impl TinySkiaSurfaceFactory {
     /// Create the factory without a presenter.
     ///
@@ -732,14 +742,14 @@ impl TinySkiaSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia"))]
 impl Default for TinySkiaSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia"))]
 impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
     fn create_render_state(
         &self,
@@ -764,9 +774,17 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
         // Default path: render into a tiny-skia pixmap, upload as a
         // texture, blit through the wgpu swapchain.  Mirrors the
         // proven mlc submit path; identical for every spawned window.
-        let pair = extract_handle_pair(handle, backend)?;
-        let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
-        Ok(WindowRenderState::new_tiny_skia_gpu(gpu_pool, surface, dev_id))
+        #[cfg(feature = "gpu")]
+        {
+            let pair = extract_handle_pair(handle, backend)?;
+            let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
+            Ok(WindowRenderState::new_tiny_skia_gpu(gpu_pool, surface, dev_id))
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (handle, size);
+            Err(no_gpu_swapchain(backend))
+        }
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
@@ -783,14 +801,14 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
 ///
 /// Build via [`VelloCpuSurfaceFactory::with_presenter`] when a software surface
 /// is needed.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-cpu"))]
 pub struct VelloCpuSurfaceFactory {
     /// Device pixel ratio.  Defaults to `1.0`.
     pub dpr: f64,
     presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-cpu"))]
 impl VelloCpuSurfaceFactory {
     /// Create the factory with the given device pixel ratio but no presenter.
     ///
@@ -809,14 +827,14 @@ impl VelloCpuSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-cpu"))]
 impl Default for VelloCpuSurfaceFactory {
     fn default() -> Self {
         Self::new(1.0)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-cpu"))]
 impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
     fn create_render_state(
         &self,
@@ -840,9 +858,17 @@ impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
 
         // Default path: render into a vello-cpu pixmap, upload as a
         // texture, blit through the wgpu swapchain.
-        let pair = extract_handle_pair(handle, backend)?;
-        let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
-        Ok(WindowRenderState::new_vello_cpu_gpu(gpu_pool, surface, dev_id, self.dpr))
+        #[cfg(feature = "gpu")]
+        {
+            let pair = extract_handle_pair(handle, backend)?;
+            let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
+            Ok(WindowRenderState::new_vello_cpu_gpu(gpu_pool, surface, dev_id, self.dpr))
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (handle, size);
+            Err(no_gpu_swapchain(backend))
+        }
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
@@ -858,13 +884,13 @@ impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
 /// pool are initialised eagerly; the `vello_hybrid::Renderer` itself is
 /// deferred to the first frame (requires the swapchain texture format, which
 /// only becomes available when the first `get_current_texture` call is made).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-hybrid"))]
 pub struct VelloHybridSurfaceFactory {
     /// Device pixel ratio passed to the `VelloHybridRenderContext`.
     pub dpr: f64,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-hybrid"))]
 impl VelloHybridSurfaceFactory {
     /// Create the factory.
     pub fn new(dpr: f64) -> Self {
@@ -872,14 +898,14 @@ impl VelloHybridSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-hybrid"))]
 impl Default for VelloHybridSurfaceFactory {
     fn default() -> Self {
         Self::new(1.0)
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "vello-hybrid"))]
 impl RenderSurfaceFactory for VelloHybridSurfaceFactory {
     fn create_render_state(
         &self,
@@ -910,10 +936,10 @@ impl RenderSurfaceFactory for VelloHybridSurfaceFactory {
 /// Constructs a [`WindowRenderState::WgpuInstanced`].  GPU surface and device
 /// pool are initialised eagerly; the `InstancedRenderer` itself is deferred
 /// to the first frame (requires the swapchain texture format).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "wgpu-instanced"))]
 pub struct WgpuInstancedSurfaceFactory;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "wgpu-instanced"))]
 impl WgpuInstancedSurfaceFactory {
     /// Create the factory.
     pub fn new() -> Self {
@@ -921,14 +947,14 @@ impl WgpuInstancedSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "wgpu-instanced"))]
 impl Default for WgpuInstancedSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "wgpu-instanced"))]
 impl RenderSurfaceFactory for WgpuInstancedSurfaceFactory {
     fn create_render_state(
         &self,
@@ -961,10 +987,10 @@ impl RenderSurfaceFactory for WgpuInstancedSurfaceFactory {
 /// texture; the other URX variants render or composite directly on the GPU.
 /// Backend-specific renderer resources remain lazy and are created by the
 /// corresponding `submit_urx_*` path.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "urx"))]
 pub struct UrxSurfaceFactory;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "urx"))]
 impl UrxSurfaceFactory {
     /// Create a native URX surface factory.
     pub fn new() -> Self {
@@ -972,14 +998,14 @@ impl UrxSurfaceFactory {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "urx"))]
 impl Default for UrxSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "urx"))]
 impl RenderSurfaceFactory for UrxSurfaceFactory {
     fn create_render_state(
         &self,
@@ -1128,6 +1154,7 @@ mod tests {
         RawHandle::Canvas(Box::new(42u32))
     }
 
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu"))]
     fn raw_window_handle_dummy() -> RawHandle {
         // We can't construct a real SendSyncHandlePair in unit tests, but we
         // can verify the discriminant check at the `supports` level, which
@@ -1138,6 +1165,7 @@ mod tests {
     // ── VelloGpuSurfaceFactory ────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "vello-gpu")]
     fn vello_gpu_supports_correct_pair() {
         let f = VelloGpuSurfaceFactory::new();
         // `supports` only checks the discriminant, not whether the inner Any
@@ -1148,6 +1176,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vello-gpu")]
     fn vello_gpu_rejects_wrong_backend() {
         let f = VelloGpuSurfaceFactory::new();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
@@ -1156,6 +1185,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vello-gpu")]
     fn vello_gpu_rejects_canvas_handle() {
         let f = VelloGpuSurfaceFactory::new();
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloGpu));
@@ -1164,6 +1194,7 @@ mod tests {
     // ── TinySkiaSurfaceFactory ────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "tiny-skia")]
     fn tiny_skia_supports_any_handle() {
         let f = TinySkiaSurfaceFactory::new();
         // TinySkia doesn't care about the handle type.
@@ -1172,6 +1203,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tiny-skia")]
     fn tiny_skia_rejects_wrong_backend() {
         let f = TinySkiaSurfaceFactory::new();
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloGpu));
@@ -1181,6 +1213,7 @@ mod tests {
     // ── VelloCpuSurfaceFactory ────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "vello-cpu")]
     fn vello_cpu_supports_any_handle() {
         let f = VelloCpuSurfaceFactory::default();
         assert!(f.supports(&canvas_handle(), RenderBackend::VelloCpu));
@@ -1188,6 +1221,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vello-cpu")]
     fn vello_cpu_rejects_wrong_backend() {
         let f = VelloCpuSurfaceFactory::default();
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloGpu));
@@ -1197,6 +1231,7 @@ mod tests {
     // ── VelloHybridSurfaceFactory ─────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "vello-hybrid")]
     fn vello_hybrid_supports_raw_window_handle() {
         let f = VelloHybridSurfaceFactory::default();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
@@ -1204,12 +1239,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vello-hybrid")]
     fn vello_hybrid_rejects_canvas_handle() {
         let f = VelloHybridSurfaceFactory::default();
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloHybrid));
     }
 
     #[test]
+    #[cfg(feature = "vello-hybrid")]
     fn vello_hybrid_rejects_wrong_backend() {
         let f = VelloHybridSurfaceFactory::default();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
@@ -1220,6 +1257,7 @@ mod tests {
     // ── WgpuInstancedSurfaceFactory ───────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "wgpu-instanced")]
     fn wgpu_instanced_supports_raw_window_handle() {
         let f = WgpuInstancedSurfaceFactory::new();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
@@ -1227,12 +1265,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "wgpu-instanced")]
     fn wgpu_instanced_rejects_canvas_handle() {
         let f = WgpuInstancedSurfaceFactory::new();
         assert!(!f.supports(&canvas_handle(), RenderBackend::InstancedWgpu));
     }
 
     #[test]
+    #[cfg(feature = "wgpu-instanced")]
     fn wgpu_instanced_rejects_wrong_backend() {
         let f = WgpuInstancedSurfaceFactory::new();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));
@@ -1243,6 +1283,7 @@ mod tests {
     // ── UrxSurfaceFactory ─────────────────────────────────────────────────────
 
     #[test]
+    #[cfg(feature = "urx")]
     fn urx_surface_factory_supports_all_urx_backends_only_on_native_handles() {
         let f = UrxSurfaceFactory::new();
         let handle = RawHandle::RawWindowHandle(Box::new(42u32));

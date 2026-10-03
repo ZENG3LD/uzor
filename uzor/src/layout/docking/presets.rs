@@ -7,6 +7,39 @@ use super::PanelRect;
 /// Default gap between panels in multi-panel layouts
 pub const PANEL_GAP: f32 = 0.0;
 
+/// How a separator drag reacts when it would push a neighbour below its
+/// minimum size. Set per [`DockState`](crate::layout::DockState) with
+/// `set_splitter_policy`.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum SplitterPolicy {
+    /// Today's behaviour (the default). Never rejects.
+    ///
+    /// Single-axis splits cascade the delta through the siblings on the
+    /// shrinking side, each down to its pixel minimum; the two-axis presets
+    /// move `cross_ratio` within `0.05..=0.95`; a `rows × cols` grid line
+    /// moves its two adjacent tracks and stops at their pixel minimums.
+    #[default]
+    Cascade,
+    /// A move that would take a neighbour below its minimum is rejected
+    /// whole: proportions stay unchanged, `drag_separator` returns `false`,
+    /// and a [`SnapBackAnimation`](super::SnapBackAnimation) with the
+    /// overshoot is queued for the separator. Only the two children /
+    /// tracks next to the separator move. For the two-axis presets the
+    /// bounds are `cross_ratio` `0.05..=0.95`.
+    RejectSnapBack,
+    /// Stop at the limit: only the two children / tracks next to the
+    /// separator change, and the one shrinking stops at its minimum —
+    /// `min_frac` of the branch along the drag axis, or its pixel minimum
+    /// if that is larger. Never rejects, never snaps back. For the two-axis
+    /// presets (`Grid2x2`, L-shapes) the `cross_ratio` is kept within
+    /// `min_frac..=1 - min_frac` (and never outside `0.05..=0.95`).
+    Clamp {
+        /// Smallest fraction of the branch a child may shrink to; values
+        /// outside `0.0..0.5` are clamped (NaN counts as 0).
+        min_frac: f64,
+    },
+}
+
 /// How to split a container into sub-slots.
 ///
 /// Naming reflects WHERE the new sibling appears:
@@ -197,5 +230,134 @@ impl WindowLayout {
         }
 
         rects
+    }
+}
+
+/// A `rows × cols` grid shape with independently adjustable row and column
+/// ratios, carried by a [`Branch`](super::Branch) in its `grid` field.
+///
+/// Children of a grid branch are laid out in row-major order: child
+/// `r * cols + c` occupies row `r`, column `c`. `row_ratios` (len = `rows`)
+/// sizes the rows top to bottom, `col_ratios` (len = `cols`) sizes the
+/// columns left to right. Each block is normalised on read, so only the
+/// relative weights inside a block matter, and changing the rows never
+/// touches the columns (and vice versa).
+///
+/// A grid branch keeps `layout == WindowLayout::Custom`, so code that only
+/// knows the closed presets still sees a valid layout value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridSpec {
+    /// Number of rows (≥ 1).
+    pub rows: usize,
+    /// Number of columns (≥ 1).
+    pub cols: usize,
+    /// Row weights, top to bottom. Length `rows`.
+    pub row_ratios: Vec<f64>,
+    /// Column weights, left to right. Length `cols`.
+    pub col_ratios: Vec<f64>,
+}
+
+impl GridSpec {
+    /// Equal rows and equal columns. `None` if `rows` or `cols` is zero.
+    pub fn new(rows: usize, cols: usize) -> Option<Self> {
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+        Some(Self {
+            rows,
+            cols,
+            row_ratios: vec![1.0 / rows as f64; rows],
+            col_ratios: vec![1.0 / cols as f64; cols],
+        })
+    }
+
+    /// Grid with explicit weights (the shape is taken from the lengths).
+    /// `None` unless both blocks are non-empty and every weight is finite
+    /// and positive.
+    pub fn with_ratios(row_ratios: Vec<f64>, col_ratios: Vec<f64>) -> Option<Self> {
+        if !Self::valid_block(&row_ratios) || !Self::valid_block(&col_ratios) {
+            return None;
+        }
+        Some(Self {
+            rows: row_ratios.len(),
+            cols: col_ratios.len(),
+            row_ratios,
+            col_ratios,
+        })
+    }
+
+    /// `true` when `ratios` is non-empty and every entry is finite and > 0.
+    pub(crate) fn valid_block(ratios: &[f64]) -> bool {
+        !ratios.is_empty() && ratios.iter().all(|r| r.is_finite() && *r > 0.0)
+    }
+
+    /// Number of cells (`rows * cols`) — the child count the grid lays out.
+    pub fn cell_count(&self) -> usize {
+        self.rows * self.cols
+    }
+
+    /// Row-major child index of cell (`row`, `col`).
+    pub fn cell_index(&self, row: usize, col: usize) -> usize {
+        row * self.cols + col
+    }
+
+    /// Row weights normalised to sum 1 (equal rows if the stored block is
+    /// the wrong length or invalid).
+    pub fn normalized_rows(&self) -> Vec<f64> {
+        Self::normalize(&self.row_ratios, self.rows)
+    }
+
+    /// Column weights normalised to sum 1 (equal columns if the stored block
+    /// is the wrong length or invalid).
+    pub fn normalized_cols(&self) -> Vec<f64> {
+        Self::normalize(&self.col_ratios, self.cols)
+    }
+
+    fn normalize(ratios: &[f64], n: usize) -> Vec<f64> {
+        if n == 0 {
+            return Vec::new();
+        }
+        if ratios.len() != n || !Self::valid_block(ratios) {
+            return vec![1.0 / n as f64; n];
+        }
+        let sum: f64 = ratios.iter().sum();
+        ratios.iter().map(|r| r / sum).collect()
+    }
+
+    /// Cell rects for the grid laid out in `area`, row-major, with `gap`
+    /// pixels between adjacent rows and columns.
+    pub fn cell_rects(&self, area: PanelRect, gap: f32) -> Vec<PanelRect> {
+        let (xs, ws) = Self::tracks(&self.normalized_cols(), area.x, area.width, gap);
+        let (ys, hs) = Self::tracks(&self.normalized_rows(), area.y, area.height, gap);
+        let mut out = Vec::with_capacity(self.cell_count());
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                out.push(PanelRect::new(xs[c], ys[r], ws[c], hs[r]));
+            }
+        }
+        out
+    }
+
+    /// Start offsets and extents of the tracks along one axis. Track edges
+    /// come from the cumulative fraction, so the last track ends exactly at
+    /// the far edge.
+    pub(crate) fn tracks(fracs: &[f64], start: f32, extent: f32, gap: f32) -> (Vec<f32>, Vec<f32>) {
+        let n = fracs.len();
+        let available = (extent - gap * n.saturating_sub(1) as f32).max(0.0) as f64;
+        let mut starts = Vec::with_capacity(n);
+        let mut sizes = Vec::with_capacity(n);
+        let mut acc = 0.0_f64;
+        for (i, f) in fracs.iter().enumerate() {
+            let a = start + (acc * available) as f32 + gap * i as f32;
+            acc += f;
+            let b = if i + 1 == n {
+                start + extent
+            } else {
+                start + (acc * available) as f32 + gap * i as f32
+            };
+            starts.push(a);
+            sizes.push((b - a).max(0.0));
+        }
+        (starts, sizes)
     }
 }

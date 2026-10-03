@@ -1,0 +1,37 @@
+[package]
+name = "uzor-framework"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "uzor app engine: one kernel of single-writer engines driven by a typed input bus"
+readme = "../README.md"
+
+[dependencies]
+# Leaf types only (Rect, WidgetId, KeyCode, docking ids, tokens, cadence types).
+# `default-features = false` is the workspace default; no uzor feature is
+# needed by `types/` (uzor's serde derives are unconditional).
+uzor = { workspace = true, features = ["testing"] }
+serde = { workspace = true }
+# The handle's lock-free snapshot slot (SWC: channels + Arc only at the handle).
+arc-swap = "1.7"
+# Layout blob wire format (versioned envelope, §3.2.5).
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+smallvec = "1.10"
+thiserror = "1.0"
+
+[features]
+# Host placeholders. The native (winit) host lands in F9, the web
+# (browser RAF) host in F10; neither pulls a dependency yet.
+native = []
+web = []
+
+[dev-dependencies]
+# CPU context for the F8 widget golden (compares against the committed
+# uzor-render-tiny-skia widget PNGs; this crate does not store images).
+uzor-render-tiny-skia = { workspace = true }
+tiny-skia = "0.11"

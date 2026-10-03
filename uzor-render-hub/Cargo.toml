@@ -10,37 +10,77 @@ keywords.workspace = true
 categories.workspace = true
 description = "uzor-render-hub: unified rendering backend hub — auto-detects GPU, instantiates the right backend (vello-gpu / vello-hybrid / wgpu-instanced / vello-cpu / tiny-skia), submits frames, collects metrics."
 
+[features]
+# Every backend is compiled by default, so consumers that depend on this
+# crate without naming features keep the full backend set. Consumers that
+# only need a subset use `default-features = false` plus the backends they
+# want. `RenderBackend` / `RenderFamily` / `RecommendedBackend` keep every
+# variant regardless of features; requesting a backend that is not compiled
+# in yields no factory / no render context / a skipped frame.
+default = ["tiny-skia", "vello-cpu", "vello-gpu", "vello-hybrid", "wgpu-instanced", "urx", "urx-3d"]
+# CPU rasterisers. On their own they present through `SurfaceMode::Software`
+# (a `SoftwarePresenter`); combined with `gpu` they can also upload into the
+# shared wgpu swapchain.
+tiny-skia = ["dep:uzor-render-tiny-skia"]
+vello-cpu = ["dep:uzor-render-vello-cpu"]
+# GPU backends.
+vello-gpu = ["gpu", "dep:uzor-render-vello-gpu"]
+vello-hybrid = ["gpu", "dep:uzor-render-vello-hybrid", "dep:vello_hybrid"]
+wgpu-instanced = ["gpu", "dep:uzor-render-wgpu-instanced"]
+# URX family (UrxCpu / UrxWgpu / UrxHybrid / UrxWgpuFull + the retained
+# `UrxEngine` channel). Every URX backend presents through the wgpu
+# swapchain, so this implies `gpu`.
+urx = [
+    "gpu",
+    "dep:uzor-render-urx",
+    "dep:uzor-urx-cpu",
+    "dep:uzor-urx-wgpu",
+    "dep:uzor-urx-hybrid",
+    "dep:uzor-urx-wgpu-full",
+    "dep:uzor-urx-engine",
+]
+# URX 3D renderer, particles, physics and the composed 2D+3D submit path.
+urx-3d = ["urx", "dep:uzor-urx-3d", "dep:uzor-urx-physics"]
+# Shared GPU plumbing: wgpu device pool + swapchain (`GpuDevicePool` is
+# vello's `util::RenderContext`), adapter detection, winit raw-handle
+# surface creation. Implied by every GPU backend.
+gpu = ["dep:wgpu", "dep:vello", "dep:pollster", "dep:winit", "dep:uzor-window-desktop"]
+
 [dependencies]
 uzor = { workspace = true }
 uzor-urx-core = { workspace = true }
 metrics = "0.24"
-uzor-render-vello-gpu = { workspace = true }
-uzor-render-vello-hybrid = { workspace = true }
-uzor-render-wgpu-instanced = { workspace = true }
-uzor-render-vello-cpu = { workspace = true }
-uzor-render-tiny-skia = { workspace = true }
-uzor-render-urx = { workspace = true }
-uzor-urx-cpu = { workspace = true, features = ["glyph"] }
-uzor-urx-wgpu = { workspace = true }
-uzor-urx-hybrid = { workspace = true }
+# `SubmitParams::base_color` type (`AlphaColor<Srgb>`). Same crate and
+# version vello re-exports as `vello::peniko::color`, so the type is
+# identical with or without the GPU stack.
+color = "0.3"
+uzor-render-vello-gpu = { workspace = true, optional = true }
+uzor-render-vello-hybrid = { workspace = true, optional = true }
+uzor-render-wgpu-instanced = { workspace = true, optional = true }
+uzor-render-vello-cpu = { workspace = true, optional = true }
+uzor-render-tiny-skia = { workspace = true, optional = true }
+uzor-render-urx = { workspace = true, optional = true }
+uzor-urx-cpu = { workspace = true, features = ["glyph"], optional = true }
+uzor-urx-wgpu = { workspace = true, optional = true }
+uzor-urx-hybrid = { workspace = true, optional = true }
 # urx-wgpu-full has a different consumer API (encode → upload → dispatch +
 # blit) than the (Scene → render → bytes) shape of the other three. It will
 # be wired separately once the convenience wrapper lands. For now the
 # `UrxWgpuFull` enum variant exists but renders nothing (logged as TODO).
-uzor-urx-wgpu-full = { workspace = true }
-uzor-urx-engine = { workspace = true, features = ["wgpu-backend", "hybrid-backend", "full-gpu-backend"] }
-uzor-urx-3d = { workspace = true }
-uzor-urx-physics = { workspace = true }
-vello = "0.9"
-vello_hybrid = { version = "0.0.9", features = ["wgpu"] }
-wgpu = "29"
+uzor-urx-wgpu-full = { workspace = true, optional = true }
+uzor-urx-engine = { workspace = true, features = ["wgpu-backend", "hybrid-backend", "full-gpu-backend"], optional = true }
+uzor-urx-3d = { workspace = true, optional = true }
+uzor-urx-physics = { workspace = true, optional = true }
+vello = { version = "0.9", optional = true }
+vello_hybrid = { version = "0.0.9", features = ["wgpu"], optional = true }
+wgpu = { version = "29", optional = true }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
-pollster = "0.4"
-winit = "0.30"
+pollster = { version = "0.4", optional = true }
+winit = { version = "0.30", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-uzor-window-desktop = { workspace = true }
+uzor-window-desktop = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uzor-render-canvas2d = { workspace = true }

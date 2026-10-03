@@ -5,8 +5,8 @@
 //! (`uzor-render-tiny-skia`) rasterizes into an in-memory pixmap, which is
 //! then PNG-encoded and returned as bytes or written to disk.
 //!
-//! This is the first brick of the uzor data-viz / document engine space
-//! (see `nemo/docs/uzor-engines/uzor_engine_space_map.md`): headless export is
+//! This is the first brick of the uzor data-viz / document engine space:
+//! headless export is
 //! how uzor content becomes a report/document delivery artifact, and how a
 //! CI job can verify rendering output pixel-for-pixel without a display or
 //! GPU (Tier-2 verification tool).
@@ -16,9 +16,8 @@
 //! (background rect painted first, `dpr` surfaced via `ctx.dpr()`), but
 //! serializing through `uzor-render-svg::SvgRenderContext` into a
 //! standalone, portable SVG document string instead of rasterizing into a
-//! `tiny-skia` pixmap. See `nemo/docs/uzor-engines/research_export_sota_2026.md`
-//! §6 for the SVG backend's own design rationale (outlined text,
-//! transform-baked coordinates, base64-embedded raster images).
+//! `tiny-skia` pixmap. The SVG backend's design choices: outlined text,
+//! transform-baked coordinates, base64-embedded raster images.
 //!
 //! # Example
 //!

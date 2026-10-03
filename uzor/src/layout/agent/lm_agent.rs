@@ -404,9 +404,8 @@ impl<P: DockPanel> LmAgent<P> {
             }
             Command::ApplyStylePreset { name } => {
                 // Preset names are the 4 generic built-in token sets (H1
-                // token contract) — replaces the pre-H1 Mirage-brand
-                // "mirage_dark"/"mirage_light" pair (H1 Brief 9, §3
-                // "StyleManager — removed": that palette had zero relation
+                // token contract) — replaces the pre-H1 brand-specific
+                // dark/light preset pair (that palette had zero relation
                 // to any of the 4 generic sets).
                 let set = match name.as_str() {
                     "dark" => BuiltinSet::Dark,

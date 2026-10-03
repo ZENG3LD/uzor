@@ -1,19 +1,16 @@
 //! `FlyController` — generic WASD/arrow-key + captured-mouse fly
 //! navigation for any [`crate::camera3d::Camera3D`] consumer.
 //!
-//! Lifted from `foxhound-app-shell-native`'s own game-style navigation
-//! loop (`nemo/foxhound/crates/foxhound-app-shell-native/src/main.rs`'s
-//! `MovementKeys` + `foxhound-app/src/lib.rs`'s `tick_navigation`/
-//! `set_navigation_input`/`free_look_view` — see
-//! `nemo/docs/uzor-engines/research_foxhound_lift_candidates.md` §2)
-//! per the LIFT-WITH-REWORK verdict there: the key-state tracker, the
+//! Lifted from an app-side game-style navigation loop (key-state
+//! tracking + per-tick navigation input + free-look view), reworked: the
+//! key-state tracker, the
 //! exponential ease-in/ease-out inertia model, and the keyboard/mouse
-//! sensitivity scalars are 100% generic — zero Foxhound-specific types —
+//! sensitivity scalars are 100% generic — zero domain-specific types —
 //! and are reproduced here unchanged in their math. What did NOT come
-//! along is Foxhound's `NavigationFrame::Axes` semantic (an axis-locked
-//! time/entity-lane pan interpretation that is domain-specific to that
-//! app's own forensic projection): this controller's only built-in pan
-//! style is the source app's `NavigationFrame::Viewport` behavior —
+//! along is an axis-locked
+//! time/entity-lane pan interpretation that is domain-specific to the
+//! source app: this controller's only built-in pan
+//! style is plain viewport-relative translation —
 //! [`Camera3D::translate_local`] — which was already 100% generic. A
 //! caller that wants a different semantic mapping (e.g. an axis-locked
 //! pan) should read [`FlyController::velocity`] after calling

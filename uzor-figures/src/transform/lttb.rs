@@ -1,8 +1,6 @@
 //! Largest-Triangle-Three-Buckets (LTTB) downsampling — Steinarsson 2013,
 //! "Downsampling Time Series for Visual Representation". Ported from the
-//! algorithm description in
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` (LTTB section,
-//! cross-referenced §3/§8) — no external crate (`lttb-rs` et al.), the
+//! paper's algorithm description — no external crate (`lttb-rs` et al.), the
 //! whole thing is ~40 lines of pure math.
 //!
 //! **What it optimizes for**: visual shape preservation. The first and

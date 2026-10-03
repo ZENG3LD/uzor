@@ -1,8 +1,6 @@
 //! `Viewport` — a stateful, DOMAIN-based visible-window model: pan/zoom/
 //! fit/reset over a scale's own domain, harvested (concept-only) from
-//! `mylittlechart`'s `Viewport` (`mlc-core/src/chart/types/viewport.rs`)
-//! per `nemo/docs/uzor-engines/research/mlc-chart-engine-harvest-2026-07-24.md`
-//! §3. This crate's own docs already flagged zoom/pan as absent — this
+//! `mylittlechart`'s `Viewport`. This crate's own docs already flagged zoom/pan as absent — this
 //! module closes that gap.
 //!
 //! ## Domain-based, not bar-index-based — the one thing NOT copied verbatim
@@ -60,7 +58,6 @@
 //!
 //! ## Seam for the not-yet-built `ScaleMode` (Wave 3)
 //!
-//! `nemo/docs/uzor-engines/plans/engine-strengthening-arc-2026-07-24.md`'s
 //! Wave 3 (NOT built yet, and deliberately not started by this module)
 //! calls for a `ScaleMode` (Manual/Auto/Focus) runtime auto-RANGE policy —
 //! MLC's own analog is ORTHOGONAL to its `Viewport` (a Y-axis auto-fit

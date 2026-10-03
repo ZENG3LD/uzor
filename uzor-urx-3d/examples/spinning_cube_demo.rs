@@ -4,54 +4,17 @@
 //! the Y axis through `Renderer3D::render` (the same code path the
 //! tests exercise). FPS prints into the window title every 500ms.
 //!
-//! ## Agentic 3-level HTTP API
-//!
-//! Listens on `127.0.0.1:17492` (localhost only, no auth).
-//!
-//! ### L1 — introspection
-//! | Method | Path        | Body | Purpose |
-//! |--------|-------------|------|---------|
-//! | `GET`  | `/health`   | —    | `{ok: true}` |
-//! | `GET`  | `/state`    | —    | snapshot: fps, frame_ms, nodes, paused, eye, target, spin_rate, win_w/h |
-//!
-//! ### L2 — semantic actions
-//! | Method | Path                        | Body              | Purpose |
-//! |--------|-----------------------------|-------------------|---------|
-//! | `POST` | `/act/pause`                | —                 | freeze spin animation |
-//! | `POST` | `/act/resume`               | —                 | unfreeze |
-//! | `POST` | `/act/reset_camera`         | —                 | restore default eye + target |
-//! | `POST` | `/act/spin_rate`            | `{rps}`           | rotations per second (negative = reverse) |
-//!
-//! ### L3 — structural scene ops
-//! | Method | Path                        | Body                                    | Purpose |
-//! |--------|-----------------------------|-----------------------------------------|---------|
-//! | `POST` | `/scene/spawn_cube`         | `{pos: [x,y,z], scale: f, tint: [r,g,b,a]}` | add a cube node |
-//! | `POST` | `/scene/spawn_batch`        | `[{pos,scale,tint},…]`                  | bulk-add many cubes in one request |
-//! | `POST` | `/scene/preset/ring`        | `{n, radius?}`                          | spawn an N-cube ring on the XZ plane |
-//! | `POST` | `/scene/preset/grid`        | `{nx, ny, nz, spacing?}`                | spawn an Nx×Ny×Nz cube grid |
-//! | `POST` | `/scene/clear`              | —                                       | remove every node (re-spawn the central spinning cube) |
-//! | `POST` | `/camera/look_at`           | `{eye: [x,y,z], target: [x,y,z]}`       | move the camera explicitly |
+//! The scene holds the central spinning cube under one directional light.
 //!
 //! ## Try it
 //!
 //! ```bash
 //! cargo run -p uzor-urx-3d --example spinning_cube_demo --release
-//!
-//! # in another shell:
-//! curl -s http://127.0.0.1:17492/state | jq
-//! curl -s -X POST -H "content-type: application/json" \
-//!     -d '{"rps": 2.0}' http://127.0.0.1:17492/act/spin_rate
-//! curl -s -X POST -H "content-type: application/json" \
-//!     -d '{"pos":[2,0,0],"scale":0.5,"tint":[1,0.5,0.2,1]}' \
-//!     http://127.0.0.1:17492/scene/spawn_cube
-//! curl -s -X POST -H "content-type: application/json" \
-//!     -d '{"eye":[0,2,6],"target":[0,0,0]}' http://127.0.0.1:17492/camera/look_at
 //! ```
 
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use uzor_urx_3d::{
     Light, Mesh, MeshLit, MeshPbr, Node, PbrMaterial, PerspectiveCamera, PhongMaterial, Quat,
     Renderer3D, Scene3D, Texture3D, Vec3,
@@ -62,9 +25,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-const AGENT_PORT: u16 = 17492;
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct CubeSpec {
     pos: [f32; 3],
     scale: f32,
@@ -75,21 +36,14 @@ struct CubeSpec {
     /// - `textured=true`          → Wave 5 textured-Phong
     /// - `pbr=true`               → Wave 6 PBR (uses atlas albedo,
     ///                              metalness + roughness fields)
-    #[serde(default)]
     lit: bool,
-    #[serde(default)]
     textured: bool,
-    #[serde(default)]
     pbr: bool,
-    #[serde(default = "default_metalness")]
     metalness: f32,
-    #[serde(default = "default_roughness")]
     roughness: f32,
 }
-fn default_metalness() -> f32 { 0.0 }
-fn default_roughness() -> f32 { 0.5 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct LightSpec {
     /// "directional" or "point"
     kind: String,
@@ -97,11 +51,7 @@ struct LightSpec {
     vec: [f32; 3],
     color: [f32; 3],
     intensity: f32,
-    #[serde(default = "default_range")]
     range: f32,
-}
-fn default_range() -> f32 {
-    8.0
 }
 
 #[derive(Default)]
@@ -165,270 +115,6 @@ impl SharedState {
 
 type Shared = Arc<Mutex<SharedState>>;
 
-// ─────────────────────────────────────────────────────────────────────
-// HTTP agentic surface
-// ─────────────────────────────────────────────────────────────────────
-
-mod http {
-    use super::*;
-    use axum::extract::State;
-    use axum::http::StatusCode;
-    use axum::routing::{get, post};
-    use axum::{Json, Router};
-
-    pub fn spawn(shared: Shared) {
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async move {
-                let app = Router::new()
-                    .route("/health", get(health))
-                    .route("/state", get(state))
-                    .route("/act/pause", post(act_pause))
-                    .route("/act/resume", post(act_resume))
-                    .route("/act/reset_camera", post(act_reset_camera))
-                    .route("/act/spin_rate", post(act_spin_rate))
-                    .route("/scene/spawn_cube", post(scene_spawn_cube))
-                    .route("/scene/spawn_batch", post(scene_spawn_batch))
-                    .route("/scene/preset/ring", post(scene_preset_ring))
-                    .route("/scene/preset/grid", post(scene_preset_grid))
-                    .route("/scene/clear", post(scene_clear))
-                    .route("/scene/spawn_light", post(scene_spawn_light))
-                    .route("/scene/clear_lights", post(scene_clear_lights))
-                    .route("/scene/set_ambient", post(scene_set_ambient))
-                    .route("/scene/central_lit", post(scene_central_lit))
-                    .route("/camera/look_at", post(camera_look_at))
-                    .with_state(shared);
-                let bind = format!("127.0.0.1:{}", AGENT_PORT);
-                let listener = tokio::net::TcpListener::bind(&bind).await.expect("bind");
-                eprintln!("urx-3d agent HTTP listening on http://{bind}");
-                axum::serve(listener, app).await.unwrap();
-            });
-        });
-    }
-
-    async fn health() -> Json<serde_json::Value> {
-        Json(serde_json::json!({"ok": true}))
-    }
-
-    async fn state(State(s): State<Shared>) -> Json<serde_json::Value> {
-        let g = s.lock().unwrap();
-        Json(serde_json::json!({
-            "fps": g.fps,
-            "frame_ms": g.frame_ms,
-            "nodes": g.nodes,
-            "paused": g.paused,
-            "spin_rate_rps": g.spin_rate_rps,
-            "eye": g.eye,
-            "target": g.target,
-            "cubes": g.cubes.len(),
-            "lights": g.lights.len(),
-            "ambient": g.ambient,
-            "central_lit": g.central_lit,
-            "win_w": g.win_w,
-            "win_h": g.win_h,
-        }))
-    }
-
-    async fn act_pause(State(s): State<Shared>) -> StatusCode {
-        s.lock().unwrap().paused = true;
-        StatusCode::OK
-    }
-
-    async fn act_resume(State(s): State<Shared>) -> StatusCode {
-        s.lock().unwrap().paused = false;
-        StatusCode::OK
-    }
-
-    async fn act_reset_camera(State(s): State<Shared>) -> StatusCode {
-        s.lock().unwrap().pending_reset_camera = true;
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct SpinRate {
-        rps: f32,
-    }
-
-    async fn act_spin_rate(State(s): State<Shared>, Json(b): Json<SpinRate>) -> StatusCode {
-        s.lock().unwrap().spin_rate_rps = b.rps;
-        StatusCode::OK
-    }
-
-    async fn scene_spawn_cube(
-        State(s): State<Shared>,
-        Json(b): Json<CubeSpec>,
-    ) -> StatusCode {
-        s.lock().unwrap().pending_cubes.push(b);
-        StatusCode::OK
-    }
-
-    async fn scene_spawn_batch(
-        State(s): State<Shared>,
-        Json(b): Json<Vec<CubeSpec>>,
-    ) -> StatusCode {
-        s.lock().unwrap().pending_cubes.extend(b);
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct PresetRing {
-        n: u32,
-        #[serde(default = "default_ring_radius")]
-        radius: f32,
-    }
-    fn default_ring_radius() -> f32 {
-        4.0
-    }
-
-    async fn scene_preset_ring(
-        State(s): State<Shared>,
-        Json(b): Json<PresetRing>,
-    ) -> StatusCode {
-        let n = b.n.min(4096);
-        let mut cubes = Vec::with_capacity(n as usize);
-        for i in 0..n {
-            let theta = (i as f32 / n as f32) * std::f32::consts::TAU;
-            let hue = i as f32 / n as f32;
-            cubes.push(CubeSpec {
-                pos: [theta.cos() * b.radius, 0.0, theta.sin() * b.radius],
-                scale: 0.3,
-                tint: hue_to_rgba(hue),
-                lit: false,
-                textured: false,
-                pbr: false,
-                metalness: 0.0,
-                roughness: 0.5,
-            });
-        }
-        s.lock().unwrap().pending_cubes.extend(cubes);
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct PresetGrid {
-        nx: u32,
-        ny: u32,
-        nz: u32,
-        #[serde(default = "default_grid_spacing")]
-        spacing: f32,
-    }
-    fn default_grid_spacing() -> f32 {
-        1.5
-    }
-
-    async fn scene_preset_grid(
-        State(s): State<Shared>,
-        Json(b): Json<PresetGrid>,
-    ) -> StatusCode {
-        let total = (b.nx * b.ny * b.nz) as usize;
-        let total = total.min(8192);
-        let mut cubes = Vec::with_capacity(total);
-        let half_x = (b.nx as f32 - 1.0) / 2.0;
-        let half_y = (b.ny as f32 - 1.0) / 2.0;
-        let half_z = (b.nz as f32 - 1.0) / 2.0;
-        for i in 0..b.nx {
-            for j in 0..b.ny {
-                for k in 0..b.nz {
-                    if cubes.len() >= total {
-                        break;
-                    }
-                    let hue = (i + j * b.nx + k * b.nx * b.ny) as f32
-                        / (b.nx * b.ny * b.nz) as f32;
-                    cubes.push(CubeSpec {
-                        pos: [
-                            (i as f32 - half_x) * b.spacing,
-                            (j as f32 - half_y) * b.spacing,
-                            (k as f32 - half_z) * b.spacing,
-                        ],
-                        scale: 0.35,
-                        tint: hue_to_rgba(hue),
-                        lit: false,
-                        textured: false,
-                        pbr: false,
-                        metalness: 0.0,
-                        roughness: 0.5,
-                    });
-                }
-            }
-        }
-        s.lock().unwrap().pending_cubes.extend(cubes);
-        StatusCode::OK
-    }
-
-    fn hue_to_rgba(h: f32) -> [f32; 4] {
-        // simple HSV→RGB with full saturation+value
-        let c = 1.0;
-        let h6 = h * 6.0;
-        let x = c * (1.0 - ((h6 % 2.0) - 1.0).abs());
-        let (r, g, b) = match h6 as u32 {
-            0 => (c, x, 0.0),
-            1 => (x, c, 0.0),
-            2 => (0.0, c, x),
-            3 => (0.0, x, c),
-            4 => (x, 0.0, c),
-            _ => (c, 0.0, x),
-        };
-        [r, g, b, 1.0]
-    }
-
-    async fn scene_clear(State(s): State<Shared>) -> StatusCode {
-        s.lock().unwrap().pending_clear = true;
-        StatusCode::OK
-    }
-
-    async fn scene_spawn_light(
-        State(s): State<Shared>,
-        Json(b): Json<LightSpec>,
-    ) -> StatusCode {
-        s.lock().unwrap().pending_lights.push(b);
-        StatusCode::OK
-    }
-
-    async fn scene_clear_lights(State(s): State<Shared>) -> StatusCode {
-        s.lock().unwrap().pending_clear_lights = true;
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct AmbientBody {
-        rgb: [f32; 3],
-    }
-    async fn scene_set_ambient(
-        State(s): State<Shared>,
-        Json(b): Json<AmbientBody>,
-    ) -> StatusCode {
-        s.lock().unwrap().ambient = b.rgb;
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct CentralLitBody {
-        on: bool,
-    }
-    async fn scene_central_lit(
-        State(s): State<Shared>,
-        Json(b): Json<CentralLitBody>,
-    ) -> StatusCode {
-        s.lock().unwrap().central_lit = b.on;
-        StatusCode::OK
-    }
-
-    #[derive(Deserialize)]
-    struct LookAt {
-        eye: [f32; 3],
-        target: [f32; 3],
-    }
-
-    async fn camera_look_at(State(s): State<Shared>, Json(b): Json<LookAt>) -> StatusCode {
-        let mut g = s.lock().unwrap();
-        g.pending_camera_eye = Some(b.eye);
-        g.pending_camera_target = Some(b.target);
-        StatusCode::OK
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────
 // Winit / wgpu app
@@ -713,8 +399,8 @@ impl App {
             }
             if let Some(w) = &self.window {
                 w.set_title(&format!(
-                    "urx-3d spinning cube — {:.0} FPS / {:.2} ms / {} nodes (HTTP :{})",
-                    fps, frame_ms, 1 + cubes_extra.len(), AGENT_PORT
+                    "urx-3d spinning cube — {:.0} FPS / {:.2} ms / {} nodes",
+                    fps, frame_ms, 1 + cubes_extra.len()
                 ));
             }
             self.fps_accum_frames = 0;
@@ -760,7 +446,6 @@ impl ApplicationHandler for App {
 
 fn main() {
     let shared = Arc::new(Mutex::new(SharedState::new()));
-    http::spawn(shared.clone());
 
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);

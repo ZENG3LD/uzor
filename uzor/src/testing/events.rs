@@ -34,6 +34,7 @@ impl EventSynthesizer {
     /// Run one [`PlatformEvent`] through the processor against the
     /// accumulated [`InputState`], at the synthesizer's current clock.
     fn apply(&mut self, event: PlatformEvent) -> &mut Self {
+        self.input.time = self.time;
         self.processor.process(&event, &mut self.input, self.time);
         self
     }
@@ -129,6 +130,7 @@ impl EventSynthesizer {
     /// different synthesized frames rather than the same one.
     pub fn tick(&mut self, dt: f64) -> &mut Self {
         self.time += dt;
+        self.input.time = self.time;
         self
     }
 

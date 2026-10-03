@@ -749,6 +749,10 @@ fn apply_key(state: &mut TextFieldState, key: KeyPress) -> bool {
             true
         }
         KeyPress::Undo | KeyPress::Redo => false,
+        KeyPress::WordLeft
+        | KeyPress::WordRight
+        | KeyPress::DeleteWordBack
+        | KeyPress::DeleteWordForward => false,
         KeyPress::ArrowUp
         | KeyPress::ArrowDown
         | KeyPress::Enter

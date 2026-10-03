@@ -479,6 +479,55 @@ mod tests {
     }
 
     #[test]
+    fn composite_dispatch_registration_fns() {
+        use crate::layout::handles::{ContextMenuHandle, PopupHandle};
+        use crate::ui::widgets::composite::context_menu::input::register_context_menu_dispatch;
+        use crate::ui::widgets::composite::dropdown::input::register_dropdown_dispatch;
+        use crate::ui::widgets::composite::modal::input::register_modal_dispatch;
+        use crate::ui::widgets::composite::popup::input::register_popup_dispatch;
+
+        let m = ModalHandle::new(WidgetId::new("m"));
+        let dd = DropdownHandle::new(WidgetId::new("d"));
+        let cm = ContextMenuHandle::new(WidgetId::new("c"));
+        let pp = PopupHandle::new(WidgetId::new("p"));
+        assert_eq!(m.id(), &WidgetId::new("m"));
+
+        let mut d = ClickDispatcher::new();
+        register_modal_dispatch(&mut d, &m, false);
+        register_dropdown_dispatch(&mut d, &dd);
+        register_context_menu_dispatch(&mut d, &cm);
+        register_popup_dispatch(&mut d, &pp);
+
+        let hit = |id: &str| d.dispatch(&WidgetId::new(id));
+        assert_eq!(hit("m:close"), Some(DispatchEvent::ModalCloseRequested(m.clone())));
+        assert_eq!(hit("m:footer:ok"), Some(DispatchEvent::ModalCloseRequested(m.clone())));
+        assert_eq!(
+            hit("m:tab:2"),
+            Some(DispatchEvent::ModalTabClicked { modal: m.clone(), index: 2 })
+        );
+        assert_eq!(hit("m:resize_n"), None, "resize handles only when resizable");
+        assert_eq!(
+            hit("d:item:save"),
+            Some(DispatchEvent::DropdownItemClicked { dropdown: dd.clone(), item_id: "save".into() })
+        );
+        assert_eq!(
+            hit("c:item:3"),
+            Some(DispatchEvent::ContextMenuItemClicked { menu: cm.clone(), item_index: 3 })
+        );
+        assert!(matches!(
+            hit("p:chevron_up"),
+            Some(DispatchEvent::ChevronStepRequested { direction: ChevronStepDirection::Up, .. })
+        ));
+
+        let mut r = ClickDispatcher::new();
+        register_modal_dispatch(&mut r, &m, true);
+        assert!(matches!(
+            r.dispatch(&WidgetId::new("m:resize_se")),
+            Some(DispatchEvent::ResizeHandleDragStarted { edge: ResizeEdge::SE, .. })
+        ));
+    }
+
+    #[test]
     fn exact_beats_prefix_regardless_of_order() {
         let mut d = ClickDispatcher::new();
         d.on_prefix(

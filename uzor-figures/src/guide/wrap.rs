@@ -1,13 +1,9 @@
 //! Measure-fn-driven word wrap + ellipsis truncate — a small, pure,
 //! zero-dependency text-layout utility.
 //!
-//! Lifted from `foxhound-app-shell-native`'s own hand-rolled `wrap_text`/
-//! `truncate` (`nemo/foxhound/crates/foxhound-app-shell-native/src/main.rs:1302-1333`),
-//! which that app had to write itself because no equivalent existed
-//! anywhere in `uzor` (confirmed by grep — see
-//! `nemo/docs/uzor-engines/research_foxhound_lift_candidates.md` §3/§5.4).
-//! Ported WITH a polish, not verbatim: the source version wrapped by
-//! character COUNT (`line_limit: usize`), which only looks right in a
+//! Generalized from an app-side hand-rolled `wrap_text`/`truncate` pair
+//! (no equivalent previously existed in `uzor`), WITH a polish: the
+//! original wrapped by character COUNT (`line_limit: usize`), which only looks right in a
 //! monospace font; this version takes a caller-supplied `measure`
 //! closure (typically `|s| ctx.measure_text(s)`) so wrapping is correct
 //! against a real proportional font, following this crate's own

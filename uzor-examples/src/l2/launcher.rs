@@ -288,7 +288,7 @@ struct AppState {
     ctx:        ContextManager,
     start_time: Instant,
 
-    // mlc-style: app owns raw pointer position
+    // app owns raw pointer position
     last_mouse_pos: (f64, f64),
     // drag state: origin + target widget + start value
     drag_origin:    Option<(f64, f64)>,
@@ -316,7 +316,7 @@ struct AppState {
     // Fix 4: splitter drag direction — positive dx = dragging right (left panel grows)
     splitter_drag_dx:    f64,
 
-    // mlc-style hover/press tracking — app owns the state machine
+    // hover/press tracking — app owns the state machine
     hovered_widget_id: Option<String>,
     pressed_widget_id: Option<String>,
 

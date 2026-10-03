@@ -368,8 +368,6 @@ mod tests {
         let rect = WidgetRect::new(10.0, 10.0, 20.0, 20.0);
 
         state.update_mouse(15.0, 15.0);
-        state.mouse_press(15.0, 15.0, Some(id.clone()));
-        state.mouse_release(15.0, 15.0, 1000.0);
 
         let result = handle_checkbox_input(&state, &id, &rect, false, false);
         assert!(result.hovered);

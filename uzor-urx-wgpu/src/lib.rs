@@ -83,43 +83,32 @@
 //! to Waves 1/2) or the multi-pass executor (`renderer::replay_ops`)
 //! for one that has them.
 //!
-//! Three documents are the ground truth for this design, in reading
-//! order:
-//! - `nemo/docs/uzor-engines/plan-urx-family-parity-2026-07-24.md` —
-//!   the wave-scope plan (why URX has 3 sibling backends — CPU/WGPU/
+//! Design summary, by wave:
+//! - Overall plan —
+//!   why URX has 3 sibling backends — CPU/WGPU/
 //!   Hybrid — and what "parity" means across them; each wave's place
-//!   in that sequence).
-//! - `nemo/docs/uzor-engines/plans/urx-wave1-native-pipelines-design-2026-07-25.md` —
-//!   Wave 1's design: module layout, instance struct layouts, the
+//!   in that sequence.
+//! - Wave 1: module layout, instance struct layouts, the
 //!   AA-scheme decision (SDF for Quad/Line, MSAA-only — no
 //!   barycentric edge AA — for Path), the pixel-parity harness spec,
-//!   and the 5-commit plan Wave 1 was built across (each commit's own
-//!   module docs cite the specific design section it implements).
-//! - `nemo/docs/uzor-engines/plans/urx-wave2-native-glyph-atlas-design-2026-07-25.md` —
-//!   Wave 2's design: the native glyph atlas (`atlas::NativeGlyphAtlas`,
+//!   and the 5-commit plan Wave 1 was built across.
+//! - Wave 2: the native glyph atlas (`atlas::NativeGlyphAtlas`,
 //!   `etagere`-backed, never-evict-this-frame invariant), the Glyph
 //!   pipeline, and the 3-commit plan Wave 2 is built across.
-//! - `nemo/docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md` —
-//!   Wave 3's design: real stencil-based rounded clip (§2), the
-//!   multi-pass blend-layer executor (§3, including its pass-open/close
-//!   load-bearing table, §3.5), the CPU-side blend-layer stack (§5, a
+//! - Wave 3: real stencil-based rounded clip, the
+//!   multi-pass blend-layer executor (including its pass-open/close
+//!   load-bearing table), the CPU-side blend-layer stack (a
 //!   different crate — see `uzor-urx-cpu`), the 3 new parity fixtures
-//!   + `_CLIP` tolerance tier (§6/§2.6), and the 5-commit plan Wave 3
+//!   + `_CLIP` tolerance tier, and the 5-commit plan Wave 3
 //!   was built across.
-//! - `nemo/docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md` —
-//!   Wave 4's design: Radial/Sweep gradients (§2, per-fragment LUT
-//!   eval), images (§4, `DrawCommand::Image` + the shared
-//!   `uzor-urx-image` registry crate), full affine (§5,
-//!   `decompose_similarity`'s Quad-SDF-vs-Triangle routing + full
-//!   6-coefficient mesh reprojection), per-corner radii (§6, closes
+//! - Wave 4: Radial/Sweep gradients (per-fragment LUT
+//!   eval), images (`DrawCommand::Image` + the shared
+//!   `uzor-urx-image` registry crate), full affine
+//!   (`decompose_similarity`'s Quad-SDF-vs-Triangle routing + full
+//!   6-coefficient mesh reprojection), per-corner radii (closes
 //!   `native_per_corner_radii_uniform_approx`), the 7 new parity
-//!   fixtures + `_GRADIENT`/`_IMAGE` tolerance tiers (§9), and the
+//!   fixtures + `_GRADIENT`/`_IMAGE` tolerance tiers, and the
 //!   6-commit plan Wave 4 was built across.
-//!
-//! File:line evidence for every legacy pattern this design reuses
-//! (device/queue ownership shape, MSAA lifecycle, hand-rolled LRU
-//! shape, etc.) lives in the sibling research doc:
-//! `nemo/docs/uzor-engines/research/urx-wave1-crate-map-2026-07-25.md`.
 //!
 //! ## Legacy API
 //!

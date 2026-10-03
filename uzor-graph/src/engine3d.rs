@@ -1889,8 +1889,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // `SceneEffects::default()` arms shadows + bloom + SSAO, and
         // `Renderer3D` genuinely runs the whole bloom mip pyramid + SSAO
         // pass every frame when armed — none of which a flat-shaded
-        // node-link graph benefits from (the foxhound reference app
-        // disables all three for the same reason). `Renderer3D`'s
+        // node-link graph benefits from. `Renderer3D`'s
         // composite zeroes the corresponding strengths when disabled, so
         // this skips real GPU passes, not just their visual contribution.
         scene.effects = uzor_urx_3d::SceneEffects { shadows: false, bloom: false, ssao: false };

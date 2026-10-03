@@ -184,6 +184,7 @@ fn text_settings_from_tokens(tokens: &std::sync::Arc<Tokens>) -> TextSettings {
     TextSettings {
         theme: Box::new(TokenTheme::new(tokens.clone())),
         style: Box::new(DefaultTextStyle),
+        select: Default::default(),
     }
 }
 

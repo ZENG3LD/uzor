@@ -637,20 +637,25 @@ fn submit_urx_wgpu_full_scene(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tiny-skia")]
     use uzor::layout::window::SoftwarePresenter;
+    #[cfg(feature = "tiny-skia")]
     use uzor::render::ShapeHelpers;
     use uzor_urx_core::math::{Affine, Brush, Color, Gradient};
     use uzor_urx_core::scene::{DrawCommand, Scene};
     use uzor_urx_core::Rect;
 
+    #[cfg(feature = "tiny-skia")]
     struct NoopPresenter;
 
+    #[cfg(feature = "tiny-skia")]
     impl SoftwarePresenter for NoopPresenter {
         fn present(&mut self, _pixels: &[u8], _width: u32, _height: u32) {}
         fn resize(&mut self, _width: u32, _height: u32) {}
     }
 
     #[test]
+    #[cfg(feature = "tiny-skia")]
     fn with_urx_scene_restores_and_retains_submitted_scene() {
         let mut state = crate::factory::WindowRenderState::new_cpu(64, 64, Box::new(NoopPresenter));
         let mut context = uzor_render_urx::UrxRenderContext::new(1.0);

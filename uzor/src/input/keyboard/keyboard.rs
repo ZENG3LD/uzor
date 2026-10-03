@@ -26,4 +26,13 @@ pub enum KeyPress {
     Undo,
     Redo,
     CtrlC,
+    /// Move the cursor to the start of the previous word (Ctrl+Left).
+    WordLeft,
+    /// Move the cursor past the end of the next word (Ctrl+Right).
+    WordRight,
+    /// Delete the selection, else back to the start of the previous word
+    /// (Ctrl+Backspace).
+    DeleteWordBack,
+    /// Delete the selection, else forward past the next word (Ctrl+Delete).
+    DeleteWordForward,
 }

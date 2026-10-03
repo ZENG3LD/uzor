@@ -1,13 +1,11 @@
 //! `TimeScale` — continuous UTC-timestamp domain with calendar-aware tick
 //! generation.
 //!
-//! Ported and generalized from `mylittlechart`'s `TimeScale`
-//! (`mlc-core/src/chart/types/time_scale.rs`, full file 1-1899) per
-//! `nemo/docs/uzor-engines/mlc_harvest_inventory.md` §2. That source is
+//! Ported and generalized from `mylittlechart`'s `TimeScale`. That source is
 //! **bar-index** X-axis math (a `TimeTick` carries a `bar_idx`, resolved
 //! through a `Viewport`'s pixel-per-bar zoom) built around an explicit
 //! port of TradingView Lightweight Charts' `TickMarkWeight` hierarchy
-//! (source comment, its own lines 138-140). This module harvests ONLY the
+//! (per its own source comment). This module harvests ONLY the
 //! weight system + calendar utilities + label-format table — never the
 //! bar/viewport machinery, which has no meaning for a scale mapping
 //! continuous timestamps directly (design brief: "port the WEIGHT SYSTEM,
@@ -99,9 +97,8 @@ const HOUR: i64 = 3_600;
 const DAY: i64 = 86_400;
 
 // =============================================================================
-// Calendar utilities — ported near-verbatim from
-// `mlc-core/src/chart/types/time_scale.rs:37-129` ("no external
-// dependencies" calendar system).
+// Calendar utilities — ported near-verbatim from `mylittlechart`'s
+// `TimeScale` ("no external dependencies" calendar system).
 // =============================================================================
 
 const DAYS_IN_MONTH: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -191,8 +188,7 @@ fn month_index(year: i32, month: i32) -> i64 {
 }
 
 // =============================================================================
-// Tick mark weight — ported verbatim from
-// `mlc-core/src/chart/types/time_scale.rs:141-183`.
+// Tick mark weight — ported verbatim from `mylittlechart`'s `TimeScale`.
 // =============================================================================
 
 /// Hierarchical tick-mark weight: `Year` (70) down to `LessThanSecond` (1).
@@ -300,8 +296,7 @@ pub fn boundary_weight(ts_secs: i64) -> TickMarkWeight {
 }
 
 // =============================================================================
-// Label formatting — ported from `format_time_by_weight`
-// (`mlc-core/src/chart/types/time_scale.rs:1313-1347`), locale/settings
+// Label formatting — ported from `format_time_by_weight`, locale/settings
 // variant dropped (see module docs).
 // =============================================================================
 

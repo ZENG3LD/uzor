@@ -8,6 +8,9 @@
 // binary, so plain `mod button;` would look for a sibling
 // `tests/button.rs` — the explicit `#[path]` is what actually places the
 // submodule under `tests/widgets/`, matching the file layout above.
+#[cfg(feature = "golden")]
+#[path = "widgets/golden/mod.rs"]
+mod golden;
 #[path = "widgets/support.rs"]
 mod support;
 

@@ -47,7 +47,7 @@ use crate::layout::docking::{
     SnapBackAnimation, TabBarInfo, TabItem, TabReorderState,
     FloatingWindow, FloatingWindowId, FloatingDragState,
     HitResult, CornerHandle, DropZone, PanelDragState, DragPayload,
-    WindowLayout,
+    WindowLayout, SplitterPolicy, GridAxis, GridLine, GridSpec,
 };
 use std::collections::HashMap;
 
@@ -113,6 +113,13 @@ pub struct DockState<P: DockPanel> {
     /// e.g. one-row strips only dock Up/Down). Applied to every candidate
     /// `(dragged, target, zone)` while a drag is live.
     drop_policy: Option<DropPolicyFn<P>>,
+    /// How separator drags treat minimum sizes. Default
+    /// [`SplitterPolicy::Cascade`] (today's behaviour).
+    splitter_policy: SplitterPolicy,
+    /// Pixels kept free at the right end of every multi-tab chip bar
+    /// (room for a trailing "+" button the consumer draws). Default `0.0`:
+    /// chips share the full leaf width, as before.
+    tab_strip_reserve: f32,
 }
 
 /// Consumer drop-targeting policy. Arguments: the dragged panel, the
@@ -148,6 +155,8 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
+            splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -187,6 +196,8 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
+            splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -215,6 +226,8 @@ impl<P: DockPanel> DockState<P> {
             leaf_min_sizes: HashMap::new(),
             body_center_drop: true,
             drop_policy: None,
+            splitter_policy: SplitterPolicy::Cascade,
+            tab_strip_reserve: 0.0,
         }
     }
 
@@ -320,7 +333,7 @@ impl<P: DockPanel> DockState<P> {
         let tab_bar_height = self.header_height;
         let mut tab_items = Vec::new();
         let mut tab_x_offset = 0.0_f32;
-        let even_w = rect.width / leaf.panels.len().max(1) as f32;
+        let even_w = (rect.width - self.tab_strip_reserve).max(0.0) / leaf.panels.len().max(1) as f32;
 
         for (i, panel) in leaf.panels.iter().enumerate() {
             let title = panel.title();
@@ -418,6 +431,13 @@ impl<P: DockPanel> DockState<P> {
     /// on one side in order, never going below each child's minimum size.
     /// This allows multi-panel resize without rejecting moves.
     ///
+    /// That is the default [`SplitterPolicy::Cascade`] behaviour for preset
+    /// layouts; [`SplitterPolicy::Clamp`] moves only the two neighbours and
+    /// stops at the limit; [`SplitterPolicy::RejectSnapBack`] moves only the
+    /// two neighbours and refuses (with a snap-back) a move past a minimum. A `rows × cols` grid line moves
+    /// only its two adjacent row / column ratios (see [`SplitterPolicy`] for
+    /// how each policy treats minimums there).
+    ///
     /// Per-leaf minimum sizes are read from [`set_leaf_min_size`] overrides,
     /// falling back to `panel.min_size()`. Branch minimums are derived
     /// recursively via [`min_for_node`].
@@ -439,7 +459,7 @@ impl<P: DockPanel> DockState<P> {
         content_height: f32,
     ) -> bool {
         // Snapshot separator info to avoid borrow conflicts.
-        let (parent_id, child_a_raw, child_b_raw, orientation) = {
+        let (parent_id, child_a_raw, child_b_raw, orientation, grid_line) = {
             let sep = match self.separators.get(sep_idx) {
                 Some(s) => s,
                 None => return false,
@@ -449,8 +469,14 @@ impl<P: DockPanel> DockState<P> {
                     (*parent_id, *child_a, *child_b)
                 }
             };
-            (parent_id, child_a, child_b, sep.orientation)
+            (parent_id, child_a, child_b, sep.orientation, sep.grid_line)
         };
+
+        // Rows × cols grid line: moves only the two adjacent row / column
+        // ratios of the grid branch.
+        if let Some(line) = grid_line {
+            return self.drag_grid_line(sep_idx, parent_id, line, delta, content_width, content_height);
+        }
 
         // Use the actual pixel size of the parent branch (not the full content area).
         // This ensures nested branches are correctly constrained.
@@ -545,6 +571,15 @@ impl<P: DockPanel> DockState<P> {
                     .and_then(|b| b.cross_ratio)
                     .unwrap_or(default_cr);
 
+                // Ratio bounds: 0.05..=0.95 as always; `Clamp` may tighten them.
+                let (lo, hi) = match self.splitter_policy {
+                    SplitterPolicy::Cascade | SplitterPolicy::RejectSnapBack => (0.05, 0.95),
+                    SplitterPolicy::Clamp { min_frac } => {
+                        let m = sanitize_min_frac(min_frac).max(0.05);
+                        (m, 1.0 - m)
+                    }
+                };
+                let reject = self.splitter_policy == SplitterPolicy::RejectSnapBack;
                 // Account for the separator gap so the ratio tracks the visible line.
                 let gap = super::docking::presets::PANEL_GAP;
                 let new_xr;
@@ -553,16 +588,26 @@ impl<P: DockPanel> DockState<P> {
                     SeparatorOrientation::Vertical => {
                         // Vertical bar → moves left/right → affects x ratio.
                         let available_w = (full_w - gap).max(1.0);
-                        new_xr = (cur_xr + delta as f64 / available_w as f64)
-                            .clamp(0.05, 0.95);
+                        let raw = cur_xr + delta as f64 / available_w as f64;
+                        if reject && (raw < lo || raw > hi) {
+                            let overshoot = (raw - raw.clamp(lo, hi)) * available_w as f64;
+                            self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot as f32));
+                            return false;
+                        }
+                        new_xr = raw.clamp(lo, hi);
                         new_yr = cur_yr;
                     }
                     SeparatorOrientation::Horizontal => {
                         // Horizontal bar → moves up/down → affects y ratio.
                         let available_h = (full_h - gap).max(1.0);
+                        let raw = cur_yr + delta as f64 / available_h as f64;
+                        if reject && (raw < lo || raw > hi) {
+                            let overshoot = (raw - raw.clamp(lo, hi)) * available_h as f64;
+                            self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot as f32));
+                            return false;
+                        }
                         new_xr = cur_xr;
-                        new_yr = (cur_yr + delta as f64 / available_h as f64)
-                            .clamp(0.05, 0.95);
+                        new_yr = raw.clamp(lo, hi);
                     }
                 }
                 self.tree.set_branch_cross_ratio(parent_id, new_xr, new_yr);
@@ -578,6 +623,44 @@ impl<P: DockPanel> DockState<P> {
         let min_shares: Vec<f64> = children_min_px.iter()
             .map(|&px| (px as f64 / branch_size as f64) * total_share)
             .collect();
+
+        // --- Clamp policy: only the two neighbours move, the shrinking one
+        // stops at max(min_frac, its pixel minimum). Never rejects. ---
+        if let SplitterPolicy::Clamp { min_frac } = self.splitter_policy {
+            let m = sanitize_min_frac(min_frac) * total_share;
+            let (a, b) = clamp_pair(
+                raw_props[pos_a],
+                raw_props[pos_b],
+                delta_share,
+                min_shares[pos_a].max(m),
+                min_shares[pos_b].max(m),
+            );
+            let mut new_props = raw_props;
+            new_props[pos_a] = a;
+            new_props[pos_b] = b;
+            self.tree.set_branch_proportions(parent_id, new_props);
+            return true;
+        }
+
+        // --- Reject policy: only the two neighbours move; a move past
+        // either minimum is refused with a snap-back. ---
+        if self.splitter_policy == SplitterPolicy::RejectSnapBack {
+            let (a, b) = (raw_props[pos_a], raw_props[pos_b]);
+            let (na, nb) = (a + delta_share, b - delta_share);
+            let a_bad = na < min_shares[pos_a] && na < a;
+            let b_bad = nb < min_shares[pos_b] && nb < b;
+            if a_bad || b_bad {
+                let limit_a = if a_bad { min_shares[pos_a] } else { a + b - min_shares[pos_b] };
+                let overshoot_px = ((na - limit_a) / total_share * branch_size as f64) as f32;
+                self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot_px));
+                return false;
+            }
+            let mut new_props = raw_props;
+            new_props[pos_a] = na;
+            new_props[pos_b] = nb;
+            self.tree.set_branch_proportions(parent_id, new_props);
+            return true;
+        }
 
         // --- Cascading resize in share space ---
         //
@@ -620,6 +703,120 @@ impl<P: DockPanel> DockState<P> {
         true
     }
 
+    /// Keep `px` free at the right end of every multi-tab chip bar (the
+    /// chips share the rest evenly); `0.0` (default) = full width. Takes
+    /// effect on the next [`layout`](Self::layout).
+    pub fn set_tab_strip_reserve(&mut self, px: f32) {
+        self.tab_strip_reserve = if px.is_finite() { px.max(0.0) } else { 0.0 };
+    }
+
+    /// Pixels kept free at the right end of multi-tab chip bars.
+    pub fn tab_strip_reserve(&self) -> f32 {
+        self.tab_strip_reserve
+    }
+
+    /// Current separator-drag policy.
+    pub fn splitter_policy(&self) -> SplitterPolicy {
+        self.splitter_policy
+    }
+
+    /// Choose how separator drags treat minimum sizes (see
+    /// [`SplitterPolicy`]). Takes effect on the next `drag_separator`.
+    pub fn set_splitter_policy(&mut self, policy: SplitterPolicy) {
+        self.splitter_policy = policy;
+    }
+
+    /// Drag grid line `line` of grid branch `branch_id` by `delta` px:
+    /// only the two tracks next to the line change, their sum is kept.
+    fn drag_grid_line(
+        &mut self,
+        sep_idx: usize,
+        branch_id: BranchId,
+        line: GridLine,
+        delta: f32,
+        content_width: f32,
+        content_height: f32,
+    ) -> bool {
+        let rect = self.tree.rect_for_branch(branch_id, content_width, content_height)
+            .unwrap_or(PanelRect::new(0.0, 0.0, content_width, content_height));
+        let Some(branch) = self.tree.find_branch(branch_id) else { return false };
+        let Some(grid) = Self::fitting_grid(branch) else { return false };
+
+        let (n_tracks, extent) = match line.axis {
+            GridAxis::Row => (grid.rows, rect.height),
+            GridAxis::Col => (grid.cols, rect.width),
+        };
+        let (i, j) = (line.index, line.index + 1);
+        if j >= n_tracks {
+            return false;
+        }
+        let gap = super::docking::presets::PANEL_GAP;
+        let available = extent - gap * (n_tracks - 1) as f32;
+        if available <= 0.0 {
+            return false;
+        }
+
+        // Stored weights (equal if unset/invalid) — only [i] and [j] change.
+        let stored = match line.axis {
+            GridAxis::Row => &grid.row_ratios,
+            GridAxis::Col => &grid.col_ratios,
+        };
+        let mut weights: Vec<f64> = if stored.len() == n_tracks && GridSpec::valid_block(stored) {
+            stored.clone()
+        } else {
+            vec![1.0 / n_tracks as f64; n_tracks]
+        };
+        let total_w: f64 = weights.iter().sum();
+        let px_to_w = total_w / available as f64;
+
+        // A track's minimum is the largest minimum of the cells in it.
+        let track_min_px = |t: usize| -> f32 {
+            match line.axis {
+                GridAxis::Row => (0..grid.cols)
+                    .map(|c| self.min_height_for_node(&branch.children[grid.cell_index(t, c)]))
+                    .fold(0.0, f32::max),
+                GridAxis::Col => (0..grid.rows)
+                    .map(|r| self.min_width_for_node(&branch.children[grid.cell_index(r, t)]))
+                    .fold(0.0, f32::max),
+            }
+        };
+        // Tracks never reach zero (a zero weight would invalidate the block).
+        let floor = total_w * 1e-4;
+        let min_a = (track_min_px(i) as f64 * px_to_w).max(floor);
+        let min_b = (track_min_px(j) as f64 * px_to_w).max(floor);
+        let delta_w = delta as f64 * px_to_w;
+        let (a, b) = (weights[i], weights[j]);
+
+        let (new_a, new_b) = match self.splitter_policy {
+            SplitterPolicy::Cascade => clamp_pair(a, b, delta_w, min_a, min_b),
+            SplitterPolicy::Clamp { min_frac } => {
+                let m = sanitize_min_frac(min_frac) * total_w;
+                clamp_pair(a, b, delta_w, min_a.max(m), min_b.max(m))
+            }
+            SplitterPolicy::RejectSnapBack => {
+                let (na, nb) = (a + delta_w, b - delta_w);
+                // Reject a move that takes a track below its minimum (a move
+                // that only improves an already-violated track is allowed).
+                let a_bad = na < min_a && na < a;
+                let b_bad = nb < min_b && nb < b;
+                if a_bad || b_bad {
+                    let limit_a = if a_bad { min_a } else { a + b - min_b };
+                    let overshoot_px = ((na - limit_a) / px_to_w) as f32;
+                    self.snap_animations.push(SnapBackAnimation::new(sep_idx, overshoot_px));
+                    return false;
+                }
+                (na, nb)
+            }
+        };
+
+        weights[i] = new_a;
+        weights[j] = new_b;
+        match line.axis {
+            GridAxis::Row => self.tree.set_grid_row_ratios(branch_id, weights),
+            GridAxis::Col => self.tree.set_grid_col_ratios(branch_id, weights),
+        }
+    }
+
     // =============================================================================
     // Minimum-size helpers
     // =============================================================================
@@ -643,6 +840,14 @@ impl<P: DockPanel> DockState<P> {
                 panel_min.max(override_min)
             }
             PanelNode::Branch(branch) => {
+                if let Some(g) = Self::fitting_grid(branch) {
+                    // Sum over columns of each column's widest minimum.
+                    return (0..g.cols)
+                        .map(|c| (0..g.rows)
+                            .map(|r| self.min_width_for_node(&branch.children[g.cell_index(r, c)]))
+                            .fold(0.0_f32, f32::max))
+                        .sum();
+                }
                 let children_mins = branch.children.iter().map(|c| self.min_width_for_node(c));
                 if Self::layout_is_horizontal(branch.layout) {
                     children_mins.sum()
@@ -672,6 +877,14 @@ impl<P: DockPanel> DockState<P> {
                 panel_min.max(override_min)
             }
             PanelNode::Branch(branch) => {
+                if let Some(g) = Self::fitting_grid(branch) {
+                    // Sum over rows of each row's tallest minimum.
+                    return (0..g.rows)
+                        .map(|r| (0..g.cols)
+                            .map(|c| self.min_height_for_node(&branch.children[g.cell_index(r, c)]))
+                            .fold(0.0_f32, f32::max))
+                        .sum();
+                }
                 let children_mins = branch.children.iter().map(|c| self.min_height_for_node(c));
                 if Self::layout_is_vertical(branch.layout) {
                     children_mins.sum()
@@ -680,6 +893,11 @@ impl<P: DockPanel> DockState<P> {
                 }
             }
         }
+    }
+
+    /// The branch's grid, if it has one that fits its child count.
+    fn fitting_grid(branch: &Branch<P>) -> Option<&GridSpec> {
+        branch.grid.as_ref().filter(|g| g.cell_count() == branch.children.len())
     }
 
     /// Returns `true` when the layout places children side-by-side horizontally.
@@ -882,6 +1100,25 @@ impl<P: DockPanel> DockState<P> {
                 return;
             }
 
+            // Grid: recurse into each cell with the cell's own size. The
+            // grid's ratios themselves are not water-filled.
+            if let Some(g) = DockState::<P>::fitting_grid(branch) {
+                let rows = g.normalized_rows();
+                let cols = g.normalized_cols();
+                for r in 0..g.rows {
+                    for c in 0..g.cols {
+                        walk(
+                            &branch.children[g.cell_index(r, c)],
+                            rect_w * cols[c] as f32,
+                            rect_h * rows[r] as f32,
+                            pending,
+                            mgr,
+                        );
+                    }
+                }
+                return;
+            }
+
             let horizontal = DockState::<P>::layout_is_horizontal(branch.layout);
             let vertical = DockState::<P>::layout_is_vertical(branch.layout);
 
@@ -970,8 +1207,18 @@ impl<P: DockPanel> DockState<P> {
     // Panel Drag-and-Drop
     // =============================================================================
 
-    /// Start panel drag (called when mouse down on panel header)
+    /// Start panel drag (called when mouse down on panel header). The leaf
+    /// travels with all its tabs, so a drag never arms while any of them
+    /// is pinned ([`crate::layout::docking::Pin::locks_tear_off`]).
     pub fn start_panel_drag(&mut self, leaf_id: LeafId, x: f32, y: f32) {
+        let pinned = self
+            .tree
+            .leaf(leaf_id)
+            .map(|l| l.panels.iter().any(|p| p.pin().locks_tear_off()))
+            .unwrap_or(false);
+        if pinned {
+            return;
+        }
         self.panel_drag = Some(PanelDragState {
             dragged_leaf_id: leaf_id,
             payload: DragPayload::Leaf,
@@ -995,7 +1242,11 @@ impl<P: DockPanel> DockState<P> {
         let valid = self
             .tree
             .leaf(leaf_id)
-            .map(|l| l.panels.len() > 1 && tab_idx < l.panels.len())
+            .map(|l| {
+                l.panels.len() > 1
+                    && tab_idx < l.panels.len()
+                    && !l.panels[tab_idx].pin().locks_tear_off()
+            })
             .unwrap_or(false);
         if !valid {
             return;
@@ -1489,6 +1740,41 @@ impl<P: DockPanel> DockState<P> {
         self.apply_panel_drop(new_leaf_id, target_id, zone, is_window_edge);
     }
 
+    /// The id the next floating window created by this state would get.
+    pub fn next_floating_id(&self) -> FloatingWindowId {
+        FloatingWindowId(self.next_floating_id)
+    }
+
+    /// Put a floating window built by the caller (a restored layout, a
+    /// panel opened straight into a float) above the layout, keeping its
+    /// id. Refused (`None`) when it has no panels or its id is already
+    /// used. Later ids are allocated past it; `active_tab` is clamped to
+    /// the panel count.
+    pub fn insert_floating(&mut self, mut window: FloatingWindow<P>) -> Option<FloatingWindowId> {
+        if window.panels.is_empty() || self.floating_windows.iter().any(|fw| fw.id == window.id) {
+            return None;
+        }
+        window.active_tab = window.active_tab.min(window.panels.len() - 1);
+        let id = window.id;
+        self.next_floating_id = self.next_floating_id.max(id.0.saturating_add(1));
+        self.floating_windows.push(window);
+        Some(id)
+    }
+
+    /// Move / resize a floating window. `false` when no window has this id.
+    pub fn set_floating_rect(&mut self, fw_id: FloatingWindowId, rect: PanelRect) -> bool {
+        match self.floating_windows.iter_mut().find(|fw| fw.id == fw_id) {
+            Some(fw) => {
+                fw.x = rect.x;
+                fw.y = rect.y;
+                fw.width = rect.width;
+                fw.height = rect.height;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Close floating window (removes it)
     pub fn close_floating(&mut self, fw_id: FloatingWindowId) {
         if let Some(idx) = self.floating_windows.iter().position(|fw| fw.id == fw_id) {
@@ -1796,6 +2082,26 @@ impl<P: DockPanel> DockState<P> {
 
         for (idx, sep) in self.separators.iter().enumerate() {
             if sep.orientation != orientation { continue; }
+            if let Some(line) = sep.grid_line {
+                // A grid line borders every cell of its two adjacent tracks.
+                let SeparatorLevel::Node { parent_id, .. } = sep.level;
+                let track = if leaf_is_a { line.index } else { line.index + 1 };
+                let hit = self.tree.find_branch(parent_id).is_some_and(|branch| {
+                    Self::fitting_grid(branch).is_some_and(|g| {
+                        let cells: Vec<usize> = match line.axis {
+                            GridAxis::Row => (0..g.cols).map(|c| g.cell_index(track, c)).collect(),
+                            GridAxis::Col => (0..g.rows).map(|r| g.cell_index(r, track)).collect(),
+                        };
+                        cells.into_iter().any(|i| {
+                            self.node_contains_target_leaf(branch.children[i].raw_id(), leaf)
+                        })
+                    })
+                });
+                if hit {
+                    return Some(idx);
+                }
+                continue;
+            }
             let SeparatorLevel::Node { child_a, child_b, .. } = sep.level;
             let target_side = if leaf_is_a { child_a } else { child_b };
             if self.node_contains_target_leaf(target_side, leaf) {
@@ -1894,6 +2200,23 @@ impl<P: DockPanel> DockState<P> {
     pub fn floating_drag_state(&self) -> Option<&FloatingDragState> {
         self.floating_drag.as_ref()
     }
+}
+
+/// `min_frac` limited to `0.0..0.5` (NaN → 0), so two neighbours can
+/// always both satisfy it.
+fn sanitize_min_frac(min_frac: f64) -> f64 {
+    if min_frac.is_nan() { 0.0 } else { min_frac.clamp(0.0, 0.49) }
+}
+
+/// Move `delta` from `b` to `a`, stopping where either would go below its
+/// minimum. The sum `a + b` is kept. A side already below its minimum may
+/// grow but never shrink further.
+fn clamp_pair(a: f64, b: f64, delta: f64, min_a: f64, min_b: f64) -> (f64, f64) {
+    let total = a + b;
+    let lo = min_a.min(a);
+    let hi = (total - min_b).max(a);
+    let new_a = (a + delta).clamp(lo, hi);
+    (new_a, total - new_a)
 }
 
 impl<P: DockPanel> Default for DockState<P> {
@@ -2344,4 +2667,370 @@ mod center_drop_tests {
         ds.end_panel_drag(1000.0, 800.0);
         assert_eq!(ds.tree().leaf(a).unwrap().panels.len(), 2);
     }
+
+    #[derive(Clone)]
+    struct Pinned(crate::layout::docking::Pin);
+    impl DockPanel for Pinned {
+        fn title(&self) -> &str { "pinned" }
+        fn type_id(&self) -> &'static str { "pinned" }
+        fn pin(&self) -> crate::layout::docking::Pin { self.0 }
+    }
+
+    #[test]
+    fn a_system_pinned_panel_never_arms_a_header_or_tab_drag() {
+        use crate::layout::docking::Pin;
+        let mut state = DockState::<Pinned>::new();
+        let leaf = state.tree_mut().add_leaf(Pinned(Pin::System));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "System pin: header drag must not arm");
+
+        state.tree_mut().add_tab(leaf, Pinned(Pin::Free));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "a leaf with any pinned tab travels nowhere");
+        state.start_tab_drag(leaf, 0, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_none(), "the pinned tab itself cannot tear off");
+        state.start_tab_drag(leaf, 1, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_some(), "a free tab in the same stack still tears off");
+    }
+
+    #[test]
+    fn free_and_unpinned_panels_arm_as_before() {
+        use crate::layout::docking::Pin;
+        let mut state = DockState::<Pinned>::new();
+        let leaf = state.tree_mut().add_leaf(Pinned(Pin::User { pinned: false }));
+        state.start_panel_drag(leaf, 10.0, 10.0);
+        assert!(state.panel_drag_state().is_some());
+    }
 }
+
+
+// =============================================================================
+// Tests — rows × cols grids and SplitterPolicy
+// =============================================================================
+
+#[cfg(test)]
+mod grid_policy_tests {
+    use super::*;
+    use crate::layout::docking::{DockPanel, DockingTree, GridAxis, GridLine, SplitterPolicy};
+
+    /// Panel with a configurable minimum size.
+    #[derive(Clone)]
+    struct M(f32, f32);
+    impl DockPanel for M {
+        fn title(&self) -> &str { "m" }
+        fn type_id(&self) -> &'static str { "m" }
+        fn min_size(&self) -> (f32, f32) { (self.0, self.1) }
+    }
+
+    fn grid_state(rows: usize, cols: usize, w: f32, h: f32, min: (f32, f32)) -> DockState<M> {
+        let tree = DockingTree::with_grid(rows, cols, vec![M(min.0, min.1); rows * cols]).unwrap();
+        let mut state = DockState::from_tree(tree);
+        state.layout(PanelRect::new(0.0, 0.0, w, h));
+        state
+    }
+
+    fn line(state: &DockState<M>, axis: GridAxis, index: usize) -> usize {
+        state.separators().iter()
+            .position(|s| s.grid_line == Some(GridLine { axis, index }))
+            .expect("grid line separator")
+    }
+
+    fn grid(state: &DockState<M>) -> GridSpec {
+        state.tree().root().grid.clone().expect("root is a grid")
+    }
+
+    fn near(a: f64, b: f64) -> bool { (a - b).abs() < 1e-9 }
+
+    #[test]
+    fn default_policy_is_cascade() {
+        assert_eq!(SplitterPolicy::default(), SplitterPolicy::Cascade);
+        assert_eq!(DockState::<M>::new().splitter_policy(), SplitterPolicy::Cascade);
+        let mut s = DockState::<M>::new();
+        s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.1 });
+        assert_eq!(s.splitter_policy(), SplitterPolicy::Clamp { min_frac: 0.1 });
+    }
+
+    #[test]
+    fn row_line_drag_changes_only_the_two_adjacent_rows() {
+        // 3 rows × 2 cols, 600 × 600 → rows of 200 px.
+        let mut s = grid_state(3, 2, 600.0, 600.0, (0.0, 0.0));
+        let before = grid(&s);
+        let idx = line(&s, GridAxis::Row, 0);
+        assert!(s.drag_separator(idx, 60.0, 600.0, 600.0));
+        let after = grid(&s);
+
+        assert_eq!(after.col_ratios, before.col_ratios, "columns untouched");
+        assert_eq!(after.row_ratios[2], before.row_ratios[2], "row 2 untouched");
+        assert!(near(after.row_ratios[0], before.row_ratios[0] + 0.1));
+        assert!(near(after.row_ratios[1], before.row_ratios[1] - 0.1));
+        let sum_b: f64 = before.row_ratios.iter().sum();
+        let sum_a: f64 = after.row_ratios.iter().sum();
+        assert!(near(sum_a, sum_b), "sum preserved");
+
+        s.layout(PanelRect::new(0.0, 0.0, 600.0, 600.0));
+        let first = s.tree().root().children[0].leaf_id().unwrap();
+        assert!((s.panel_rects()[&first].height - 260.0).abs() < 0.01);
+        assert!(s.snap_animations().is_empty());
+    }
+
+    #[test]
+    fn column_line_drag_changes_only_the_two_adjacent_columns() {
+        // 2 rows × 3 cols, 900 × 400 → columns of 300 px.
+        let mut s = grid_state(2, 3, 900.0, 400.0, (0.0, 0.0));
+        let before = grid(&s);
+        let idx = line(&s, GridAxis::Col, 1);
+        assert!(s.drag_separator(idx, -90.0, 900.0, 400.0));
+        let after = grid(&s);
+
+        assert_eq!(after.row_ratios, before.row_ratios, "rows untouched");
+        assert_eq!(after.col_ratios[0], before.col_ratios[0], "column 0 untouched");
+        assert!(near(after.col_ratios[1], before.col_ratios[1] - 0.1));
+        assert!(near(after.col_ratios[2], before.col_ratios[2] + 0.1));
+        let sum_b: f64 = before.col_ratios.iter().sum();
+        let sum_a: f64 = after.col_ratios.iter().sum();
+        assert!(near(sum_a, sum_b), "sum preserved");
+    }
+
+    #[test]
+    fn reject_snap_back_on_a_grid_rejects_and_queues_a_snap_back() {
+        // 2 × 2, 1000 × 1000, every cell at least 200 × 200.
+        let mut s = grid_state(2, 2, 1000.0, 1000.0, (200.0, 200.0));
+        s.set_splitter_policy(SplitterPolicy::RejectSnapBack);
+        let idx = line(&s, GridAxis::Col, 0);
+        // +400 px would leave the right column 100 px < 200 px minimum.
+        assert!(!s.drag_separator(idx, 400.0, 1000.0, 1000.0));
+        assert_eq!(grid(&s).col_ratios, vec![0.5, 0.5], "ratios unchanged");
+        assert_eq!(s.snap_animations().len(), 1);
+        assert_eq!(s.snap_animations()[0].separator_idx, idx);
+        assert!(!s.snap_animations()[0].done);
+
+        // A move that respects the minimum goes through.
+        assert!(s.drag_separator(idx, 250.0, 1000.0, 1000.0));
+        let cols = grid(&s).col_ratios;
+        assert!(near(cols[0], 0.75) && near(cols[1], 0.25), "{cols:?}");
+    }
+
+    #[test]
+    fn clamp_on_a_grid_stops_at_min_frac_and_never_rejects() {
+        let mut s = grid_state(2, 2, 1000.0, 1000.0, (0.0, 0.0));
+        s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.1 });
+        let idx = line(&s, GridAxis::Col, 0);
+        assert!(s.drag_separator(idx, 10_000.0, 1000.0, 1000.0));
+        let cols = grid(&s).col_ratios;
+        assert!(near(cols[0], 0.9) && near(cols[1], 0.1), "{cols:?}");
+        // Pushing further stays at the limit — still accepted.
+        assert!(s.drag_separator(idx, 100.0, 1000.0, 1000.0));
+        let cols = grid(&s).col_ratios;
+        assert!(near(cols[0], 0.9) && near(cols[1], 0.1), "{cols:?}");
+        // Rows are independent.
+        let row = line(&s, GridAxis::Row, 0);
+        assert!(s.drag_separator(row, -10_000.0, 1000.0, 1000.0));
+        let g = grid(&s);
+        assert!(near(g.row_ratios[0], 0.1) && near(g.row_ratios[1], 0.9), "{g:?}");
+        assert!(near(g.col_ratios[0], 0.9));
+        assert!(s.snap_animations().is_empty(), "clamp never snaps back");
+    }
+
+    fn two_columns(min_w: f32) -> (DockState<M>, usize, BranchId) {
+        let mut tree = DockingTree::with_single_leaf(M(min_w, 0.0));
+        tree.add_leaf(M(min_w, 0.0));
+        let root = tree.root().id;
+        let mut s = DockState::from_tree(tree);
+        s.layout(PanelRect::new(0.0, 0.0, 1000.0, 500.0));
+        let idx = s.separators().iter()
+            .position(|sp| sp.orientation == SeparatorOrientation::Vertical)
+            .unwrap();
+        (s, idx, root)
+    }
+
+    fn fractions(s: &DockState<M>, id: BranchId) -> Vec<f64> {
+        let p = &s.tree().find_branch(id).unwrap().proportions;
+        let sum: f64 = p.iter().sum();
+        p.iter().map(|v| v / sum).collect()
+    }
+
+    #[test]
+    fn clamp_on_a_single_axis_split_stops_at_the_larger_minimum() {
+        // min_frac wins: 0.2 of 1000 px > 0 px panel minimum.
+        let (mut s, idx, root) = two_columns(0.0);
+        s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.2 });
+        assert!(s.drag_separator(idx, -5_000.0, 1000.0, 500.0));
+        let f = fractions(&s, root);
+        assert!(near(f[0], 0.2) && near(f[1], 0.8), "{f:?}");
+        assert!(s.snap_animations().is_empty());
+
+        // Pixel minimum wins: 300 px of 1000 > 0.1.
+        let (mut s, idx, root) = two_columns(300.0);
+        s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.1 });
+        assert!(s.drag_separator(idx, -5_000.0, 1000.0, 500.0));
+        let f = fractions(&s, root);
+        assert!((f[0] - 0.3).abs() < 1e-6 && (f[1] - 0.7).abs() < 1e-6, "{f:?}");
+    }
+
+    #[test]
+    fn default_policy_keeps_the_cascading_single_axis_drag_clamp_moves_only_neighbours() {
+        // Three 300 px columns, each at least 100 px.
+        let build = || {
+            let mut tree = DockingTree::with_single_leaf(M(100.0, 0.0));
+            tree.add_leaf(M(100.0, 0.0));
+            tree.add_leaf(M(100.0, 0.0));
+            let root = tree.root().id;
+            let mut s = DockState::from_tree(tree);
+            s.layout(PanelRect::new(0.0, 0.0, 900.0, 300.0));
+            let first = s.tree().root().children[0].raw_id();
+            let idx = s.separators().iter()
+                .position(|sp| sp.child_a() == Some(first))
+                .unwrap();
+            (s, idx, root)
+        };
+
+        // Default: the delta cascades through column 1 then column 2.
+        let (mut s, idx, root) = build();
+        assert!(s.drag_separator(idx, 400.0, 900.0, 300.0));
+        let f = fractions(&s, root);
+        assert!((f[0] - 700.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[1] - 100.0 / 900.0).abs() < 1e-6 && (f[2] - 100.0 / 900.0).abs() < 1e-6, "{f:?}");
+
+        // Clamp: column 2 is never touched; column 1 stops at its minimum.
+        let (mut s, idx, root) = build();
+        s.set_splitter_policy(SplitterPolicy::Clamp { min_frac: 0.0 });
+        assert!(s.drag_separator(idx, 400.0, 900.0, 300.0));
+        let f = fractions(&s, root);
+        assert!((f[0] - 500.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[1] - 100.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[2] - 300.0 / 900.0).abs() < 1e-6, "{f:?}");
+    }
+
+    #[test]
+    fn hit_test_finds_grid_cells_and_grid_lines() {
+        // 2 × 3 over 600 × 400: columns at x = 200 / 400, row line at y = 200.
+        let s = grid_state(2, 3, 600.0, 400.0, (0.0, 0.0));
+        let cells: Vec<LeafId> = s.tree().root().children.iter()
+            .map(|c| c.leaf_id().unwrap()).collect();
+        assert_eq!(s.hit_test(500.0, 300.0).panel_id(), Some(cells[5]));
+        assert_eq!(s.hit_test(100.0, 100.0).panel_id(), Some(cells[0]));
+        match s.hit_test(50.0, 200.0) {
+            HitResult::Separator(i) => assert_eq!(i, line(&s, GridAxis::Row, 0)),
+            other => panic!("expected the row line, got {other:?}"),
+        }
+        match s.hit_test(400.0, 350.0) {
+            HitResult::Separator(i) => assert_eq!(i, line(&s, GridAxis::Col, 1)),
+            other => panic!("expected column line 1, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn separator_for_edge_maps_any_grid_cell_to_its_lines() {
+        use crate::layout::ResizeEdge;
+        let s = grid_state(2, 3, 600.0, 400.0, (0.0, 0.0));
+        // Cell (1, 2): bottom-right.
+        let leaf = s.tree().root().children[5].leaf_id().unwrap();
+        assert_eq!(s.separator_for_edge(leaf, ResizeEdge::N), Some(line(&s, GridAxis::Row, 0)));
+        assert_eq!(s.separator_for_edge(leaf, ResizeEdge::W), Some(line(&s, GridAxis::Col, 1)));
+        assert_eq!(s.separator_for_edge(leaf, ResizeEdge::E), None);
+        assert_eq!(s.separator_for_edge(leaf, ResizeEdge::S), None);
+    }
+
+    #[test]
+    fn cascade_on_a_grid_stops_at_the_pixel_minimum_and_never_rejects() {
+        let mut s = grid_state(2, 2, 1000.0, 1000.0, (200.0, 200.0));
+        let idx = line(&s, GridAxis::Col, 0);
+        assert!(s.drag_separator(idx, 400.0, 1000.0, 1000.0));
+        let cols = grid(&s).col_ratios;
+        let total: f64 = cols.iter().sum();
+        let right_px = cols[1] / total * (1000.0 - crate::layout::docking::presets::PANEL_GAP as f64);
+        assert!((right_px - 200.0).abs() < 0.5, "{cols:?} → right {right_px}px");
+        assert!(s.snap_animations().is_empty());
+    }
+
+    #[test]
+    fn reject_snap_back_on_a_single_axis_split_refuses_past_the_minimum() {
+        // Three 300 px columns, each at least 100 px.
+        let mut tree = DockingTree::with_single_leaf(M(100.0, 0.0));
+        tree.add_leaf(M(100.0, 0.0));
+        tree.add_leaf(M(100.0, 0.0));
+        let root = tree.root().id;
+        let mut s = DockState::from_tree(tree);
+        s.layout(PanelRect::new(0.0, 0.0, 900.0, 300.0));
+        s.set_splitter_policy(SplitterPolicy::RejectSnapBack);
+        let first = s.tree().root().children[0].raw_id();
+        let idx = s.separators().iter().position(|sp| sp.child_a() == Some(first)).unwrap();
+
+        // +250 px leaves column 1 at 50 px < 100 px: refused, nothing moves.
+        let before = fractions(&s, root);
+        assert!(!s.drag_separator(idx, 250.0, 900.0, 300.0));
+        assert_eq!(fractions(&s, root), before);
+        assert_eq!(s.snap_animations().len(), 1);
+        assert!(s.snap_animations()[0].offset() > 0.0);
+
+        // +150 px is allowed and moves only the two neighbours.
+        assert!(s.drag_separator(idx, 150.0, 900.0, 300.0));
+        let f = fractions(&s, root);
+        assert!((f[0] - 450.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[1] - 150.0 / 900.0).abs() < 1e-6, "{f:?}");
+        assert!((f[2] - 300.0 / 900.0).abs() < 1e-6, "{f:?}");
+    }
+}
+
+#[cfg(test)]
+mod floating_and_strip_tests {
+    use super::*;
+    use crate::layout::docking::DockPanel;
+
+    #[derive(Clone)]
+    struct T(&'static str);
+    impl DockPanel for T {
+        fn title(&self) -> &str { self.0 }
+        fn type_id(&self) -> &'static str { self.0 }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    fn fw(id: u64, panels: Vec<T>, active_tab: usize) -> FloatingWindow<T> {
+        FloatingWindow::new(FloatingWindowId(id), panels, active_tab, 10.0, 20.0, 200.0, 100.0)
+    }
+
+    #[test]
+    fn insert_floating_keeps_the_id_and_allocates_past_it() {
+        let mut s = DockState::<T>::new();
+        assert_eq!(s.next_floating_id(), FloatingWindowId(1));
+        assert_eq!(s.insert_floating(fw(7, vec![T("a"), T("b")], 9)), Some(FloatingWindowId(7)));
+        assert_eq!(s.floating_windows()[0].active_tab, 1, "active tab clamped");
+        assert_eq!(s.next_floating_id(), FloatingWindowId(8));
+        // Duplicate id and empty windows are refused.
+        assert_eq!(s.insert_floating(fw(7, vec![T("c")], 0)), None);
+        assert_eq!(s.insert_floating(fw(9, vec![], 0)), None);
+        assert_eq!(s.floating_windows().len(), 1);
+        // A lower id does not move the counter back.
+        assert_eq!(s.insert_floating(fw(2, vec![T("c")], 0)), Some(FloatingWindowId(2)));
+        assert_eq!(s.next_floating_id(), FloatingWindowId(8));
+    }
+
+    #[test]
+    fn set_floating_rect_moves_and_resizes() {
+        let mut s = DockState::<T>::new();
+        s.insert_floating(fw(1, vec![T("a")], 0));
+        assert!(s.set_floating_rect(FloatingWindowId(1), PanelRect::new(1.0, 2.0, 3.0, 4.0)));
+        assert_eq!(s.floating_windows()[0].rect(), PanelRect::new(1.0, 2.0, 3.0, 4.0));
+        assert!(!s.set_floating_rect(FloatingWindowId(5), PanelRect::ZERO));
+    }
+
+    #[test]
+    fn tab_strip_reserve_leaves_room_right_of_the_chips() {
+        let mut s = DockState::<T>::with_panel(T("a"));
+        let leaf = s.tree().leaves()[0].id;
+        s.tree_mut().add_tab(leaf, T("b"));
+        s.layout(PanelRect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(s.tab_strip_reserve(), 0.0);
+        let last = &s.tab_bars()[0].tabs[1].rect;
+        assert_eq!(last.x + last.width, 400.0);
+
+        s.set_tab_strip_reserve(24.0);
+        s.layout(PanelRect::new(0.0, 0.0, 400.0, 300.0));
+        let bar = &s.tab_bars()[0];
+        assert_eq!(bar.tabs[0].rect.width, 188.0);
+        assert_eq!(bar.rect.width, 376.0);
+        s.set_tab_strip_reserve(f32::NAN);
+        assert_eq!(s.tab_strip_reserve(), 0.0);
+    }
+}
+

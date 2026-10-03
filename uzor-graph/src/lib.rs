@@ -38,6 +38,7 @@ pub mod camera;
 pub mod camera3d;
 pub mod cluster;
 pub mod engine;
+#[cfg(feature = "render3d")]
 pub mod engine3d;
 pub mod graph;
 pub mod interaction;
@@ -45,6 +46,7 @@ pub mod label_grid;
 pub mod layout;
 pub mod particle;
 pub mod render;
+#[cfg(feature = "render3d")]
 pub mod render3d;
 pub mod style;
 pub mod theme;
@@ -56,6 +58,7 @@ pub use engine::{
     DragEndPolicy, FilterSpec, GraphEngine, GraphInteractionConfig, GraphPointerBindings,
     NodeFacts, SelectMode,
 };
+#[cfg(feature = "render3d")]
 pub use engine3d::{GraphEngine3D, TransitionDirection};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use label_grid::LabelLodConfig;
@@ -99,7 +102,7 @@ mod proof_tests {
         // Fixed path (not CARGO_MANIFEST_DIR-relative) — `uzor/out/` is
         // the shared human-eyeball drop point for every headless proof
         // render in this workspace.
-        std::path::PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+        std::path::PathBuf::from(std::env::var_os("UZOR_PROOF_OUT").unwrap_or_else(|| std::env::temp_dir().join("uzor-proof-out").into_os_string()))
     }
 
     fn write_proof_png(name: &str, bytes: &[u8]) {

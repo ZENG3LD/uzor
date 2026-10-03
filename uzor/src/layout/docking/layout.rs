@@ -72,6 +72,15 @@ impl<P: DockPanel> DockingTree<P> {
         let n = branch.children.len();
         if n == 0 { return Vec::new(); }
 
+        // 0. Rows × cols grid: cells sized by the independent row / column
+        // ratios. A hidden cell keeps its slot (it is simply not drawn), so
+        // the grid lines stay aligned across rows and columns.
+        if let Some(grid) = branch.grid.as_ref() {
+            if grid.cell_count() == n {
+                return grid.cell_rects(parent_rect, PANEL_GAP);
+            }
+        }
+
         // Check for hidden children
         let has_hidden = branch.children.iter().any(|c| c.is_hidden());
 
@@ -413,6 +422,8 @@ mod tests {
             proportions: vec![0.3, 0.3, 0.2, 0.2],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         }
     }
 
@@ -472,6 +483,8 @@ mod tests {
             // 40% left / 60% right,  30% top / 70% bottom
             cross_ratio: Some((0.4, 0.3)),
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
@@ -511,6 +524,8 @@ mod tests {
             proportions: vec![0.75, 0.25],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 600.0);
@@ -536,6 +551,8 @@ mod tests {
             proportions: vec![0.5, 0.25, 0.25],
             cross_ratio: None,
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 800.0, 600.0);
@@ -651,6 +668,8 @@ mod tests {
             // 70% left column, 40% top in right column
             cross_ratio: Some((0.7, 0.4)),
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
@@ -710,6 +729,8 @@ mod tests {
             // 60% left in top row, 30% top row height
             cross_ratio: Some((0.6, 0.3)),
             preserve_if_empty: false,
+            magnetic: true,
+            grid: None,
         };
 
         let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
@@ -746,5 +767,138 @@ mod tests {
         let exp_tr_x = tl.width + gap;
         assert!((tr.x - exp_tr_x).abs() < 1.0,
             "top-right x should be ~{exp_tr_x}, got {}", tr.x);
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use crate::layout::docking::{
+        DockPanel, DockingTree, GridAxis, GridSpec, LeafId, PanelRect, Separator,
+        SeparatorOrientation, WindowLayout,
+    };
+
+    #[derive(Clone)]
+    struct P;
+    impl DockPanel for P {
+        fn title(&self) -> &str { "p" }
+        fn type_id(&self) -> &'static str { "p" }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    fn close(a: PanelRect, b: PanelRect) -> bool {
+        (a.x - b.x).abs() < 0.01
+            && (a.y - b.y).abs() < 0.01
+            && (a.width - b.width).abs() < 0.01
+            && (a.height - b.height).abs() < 0.01
+    }
+
+    fn grid_tree(rows: usize, cols: usize, row_r: Vec<f64>, col_r: Vec<f64>) -> (DockingTree<P>, Vec<LeafId>) {
+        let mut tree = DockingTree::with_grid(rows, cols, vec![P; rows * cols]).unwrap();
+        let root = tree.root().id;
+        assert!(tree.set_grid_row_ratios(root, row_r));
+        assert!(tree.set_grid_col_ratios(root, col_r));
+        let ids = tree.root().children.iter().map(|c| c.leaf_id().unwrap()).collect();
+        (tree, ids)
+    }
+
+    fn rects_in_order(tree: &DockingTree<P>, ids: &[LeafId], w: f32, h: f32) -> Vec<PanelRect> {
+        ids.iter().map(|id| tree.rect_for_leaf(*id, w, h).unwrap()).collect()
+    }
+
+    #[test]
+    fn rxc_2x3_uneven_ratios_lays_out_row_major() {
+        // Rows 1:3 of 400 px → 100 / 300; columns 1:2:1 of 600 px → 150 / 300 / 150.
+        let (tree, ids) = grid_tree(2, 3, vec![1.0, 3.0], vec![1.0, 2.0, 1.0]);
+        assert_eq!(tree.layout(), WindowLayout::Custom);
+        let got = rects_in_order(&tree, &ids, 600.0, 400.0);
+        let want = [
+            PanelRect::new(0.0, 0.0, 150.0, 100.0),
+            PanelRect::new(150.0, 0.0, 300.0, 100.0),
+            PanelRect::new(450.0, 0.0, 150.0, 100.0),
+            PanelRect::new(0.0, 100.0, 150.0, 300.0),
+            PanelRect::new(150.0, 100.0, 300.0, 300.0),
+            PanelRect::new(450.0, 100.0, 150.0, 300.0),
+        ];
+        assert_eq!(got.len(), 6);
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(close(*g, *w), "got {g:?}, want {w:?}");
+        }
+    }
+
+    #[test]
+    fn rxc_3x2_uneven_ratios_lays_out_row_major() {
+        // Rows 0.5 / 0.25 / 0.25 of 400 → 200 / 100 / 100; columns 0.3 / 0.7 of 600 → 180 / 420.
+        let (tree, ids) = grid_tree(3, 2, vec![0.5, 0.25, 0.25], vec![0.3, 0.7]);
+        let got = rects_in_order(&tree, &ids, 600.0, 400.0);
+        let want = [
+            PanelRect::new(0.0, 0.0, 180.0, 200.0),
+            PanelRect::new(180.0, 0.0, 420.0, 200.0),
+            PanelRect::new(0.0, 200.0, 180.0, 100.0),
+            PanelRect::new(180.0, 200.0, 420.0, 100.0),
+            PanelRect::new(0.0, 300.0, 180.0, 100.0),
+            PanelRect::new(180.0, 300.0, 420.0, 100.0),
+        ];
+        assert_eq!(got.len(), 6);
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!(close(*g, *w), "got {g:?}, want {w:?}");
+        }
+    }
+
+    #[test]
+    fn rxc_separators_one_per_interior_boundary_spanning_the_grid() {
+        let (tree, _) = grid_tree(3, 2, vec![0.5, 0.25, 0.25], vec![0.3, 0.7]);
+        let mut seps: Vec<Separator> = Vec::new();
+        crate::layout::docking::lib::generate_separators(
+            tree.root(), PanelRect::new(0.0, 0.0, 600.0, 400.0), &mut seps,
+        );
+        // 2 row lines + 1 column line.
+        assert_eq!(seps.len(), 3);
+        let rows: Vec<&Separator> = seps.iter()
+            .filter(|s| s.grid_line.map(|l| l.axis) == Some(GridAxis::Row)).collect();
+        let cols: Vec<&Separator> = seps.iter()
+            .filter(|s| s.grid_line.map(|l| l.axis) == Some(GridAxis::Col)).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(cols.len(), 1);
+        for s in &rows {
+            assert_eq!(s.orientation, SeparatorOrientation::Horizontal);
+            assert_eq!((s.start, s.length), (0.0, 600.0), "row line spans the width");
+        }
+        assert!((rows[0].position - 200.0).abs() < 0.01);
+        assert!((rows[1].position - 300.0).abs() < 0.01);
+        assert_eq!(cols[0].orientation, SeparatorOrientation::Vertical);
+        assert_eq!((cols[0].start, cols[0].length), (0.0, 400.0), "column line spans the height");
+        assert!((cols[0].position - 180.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn grid_needs_matching_child_count_and_is_dropped_when_it_changes() {
+        let mut tree = DockingTree::with_single_leaf(P);
+        tree.add_leaf(P);
+        tree.add_leaf(P);
+        let root = tree.root().id;
+        assert!(!tree.set_branch_grid(root, 2, 2), "3 children cannot form 2×2");
+        assert!(tree.set_branch_grid(root, 1, 3));
+        assert_eq!(tree.branch_grid(root), GridSpec::new(1, 3).as_ref());
+
+        let last = tree.root().children[2].leaf_id().unwrap();
+        tree.remove_leaf(last);
+        assert!(tree.branch_grid(root).is_none(), "removing a cell drops the grid");
+        assert_eq!(tree.layout(), WindowLayout::SplitHorizontal);
+    }
+
+    #[test]
+    fn wrap_leaf_in_grid_nests_a_grid_in_place() {
+        let mut tree = DockingTree::with_single_leaf(P);
+        let first = tree.root().children[0].leaf_id().unwrap();
+        let second = tree.add_leaf(P);
+        let (grid_id, cells) = tree.wrap_leaf_in_grid(second, 2, 2, vec![P, P, P]).unwrap();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0], second);
+        assert_eq!(tree.branch_grid(grid_id).map(|g| (g.rows, g.cols)), Some((2, 2)));
+        // Root is a 2-way split; the grid fills its right half as 2×2.
+        let r = tree.rect_for_leaf(cells[3], 800.0, 400.0).unwrap();
+        assert!(close(r, PanelRect::new(600.0, 200.0, 200.0, 200.0)), "{r:?}");
+        assert!(tree.rect_for_leaf(first, 800.0, 400.0).is_some());
+        assert!(tree.wrap_leaf_in_grid(first, 2, 2, vec![P]).is_none(), "wrong panel count");
     }
 }

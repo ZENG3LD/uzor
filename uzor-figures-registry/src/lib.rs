@@ -1,10 +1,7 @@
 //! `uzor-figures-registry` — serde-able spec/IR registry for
-//! `uzor-figures` (arc B item 1 of the approved plan; `nemo/docs/
-//! uzor-engines/uzor_figures_engine_architecture.md` §3's own
-//! `uzor-figures-registry` placement).
+//! `uzor-figures`.
 //!
-//! `uzor-figures` itself is deliberately serde-free (its own `CLAUDE.md`
-//! "Forbidden" line, and the architecture doc §2: "typed Rust layer-cake
+//! `uzor-figures` itself is deliberately serde-free (a "typed Rust layer-cake
 //! of libraries, NOT a spec interpreter — no JSON grammar-of-graphics
 //! compiler"). This crate is the ONE place that bridges that typed core
 //! to AUTHORED CONTENT: a [`FigureSpec`] enum with one variant per shipped

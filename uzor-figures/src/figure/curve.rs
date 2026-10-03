@@ -392,9 +392,8 @@ impl CurveFigure {
     /// **The Y domain is NOT windowed** — [`CurveFigure::y_scale`] always
     /// computes the FULL data extent regardless of `x_viewport`'s state.
     /// Auto-fitting Y to only the currently-visible (post-X-window) points
-    /// is a `ScaleMode::Auto`/`Focus`-shaped concern (Wave 3 of
-    /// `nemo/docs/uzor-engines/plans/engine-strengthening-arc-2026-07-24.md`,
-    /// not built yet) layered ON TOP of a windowed X — this method
+    /// is a `ScaleMode::Auto`/`Focus`-shaped concern (not built yet)
+    /// layered ON TOP of a windowed X — this method
     /// deliberately leaves that seam alone rather than half-building it.
     ///
     /// **The caller owns keeping `x_viewport`'s own

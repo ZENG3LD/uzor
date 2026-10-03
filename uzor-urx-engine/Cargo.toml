@@ -15,15 +15,16 @@ uzor-urx-core = { workspace = true }
 uzor-urx-cpu  = { workspace = true, features = ["glyph"] }
 metrics = "0.24"
 
-# uzor-urx-wgpu is opt-in via feature so consumers that only want CPU
-# (headless / CI / embedded) can skip the wgpu dep tree entirely.
+# Every GPU backend is opt-in: the default build is CPU-only, so headless /
+# CI / embedded consumers never pull the wgpu dep tree. `uzor-render-hub`
+# turns on the backends it dispatches to.
 uzor-urx-wgpu      = { workspace = true, optional = true }
 uzor-urx-hybrid    = { workspace = true, optional = true }
 uzor-urx-wgpu-full = { workspace = true, optional = true }
 wgpu = { version = "29", optional = true }
 
 [features]
-default = ["wgpu-backend"]
+default = []
 wgpu-backend = ["dep:uzor-urx-wgpu"]
 hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]
 # URX 1.6 full-GPU compute pipeline (encode → tile → fine → blit).
@@ -36,11 +37,6 @@ pollster   = "0.4"
 wgpu       = "29"
 winit      = "0.30"
 peniko = "0.6"
-# Agentic control plane (3-level HTTP) for winit_full_gpu_demo.
-axum       = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
-tokio      = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
-serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [[example]]
 name = "backend_auto_demo"

@@ -19,10 +19,6 @@ gltf = { version = "1", default-features = false, features = ["import", "utils",
 [dev-dependencies]
 pollster   = "0.4"
 winit      = "0.30"
-axum       = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
-tokio      = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
-serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
 half       = "2"
 uzor-urx-physics = { workspace = true }
 

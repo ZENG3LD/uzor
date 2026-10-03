@@ -13,6 +13,7 @@ use crate::input::core::response::WidgetResponse;
 use crate::input::core::widget_kind::WidgetKind;
 use crate::input::pointer::state::{InputState, MouseButton};
 use crate::input::core::widget_state::WidgetInputState;
+use crate::input::core::cook::CookState;
 use crate::input::text::store::{TextFieldStore, TextFieldConfig, TextAction};
 
 /// Layer ID for z-order management
@@ -158,6 +159,15 @@ pub struct InputCoordinator {
     /// plain registrations join the modal's layer instead of leaking to
     /// the base layer under the modal barrier. Reset every frame.
     default_layer: Option<LayerId>,
+    /// Click count, drag arm and pointer grab, fed from each frame's
+    /// pointer snapshot in `end_frame`.
+    cook: CookState,
+    /// `pointer.button_down` of the previous `end_frame`, for press edges.
+    cook_prev_down: Option<MouseButton>,
+    /// Press origin of a release that ended a drag THIS frame (set by
+    /// `feed_cook`, `None` otherwise). A drag-release is not a click for
+    /// the text store: it keeps the selection the drag made.
+    cook_drag_release: Option<(f64, f64)>,
 }
 
 impl InputCoordinator {
@@ -178,6 +188,9 @@ impl InputCoordinator {
             text_fields: TextFieldStore::new(),
             hover_prev: None,
             default_layer: None,
+            cook: CookState::default(),
+            cook_prev_down: None,
+            cook_drag_release: None,
         }
     }
 
@@ -202,10 +215,7 @@ impl InputCoordinator {
         // it) had registered — so widgets under an open popup kept
         // reporting `is_hovered() == true` (systemic z-order leak,
         // 2026-07-28). Baking here sees every layer of the finished frame.
-        let hovered = input
-            .pointer
-            .pos
-            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        let hovered = self.pointer_target(input.pointer.pos);
         self.bake_pressed(&hovered, input.pointer.button_down);
         self.widget_state.hover.set_hovered(hovered);
 
@@ -255,11 +265,7 @@ impl InputCoordinator {
     pub fn begin_frame_widgets_only(&mut self) {
         // Same complete-frame hover bake as `begin_frame` (see its comment),
         // at the retained pointer position.
-        let hovered = self
-            .input
-            .pointer
-            .pos
-            .and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()));
+        let hovered = self.pointer_target(self.input.pointer.pos);
         let button_down = self.input.pointer.button_down;
         self.bake_pressed(&hovered, button_down);
         self.widget_state.hover.set_hovered(hovered);
@@ -454,6 +460,11 @@ impl InputCoordinator {
         self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.kind)
     }
 
+    /// Returns the `Sense` of a registered widget (current frame only).
+    pub fn widget_sense(&self, id: &WidgetId) -> Option<Sense> {
+        self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.sense)
+    }
+
     /// Current pointer position in screen coordinates, if any cursor
     /// data has been received this frame.
     /// Read-only access to the current frame's `InputState`.
@@ -586,12 +597,13 @@ impl InputCoordinator {
         let clicked = self.input.pointer.clicked;
         let button_down = self.input.pointer.button_down;
 
-        // 1. Determine hovered widget (Z-order aware hit test)
-        let hovered_id = if let Some((mx, my)) = mouse_pos {
-            self.hit_test_at(mx, my).map(|w| w.id.clone())
-        } else {
-            None
-        };
+        // 0. Cook this frame's pointer edges (press / motion / release):
+        // click count, drag arm.
+        self.feed_cook();
+
+        // 1. Determine hovered widget (Z-order aware hit test; a pointer
+        // grab wins over the hit test)
+        let hovered_id = self.pointer_target(mouse_pos);
 
         // Track if we already generated a response for drag start
         let mut drag_started_this_frame = false;
@@ -616,7 +628,9 @@ impl InputCoordinator {
                     // Check click
                     if is_hovered && clicked.is_some() && widget.sense.click {
                         response.clicked = true;
-                        if widget.sense.text {
+                        response.double_clicked = self.cook.click_count == 2;
+                        response.triple_clicked = self.cook.click_count >= 3;
+                        if widget.sense.text && self.cook_drag_release.is_none() {
                             // Place the caret at the hit character instead of
                             // only arming focus — the coordinator already
                             // knows exactly which widget was hit (z-order +
@@ -625,8 +639,14 @@ impl InputCoordinator {
                             // the same answer from a geometric `last_rect`
                             // search the way `on_drag_start` does for callers
                             // that don't already have a hit-test of their own.
+                            // A double / triple click selects the word / line
+                            // (needs `InputState::time`, else always 1).
+                            //
+                            // A release that ENDS a drag is skipped here: it
+                            // must not collapse the selection the drag made
+                            // (handled below, after the loop).
                             if let Some((mx, _my)) = mouse_pos {
-                                self.text_fields.begin_drag_at(widget.id.clone(), mx);
+                                self.text_fields.select_at_click_count(widget.id.clone(), mx, self.cook.click_count);
                             } else {
                                 self.text_fields.focus(widget.id.clone());
                             }
@@ -649,6 +669,21 @@ impl InputCoordinator {
                         responses.push((widget.id.clone(), response));
                     }
                 }
+        }
+
+        // 2b. Drag-select end: a release that ended a drag which began on a
+        // text field selects press → release in that field (wherever the
+        // release landed — the boundaries clamp), keeping any selection a
+        // host built live via `on_drag_move` instead of collapsing it to a
+        // caret at the release point.
+        if let (Some((ox, oy)), Some((mx, _))) = (self.cook_drag_release, mouse_pos) {
+            let origin = self
+                .hit_test_at(ox, oy)
+                .filter(|w| w.sense.text)
+                .map(|w| w.id.clone());
+            if let Some(id) = origin {
+                self.text_fields.select_drag(id, ox, mx);
+            }
         }
 
         // 3. Handle ongoing drag (but not if we just started it this frame)
@@ -699,7 +734,78 @@ impl InputCoordinator {
         // stashed as the NEXT end_frame's hover-transition baseline.
         self.hover_prev = hovered_id;
 
+        // A grab lasts one press: the release that ends it ends the grab.
+        if clicked.is_some() {
+            self.cook.release_grab();
+        }
+
         responses
+    }
+
+    /// Feed this frame's pointer snapshot into the cook state. A press and
+    /// its release inside one frame (`clicked` set, button already up)
+    /// count as both edges.
+    ///
+    /// Multi-click needs `InputState::time` (monotonic seconds) stamped by
+    /// the host; while it is `0.0` every press counts as a single click, so
+    /// an unstamped host never reports a spurious double click.
+    fn feed_cook(&mut self) {
+        self.cook_drag_release = None;
+        let now = self.input.time;
+        let down = self.input.pointer.button_down;
+        let clicked = self.input.pointer.clicked;
+        if let Some((x, y)) = self.input.pointer.pos {
+            let pressed_now = match (down, clicked) {
+                (Some(button), _) | (None, Some(button)) if self.cook_prev_down.is_none() => Some(button),
+                _ => None,
+            };
+            match pressed_now {
+                Some(button) => {
+                    self.cook.press(x, y, button, now);
+                    if now <= 0.0 {
+                        self.cook.click_count = 1;
+                    }
+                }
+                None => {
+                    self.cook.motion(x, y);
+                }
+            }
+            if let (None, Some(button)) = (down, clicked) {
+                let origin = self.cook.press_origin.map(|o| (o.x, o.y));
+                if self.cook.release(x, y, button, now) {
+                    self.cook_drag_release = origin;
+                }
+            }
+        }
+        self.cook_prev_down = down;
+    }
+
+    /// The widget pointer input goes to at `pos`: the grabbing widget while
+    /// a grab is held and that widget is registered, else the topmost hit.
+    fn pointer_target(&self, pos: Option<(f64, f64)>) -> Option<WidgetId> {
+        if let Some(grabbed) = &self.cook.grabbed {
+            if self.widgets.iter().any(|w| &w.id == grabbed) {
+                return Some(grabbed.clone());
+            }
+        }
+        pos.and_then(|(mx, my)| self.hit_test_at(mx, my).map(|w| w.id.clone()))
+    }
+
+    /// Click count, drag arm and grab state as of the last `end_frame`.
+    pub fn cook_state(&self) -> &CookState {
+        &self.cook
+    }
+
+    /// Route pointer input to `id` regardless of what is under the cursor,
+    /// until [`Self::release_pointer`] or the release of the current press.
+    /// Use on press for splitters, resize handles, scrollbar thumbs.
+    pub fn grab_pointer(&mut self, id: impl Into<WidgetId>) {
+        self.cook.grab(id.into());
+    }
+
+    /// End a pointer grab early.
+    pub fn release_pointer(&mut self) {
+        self.cook.release_grab();
     }
 
     /// Hit test at point (Z-order aware)
@@ -1006,6 +1112,22 @@ impl InputCoordinator {
     /// Mutable access to the text field store.
     pub fn text_fields_mut(&mut self) -> &mut TextFieldStore {
         &mut self.text_fields
+    }
+
+    /// Ids of the widgets registered this frame that want keyboard focus,
+    /// in registration order; `layer` restricts the listing to one layer,
+    /// `None` lists every layer.
+    ///
+    /// Read-only. The framework's compose phase uses it to refresh a focus
+    /// scope's member list once the scope owner's body has been composed
+    /// and its widgets are known (registration order is the tab order).
+    pub fn focusable_ids(&self, layer: Option<&LayerId>) -> Vec<WidgetId> {
+        self.widgets
+            .iter()
+            .filter(|w| w.sense.focus)
+            .filter(|w| layer.is_none_or(|l| &w.layer == l))
+            .map(|w| w.id.clone())
+            .collect()
     }
 
     /// Focus next widget (Tab)
@@ -2175,5 +2297,143 @@ mod tests {
 
         step(&mut coord, &btn, rect, pos, None);
         assert_eq!(coord.widget_state(&btn), WidgetState::Hovered);
+    }
+
+    // -------------------------------------------------------------------
+    // Text input: drag-select, click-to-caret, multi-click
+    // -------------------------------------------------------------------
+
+    const FIELD: Rect = Rect { x: 0.0, y: 0.0, width: 200.0, height: 30.0 };
+
+    /// One frame over a text field holding `text` (10 px per char):
+    /// pointer at `pos`, `down` held, `clicked` = a release this frame,
+    /// `time` stamped (seconds).
+    fn text_frame(
+        coord: &mut InputCoordinator,
+        id: &WidgetId,
+        text: &str,
+        pos: (f64, f64),
+        down: bool,
+        clicked: bool,
+        time: f64,
+    ) -> Vec<(WidgetId, WidgetResponse)> {
+        let mut input = InputState::default();
+        input.pointer.pos = Some(pos);
+        input.pointer.button_down = if down { Some(MouseButton::Left) } else { None };
+        input.pointer.clicked = if clicked { Some(MouseButton::Left) } else { None };
+        input.time = time;
+        coord.begin_frame(input);
+        let fresh = !coord.text_fields().has_field(id);
+        coord.register_text_field(id.clone(), FIELD, TextFieldConfig::text());
+        if fresh {
+            coord.text_fields_mut().set_text(id, text);
+        }
+        let n = text.chars().count();
+        let positions: Vec<f64> = (0..=n).map(|i| i as f64 * 10.0).collect();
+        coord.text_fields_mut().update_field(id, (FIELD.x, FIELD.y, FIELD.width, FIELD.height), positions);
+        coord.end_frame()
+    }
+
+    #[test]
+    fn test_text_input_drag_select_survives_release() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("drag_field");
+        let text = "hello world";
+        // press at char boundary 1, drag to 5, release there
+        text_frame(&mut coord, &id, text, (12.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (30.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), true, false, 0.0);
+        let responses = text_frame(&mut coord, &id, text, (48.0, 15.0), false, true, 0.0);
+        // the widget still reports the release as it always did
+        assert!(responses.iter().any(|(w, r)| w == &id && r.clicked));
+        assert!(coord.text_fields().is_focused(&id));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((1, 5)), "release after a drag keeps the selection");
+        assert_eq!(coord.text_fields().copy_selection().as_deref(), Some("ello"));
+    }
+
+    #[test]
+    fn test_text_input_backward_drag_released_outside_the_field_keeps_the_selection() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("drag_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (78.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (40.0, 15.0), true, false, 0.0);
+        // released left of and below the field: clamps to char 0
+        text_frame(&mut coord, &id, text, (-20.0, 80.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), Some((0, 8)));
+        assert_eq!(coord.text_fields().cursor(&id), 0);
+    }
+
+    #[test]
+    fn test_text_input_host_driven_drag_select_survives_release() {
+        // A host that drives the store itself (on_drag_start / move / end,
+        // as the desktop input bridge does) must not have its selection
+        // collapsed by the coordinator's release handling.
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("host_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (0.0, 15.0), false, false, 0.0);
+        coord.text_fields_mut().on_drag_start(22.0, 15.0);
+        text_frame(&mut coord, &id, text, (22.0, 15.0), true, false, 0.0);
+        coord.text_fields_mut().on_drag_move(70.0);
+        text_frame(&mut coord, &id, text, (70.0, 15.0), true, false, 0.0);
+        coord.text_fields_mut().on_drag_end();
+        text_frame(&mut coord, &id, text, (70.0, 15.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), Some((2, 7)));
+    }
+
+    #[test]
+    fn test_plain_click_places_caret_and_clears_selection() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("click_field");
+        let text = "hello world";
+        text_frame(&mut coord, &id, text, (12.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (48.0, 15.0), false, true, 0.0);
+        assert!(coord.text_fields().selection_range(&id).is_some());
+
+        // a press and release in place (jitter under the drag threshold)
+        text_frame(&mut coord, &id, text, (71.0, 15.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (73.0, 16.0), true, false, 0.0);
+        text_frame(&mut coord, &id, text, (73.0, 16.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+        assert_eq!(coord.text_fields().cursor(&id), 7);
+
+        // a click inside one frame, the way the old tests drive it
+        text_frame(&mut coord, &id, text, (22.0, 15.0), false, true, 0.0);
+        assert_eq!(coord.text_fields().cursor(&id), 2);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+    }
+
+    #[test]
+    fn test_double_click_selects_a_word_and_triple_a_line() {
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("multi_field");
+        let text = "привет мир";
+        // x = 88 is the right half of 'и': the word under it, not the end
+        text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.0);
+        assert_eq!(coord.text_fields().selection_range(&id), None);
+        assert_eq!(coord.text_fields().cursor(&id), 9);
+        let r = text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.1);
+        assert!(r.iter().any(|(w, r)| w == &id && r.double_clicked));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((7, 10)));
+        assert_eq!(coord.text_fields().copy_selection().as_deref(), Some("мир"));
+        let r = text_frame(&mut coord, &id, text, (88.0, 15.0), false, true, 1.2);
+        assert!(r.iter().any(|(w, r)| w == &id && r.triple_clicked));
+        assert_eq!(coord.text_fields().selection_range(&id), Some((0, 10)));
+    }
+
+    #[test]
+    fn test_unstamped_time_never_multi_clicks_a_text_input() {
+        // Hosts that do not stamp `InputState::time` keep the old behaviour:
+        // every click places the caret.
+        let mut coord = make_coordinator();
+        let id = WidgetId::new("unstamped");
+        let text = "hello world";
+        for _ in 0..3 {
+            text_frame(&mut coord, &id, text, (22.0, 15.0), false, true, 0.0);
+            assert_eq!(coord.text_fields().selection_range(&id), None);
+            assert_eq!(coord.text_fields().cursor(&id), 2);
+        }
     }
 }

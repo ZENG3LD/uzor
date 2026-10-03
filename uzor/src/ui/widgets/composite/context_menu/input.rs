@@ -13,9 +13,19 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, ContextMenuHandle, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, ContextMenuHandle, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
+
+/// Register a context menu's click patterns (`"{menu-id}:item:N"`) into
+/// `dispatcher`. Used by [`register_layout_manager_context_menu`] and by any
+/// engine that owns context-menu state without a `LayoutManager`.
+pub fn register_context_menu_dispatch(dispatcher: &mut ClickDispatcher, handle: &ContextMenuHandle) {
+    dispatcher.on_prefix(
+        format!("{}:item:", handle.id.0),
+        EventBuilder::ContextMenuItem { handle: handle.clone() },
+    );
+}
 
 /// Register + draw a context menu in one call using a [`LayoutManager`].
 ///
@@ -67,10 +77,7 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
 
     // Item ids are "{menu-id}:item:N" — surface as
     // DispatchEvent::ContextMenuItemClicked { menu, item_index }.
-    layout.dispatcher_mut().on_prefix(
-        format!("{}:item:", id.0),
-        EventBuilder::ContextMenuItem { handle: handle.clone() },
-    );
+    register_context_menu_dispatch(layout.dispatcher_mut(), handle);
 
     // Auto-forward hovered_index from the layout manager (L3 authoritative hover source).
     let prefix = format!("{}:item:", id.0);

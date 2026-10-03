@@ -5,7 +5,6 @@
 //! Ported from **ertdfgcvb/play.core** (the engine model: boot/pre/main/post,
 //! SDF shapes → character density), with the glitch / hover-radius patterns from
 //! **hsrambo07/hover-effects** (sine-glitch + stochastic swaps + cursor mask).
-//! See `nemo/docs/mirage/research/pretext-canvas-text-engine.md`.
 //!
 //! Rendering: `AsciiGrid::step` runs the shader into a flat buffer; `render`
 //! draws the buffer through any [`RenderContext`]. Shapes are signed-distance
@@ -14,8 +13,7 @@
 //! filled with characters this way — letters (the menu "M"), the bloom, etc.
 //!
 //! Moved verbatim from `uzor` core (`uzor::ui::effects::text::cell_shader`)
-//! as Arc 2 Phase 4's hard cutover
-//! (`nemo/docs/uzor-engines/uzor_text_arc2_design.md` §4) — algorithm unchanged,
+//! as Arc 2 Phase 4's hard cutover — algorithm unchanged,
 //! only the `RenderContext`/`TextAlign`/`TextBaseline` import moved from
 //! `crate::render` (uzor core, in-crate) to `uzor::render` (this crate
 //! consumes uzor core as a dependency). [`super::ParagraphAsciiShader`] is
@@ -347,7 +345,7 @@ mod tests {
         // Fixed path — `uzor/out/` is the shared human-eyeball drop point
         // for every headless proof render in this workspace (matches
         // `crate::draw`'s own proof tests).
-        PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+        PathBuf::from(std::env::var_os("UZOR_PROOF_OUT").unwrap_or_else(|| std::env::temp_dir().join("uzor-proof-out").into_os_string()))
     }
 
     fn write_proof_png(name: &str, bytes: &[u8]) {

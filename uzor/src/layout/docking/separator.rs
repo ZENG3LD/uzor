@@ -62,6 +62,25 @@ pub enum SeparatorLevel {
     },
 }
 
+/// Which set of tracks a grid line separates.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum GridAxis {
+    /// Between two rows (a horizontal line spanning the grid's width).
+    Row,
+    /// Between two columns (a vertical line spanning the grid's height).
+    Col,
+}
+
+/// An interior line of a `rows × cols` grid branch: the boundary between
+/// track `index` and track `index + 1` on `axis`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct GridLine {
+    /// Rows or columns.
+    pub axis: GridAxis,
+    /// The line sits after this track (0-based).
+    pub index: usize,
+}
+
 /// Separator orientation (vertical = |, horizontal = —)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SeparatorOrientation {
@@ -109,6 +128,12 @@ pub struct Separator {
     pub state: SeparatorState,
     /// What level this separator operates at (node level)
     pub level: SeparatorLevel,
+    /// `Some` for a full-span line of a `rows × cols` grid branch
+    /// (`level.parent_id` is the grid branch; `child_a` / `child_b` are the
+    /// first-row / first-column cells on either side). Dragging it moves
+    /// only the two adjacent row / column ratios. `None` for every
+    /// separator between preset-layout children.
+    pub grid_line: Option<GridLine>,
 }
 
 impl Separator {
@@ -130,7 +155,14 @@ impl Separator {
             hit_width: 8.0,
             state: SeparatorState::Idle,
             level,
+            grid_line: None,
         }
+    }
+
+    /// Mark this separator as grid line `line` of its parent grid branch.
+    pub fn with_grid_line(mut self, line: GridLine) -> Self {
+        self.grid_line = Some(line);
+        self
     }
 
     /// Get child_a (for backward compatibility with corner drag code)

@@ -1,82 +1,16 @@
-//! Real on-screen winit window driven by `UrxEngine` with `Backend::FullGpu`,
-//! controllable from outside through a 3-level agentic HTTP API.
+//! Real on-screen winit window driven by `UrxEngine` with `Backend::FullGpu`.
 //!
 //! This is the first end-to-end consumer demo of the URX 1.6 compute
 //! pipeline going through the engine façade (NOT bypassing it via
-//! `uzor-urx-wgpu-full` directly) AND wired up to an agentic control
-//! plane in the same style as `tessera-kernel::system::agent3l`.
-//!
-//! ## 3-level agentic API
-//!
-//! Listens on `127.0.0.1:17491` (localhost only, no auth — proof-of-life
-//! demo).
-//!
-//! ### L1 — raw introspection + pixel input
-//! | Method | Path | Body / query | Purpose |
-//! |---|---|---|---|
-//! | `GET`  | `/health`     | — | `{ok: true}` |
-//! | `GET`  | `/state`      | — | live snapshot: fps, frame_ms, regions, paused |
-//! | `POST` | `/input/click`| `{x, y}` | select first rect under pixel (L1 hit-test) |
-//!
-//! ### L2 — semantic actions
-//! | Method | Path | Body | Purpose |
-//! |---|---|---|---|
-//! | `POST` | `/act/pause`             | — | freeze physics |
-//! | `POST` | `/act/resume`            | — | unfreeze physics |
-//! | `POST` | `/act/reset_velocities`  | — | re-randomise velocities |
-//! | `POST` | `/act/set_count`         | `{n}` | resize the rect pool to exactly N |
-//!
-//! ### L3 — structural scene ops
-//! | Method | Path | Body | Purpose |
-//! |---|---|---|---|
-//! | `POST`  | `/scene/spawn_rect`        | `{cx, cy, half, color}`              | add one rect/region |
-//! | `POST`  | `/scene/spawn_stroke`      | `{p0, p1, width, color, cap?}`       | add one stroke line region |
-//! | `POST`  | `/scene/spawn_sparkline`   | `{points: [[x,y],…], width, color}`  | one region = a polyline |
-//! | `POST`  | `/scene/spawn_bezier`      | `{p0, c0, c1, p1, width, color}`     | cubic Bézier — kurbo flattens into a Path cmd |
-//! | `POST`  | `/scene/spawn_fill_path`   | `{points: [[x,y],…], color}`         | filled polygon (non-zero winding) |
-//! | `POST`  | `/scene/spawn_multi_grad`  | `{bbox, stops: [[pos,r,g,b,a],…], direction}` | N-stop linear gradient rect |
-//! | `POST`  | `/scene/spawn_image`       | `{bbox, uv?, tint?}`                 | sample the 64×64 checkerboard atlas into rect |
-//! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
-//! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
-//! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
+//! `uzor-urx-wgpu-full` directly). A pool of bouncing rects, one region
+//! each; click selects the first rect under the cursor, Esc quits.
 //!
 //! ## Try it
 //!
 //! ```bash
 //! cargo run -p uzor-urx-engine --features full-gpu-backend \
 //!     --example winit_full_gpu_demo --release
-//!
-//! # in another shell:
-//! curl -s http://127.0.0.1:17491/state | jq
-//! curl -s -X POST http://127.0.0.1:17491/act/pause
-//! curl -s -X POST -H "content-type: application/json" \
-//!     -d '{"cx":480,"cy":360,"half":40,"color":[255,80,80,255]}' \
-//!     http://127.0.0.1:17491/scene/spawn_rect
-//! curl -s -X POST -H "content-type: application/json" \
-//!     -d '{"n":256}' http://127.0.0.1:17491/act/set_count
-//! curl -s -X POST http://127.0.0.1:17491/scene/clear
 //! ```
-//!
-//! ## Architecture
-//!
-//! ```text
-//!  HTTP thread (tokio rt)              main thread (winit + wgpu)
-//!  ────────────────────                ─────────────────────────
-//!     |                                       |
-//!     | POST /scene/spawn_rect                |
-//!     v                                       |
-//!  push to spawn_queue ──────────────────►    |
-//!     |                                       v
-//!     |                                  drain spawn_queue, apply
-//!     |                                       |
-//!     | GET /state                            v
-//!     v                                  publish metrics into shared state
-//!  read metrics ◄──────────────────────       |
-//! ```
-//!
-//! All cross-thread sharing is `Arc<Mutex<…>>` — agent never touches
-//! the engine directly. The agent enqueues intent; the render thread
-//! reconciles before each frame.
 
 #![cfg(feature = "full-gpu-backend")]
 
@@ -84,7 +18,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use uzor_urx_core::math::{Affine, BezPath, Brush, Color, Point, Rect as UxRect};
 use uzor_urx_core::region::RegionId;
 use uzor_urx_core::scene::{DrawCommand, Scene, Stroke};
@@ -98,7 +31,6 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-const AGENT_PORT:    u16    = 17491;
 const DEFAULT_N:     usize  = 64;
 const MAX_N:         usize  = 4096;
 
@@ -106,7 +38,7 @@ const MAX_N:         usize  = 4096;
 // Shared agentic state
 // ─────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct RectModel {
     id:     u64,
     cx:     f32,
@@ -119,18 +51,16 @@ struct RectModel {
     selected: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct StrokeModel {
     id:    u64,
     p0:    [f32; 2],
     p1:    [f32; 2],
     width: f32,
     color: [u8; 4],
-    /// 0 = butt, 1 = round, 2 = square.
-    cap:   u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct PolylineModel {
     id:     u64,
     points: Vec<[f32; 2]>,
@@ -141,14 +71,14 @@ struct PolylineModel {
 /// Cubic-Bézier path: caller supplies anchor + control points. The
 /// demo packs them into a kurbo `BezPath` and pushes a `DrawCommand::
 /// StrokePath` — the encoder will flatten via kurbo at upload time.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct ImageModel {
     id:   u64,
     /// Screen-space rect to fill `[x0, y0, x1, y1]`.
     bbox: [f32; 4],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct MultiGradModel {
     id:        u64,
     /// Rect bbox `[x0, y0, x1, y1]`.
@@ -159,14 +89,14 @@ struct MultiGradModel {
     direction: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct FillPathModel {
     id:     u64,
     points: Vec<[f32; 2]>,
     color:  [u8; 4],
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 struct BezierModel {
     id:    u64,
     /// Start anchor.
@@ -214,7 +144,7 @@ struct SharedScene {
     pending_click: Option<(f32, f32)>,
 }
 
-#[derive(Default, Clone, Serialize)]
+#[derive(Default, Clone)]
 struct LiveMetrics {
     fps:       f32,
     frame_ms:  f32,
@@ -265,245 +195,6 @@ fn populate_initial(scene: &mut SharedScene, n: usize, win_w: f32, win_h: f32) {
         let r = spawn_rect_at_index(i, win_w, win_h, &mut scene.next_id);
         scene.rects.push(r);
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Agent HTTP server (axum on tokio multi-thread)
-// ─────────────────────────────────────────────────────────────────────
-
-fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
-    use axum::extract::{Path as AxPath, State as AxState};
-    use axum::http::StatusCode;
-    use axum::response::IntoResponse;
-    use axum::routing::{delete, get, post};
-    use axum::{Json, Router};
-
-    #[derive(Deserialize)]
-    struct ClickBody { x: f32, y: f32 }
-    #[derive(Deserialize)]
-    struct SetCountBody { n: usize }
-    #[derive(Deserialize)]
-    struct SpawnBody { cx: f32, cy: f32, half: f32, color: [u8; 4] }
-    #[derive(Deserialize)]
-    struct SpawnStrokeBody {
-        p0: [f32; 2], p1: [f32; 2], width: f32, color: [u8; 4],
-        #[serde(default)]
-        cap: Option<u32>,
-    }
-    #[derive(Deserialize)]
-    struct SpawnSparklineBody { points: Vec<[f32; 2]>, width: f32, color: [u8; 4] }
-    #[derive(Deserialize)]
-    struct SpawnBezierBody {
-        p0: [f32; 2], c0: [f32; 2], c1: [f32; 2], p1: [f32; 2],
-        width: f32, color: [u8; 4],
-    }
-    #[derive(Deserialize)]
-    struct SpawnFillPathBody { points: Vec<[f32; 2]>, color: [u8; 4] }
-    #[derive(Deserialize)]
-    struct SpawnMultiGradBody {
-        bbox:      [f32; 4],
-        stops:     Vec<[f32; 5]>,
-        direction: Option<u32>,
-    }
-    #[derive(Deserialize)]
-    struct SpawnImageBody { bbox: [f32; 4] }
-    #[derive(Serialize)]
-    struct OkReply { ok: bool, msg: String }
-    fn ok(msg: impl Into<String>) -> Json<OkReply> {
-        Json(OkReply { ok: true, msg: msg.into() })
-    }
-
-    std::thread::Builder::new()
-        .name("urx-fullgpu-demo-agent".into())
-        .spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .worker_threads(2)
-                .thread_name("urx-demo-agent-worker")
-                .build()
-                .expect("tokio rt");
-
-            rt.block_on(async move {
-                let app = Router::new()
-                    // L1 ----------------------------------------------------------------
-                    .route("/health", get(|| async { Json(serde_json::json!({"ok": true})) }))
-                    .route("/state",  get(|AxState(s): AxState<AgentState>| async move {
-                        let m = s.metrics.lock().unwrap().clone();
-                        Json(m)
-                    }))
-                    .route("/input/click", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<ClickBody>| async move {
-                            s.scene.lock().unwrap().pending_click = Some((b.x, b.y));
-                            ok(format!("queued click @ ({:.1}, {:.1})", b.x, b.y))
-                        },
-                    ))
-                    // L2 ----------------------------------------------------------------
-                    .route("/act/pause", post(
-                        |AxState(s): AxState<AgentState>| async move {
-                            s.scene.lock().unwrap().paused = true;
-                            ok("paused")
-                        },
-                    ))
-                    .route("/act/resume", post(
-                        |AxState(s): AxState<AgentState>| async move {
-                            s.scene.lock().unwrap().paused = false;
-                            ok("resumed")
-                        },
-                    ))
-                    .route("/act/reset_velocities", post(
-                        |AxState(s): AxState<AgentState>| async move {
-                            s.scene.lock().unwrap().pending_reset_vel = true;
-                            ok("reset velocities queued")
-                        },
-                    ))
-                    .route("/act/set_count", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SetCountBody>| async move {
-                            if b.n > MAX_N {
-                                return (StatusCode::BAD_REQUEST,
-                                    Json(OkReply { ok: false,
-                                        msg: format!("n must be <= {MAX_N}, got {}", b.n)
-                                    })).into_response();
-                            }
-                            s.scene.lock().unwrap().pending_set_count = Some(b.n);
-                            (StatusCode::OK, ok(format!("set_count={} queued", b.n))).into_response()
-                        },
-                    ))
-                    // L3 ----------------------------------------------------------------
-                    .route("/scene/spawn_rect", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnBody>| async move {
-                            let mut sc = s.scene.lock().unwrap();
-                            if sc.rects.len() + sc.pending_spawn.len() >= MAX_N {
-                                return (StatusCode::INSUFFICIENT_STORAGE,
-                                    Json(OkReply { ok: false,
-                                        msg: format!("scene already at MAX_N={MAX_N}"),
-                                    })).into_response();
-                            }
-                            let id = sc.next_id;
-                            sc.next_id += 1;
-                            let half = b.half.clamp(4.0, 200.0);
-                            let m = RectModel {
-                                id, cx: b.cx, cy: b.cy, vx: 0.0, vy: 0.0,
-                                half, color: b.color, selected: false,
-                            };
-                            sc.pending_spawn.push(m);
-                            (StatusCode::OK, ok(format!("spawn queued, id={id}"))).into_response()
-                        },
-                    ))
-                    .route("/scene/spawn_stroke", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnStrokeBody>| async move {
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_strokes.push(StrokeModel {
-                                id,
-                                p0: b.p0, p1: b.p1,
-                                width: b.width.max(0.5),
-                                color: b.color,
-                                cap: b.cap.unwrap_or(1).min(2),
-                            });
-                            ok(format!("stroke queued, id={id}"))
-                        },
-                    ))
-                    .route("/scene/spawn_sparkline", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnSparklineBody>| async move {
-                            if b.points.len() < 2 {
-                                return (StatusCode::BAD_REQUEST,
-                                    Json(OkReply { ok: false,
-                                        msg: "sparkline needs >= 2 points".into() }))
-                                    .into_response();
-                            }
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_polys.push(PolylineModel {
-                                id,
-                                points: b.points,
-                                width: b.width.max(0.5),
-                                color: b.color,
-                            });
-                            (StatusCode::OK, ok(format!("sparkline queued, id={id}"))).into_response()
-                        },
-                    ))
-                    .route("/scene/spawn_bezier", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnBezierBody>| async move {
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_beziers.push(BezierModel {
-                                id,
-                                p0: b.p0, c0: b.c0, c1: b.c1, p1: b.p1,
-                                width: b.width.max(0.5),
-                                color: b.color,
-                            });
-                            ok(format!("bezier queued, id={id}"))
-                        },
-                    ))
-                    .route("/scene/spawn_fill_path", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnFillPathBody>| async move {
-                            if b.points.len() < 3 {
-                                return (StatusCode::BAD_REQUEST,
-                                    Json(OkReply { ok: false,
-                                        msg: "fill_path needs >= 3 points".into() }))
-                                    .into_response();
-                            }
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_fills.push(FillPathModel {
-                                id, points: b.points, color: b.color,
-                            });
-                            (StatusCode::OK, ok(format!("fill_path queued, id={id}"))).into_response()
-                        },
-                    ))
-                    .route("/scene/spawn_multi_grad", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnMultiGradBody>| async move {
-                            if b.stops.len() < 2 {
-                                return (StatusCode::BAD_REQUEST,
-                                    Json(OkReply { ok: false,
-                                        msg: "multi_grad needs >= 2 stops".into() }))
-                                    .into_response();
-                            }
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_multigrads.push(MultiGradModel {
-                                id, bbox: b.bbox, stops: b.stops,
-                                direction: b.direction.unwrap_or(0).min(3),
-                            });
-                            (StatusCode::OK, ok(format!("multi_grad queued, id={id}"))).into_response()
-                        },
-                    ))
-                    .route("/scene/spawn_image", post(
-                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnImageBody>| async move {
-                            let mut sc = s.scene.lock().unwrap();
-                            let id = sc.next_id; sc.next_id += 1;
-                            sc.pending_images.push(ImageModel { id, bbox: b.bbox });
-                            ok(format!("image queued, id={id}"))
-                        },
-                    ))
-                    .route("/scene/preset/dashboard", post(
-                        |AxState(s): AxState<AgentState>| async move {
-                            s.scene.lock().unwrap().pending_preset_dashboard = true;
-                            ok("dashboard preset queued")
-                        },
-                    ))
-                    .route("/scene/region/:id", delete(
-                        |AxState(s): AxState<AgentState>, AxPath(id): AxPath<u64>| async move {
-                            s.scene.lock().unwrap().pending_remove.push(id);
-                            ok(format!("remove queued id={id}"))
-                        },
-                    ))
-                    .route("/scene/clear", post(
-                        |AxState(s): AxState<AgentState>| async move {
-                            s.scene.lock().unwrap().pending_clear = true;
-                            ok("clear queued")
-                        },
-                    ))
-                    .with_state(state);
-
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", AGENT_PORT))
-                    .await
-                    .expect("bind 127.0.0.1:17491");
-                eprintln!("[urx-fullgpu-demo agent] listening on http://127.0.0.1:{}", AGENT_PORT);
-                axum::serve(listener, app).await.expect("axum serve");
-            });
-        })
-        .expect("spawn agent thread")
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -753,13 +444,13 @@ impl GpuState {
             sc.strokes.push(StrokeModel {
                 id,
                 p0: [40.0, win_h - 60.0], p1: [win_w - 40.0, win_h - 60.0],
-                width: 1.5, color: axis_color, cap: 0,
+                width: 1.5, color: axis_color,
             });
             let id = sc.next_id; sc.next_id += 1;
             sc.strokes.push(StrokeModel {
                 id,
                 p0: [40.0, 60.0], p1: [40.0, win_h - 60.0],
-                width: 1.5, color: axis_color, cap: 0,
+                width: 1.5, color: axis_color,
             });
             // 3. grid lines — 5 horizontal
             for i in 0..5 {
@@ -768,7 +459,7 @@ impl GpuState {
                 sc.strokes.push(StrokeModel {
                     id,
                     p0: [40.0, y], p1: [win_w - 40.0, y],
-                    width: 0.5, color: [50, 52, 64, 255], cap: 0,
+                    width: 0.5, color: [50, 52, 64, 255],
                 });
             }
             // 4. sparkline — 64-point random walk fit into the panel
@@ -793,7 +484,7 @@ impl GpuState {
             sc.strokes.push(StrokeModel {
                 id,
                 p0: [cursor_x, 60.0], p1: [cursor_x, win_h - 60.0],
-                width: 1.0, color: [255, 200, 80, 200], cap: 1,
+                width: 1.0, color: [255, 200, 80, 200],
             });
         }
 
@@ -1267,7 +958,7 @@ impl GpuState {
             let est_fps = 1000.0 / avg_ms.max(0.01);
             let regions = self.engine.region_count();
             self.window.set_title(&format!(
-                "URX 1.6 FullGpu engine demo — {} regions @ {:.1} FPS / {:.2} ms — agent :{AGENT_PORT}",
+                "URX 1.6 FullGpu engine demo — {} regions @ {:.1} FPS / {:.2} ms",
                 regions, est_fps, avg_ms,
             ));
             // Publish to /state.
@@ -1341,7 +1032,6 @@ fn main() {
         scene:   Arc::new(Mutex::new(SharedScene::default())),
         metrics: Arc::new(Mutex::new(LiveMetrics::default())),
     };
-    let _agent_join = spawn_agent_server(agent.clone());
 
     let event_loop = EventLoop::new().expect("event_loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);

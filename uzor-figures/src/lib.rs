@@ -9,18 +9,15 @@
 //! semantic input/output actions, hit-testing, hover/selection state, a 1D
 //! brush, and a cross-figure selection bus.
 //!
-//! See `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (crate
-//! layout) and §4 (design laws). V1 harvested scales/coord/marks/axes from
-//! `mylittlechart`'s chart-engine machinery per
-//! `nemo/docs/uzor-engines/mlc_harvest_inventory.md` §2; V2 harvests the input
-//! pipeline (§4) and promotes `uzor-graph`'s `FocusSet` — see
+//! V1 harvested scales/coord/marks/axes from
+//! `mylittlechart`'s chart-engine machinery; V2 harvests the input
+//! pipeline and promotes `uzor-graph`'s `FocusSet` — see
 //! [`mod@interact`]'s module docs for exactly what was generalized/dropped.
 //! V4 (`scale::color`, `figure::{pie, waterfall, heatmap}`,
 //! `guide::colorbar`) is the business-chart set — reuses
 //! `uzor::ui::animation::math::color::Color`'s existing OKLCH lerp
 //! machinery verbatim (no color math reimplemented) and bakes in the FT/
-//! Economist chart-hygiene defaults from
-//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6.
+//! Economist chart-hygiene defaults.
 //!
 //! **NOT in this crate yet** (later milestones — do not add here without a
 //! plan doc):
@@ -144,7 +141,7 @@ mod proof_tests {
         // Fixed path per task spec (not CARGO_MANIFEST_DIR-relative) —
         // `uzor/out/` is the shared human-eyeball drop point for every
         // headless proof render in this workspace.
-        PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+        PathBuf::from(std::env::var_os("UZOR_PROOF_OUT").unwrap_or_else(|| std::env::temp_dir().join("uzor-proof-out").into_os_string()))
     }
 
     fn write_proof_png(name: &str, bytes: &[u8]) {

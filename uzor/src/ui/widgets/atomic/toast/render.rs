@@ -1,4 +1,4 @@
-//! Toast rendering — mlc-parity flat-rect path.
+//! Toast rendering — MLC parity flat-rect path.
 //!
 //! Render math mirrors mlc `render_toasts` exactly:
 //! - No fade-in.

@@ -12,7 +12,7 @@ the owner runs/visually verifies the desktop app.
 ## Launch
 
 ```
-cd "C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor"
+cd <uzor repo root>
 cargo run -p uzor-examples --bin force-graph-demo
 ```
 
@@ -187,7 +187,7 @@ re-settle around it, then freeze again on release.
 
 ## What's explicitly deferred (see in-tree comments)
 
-- **Porting the Foxhound transaction-flow app onto this engine** — separate
+- **Porting a domain-specific consumer app onto this engine** — separate
   consumer work; this crate has zero forensic/case-specific types by
   design.
 - **3D** — 2D only, per the engine design doc.

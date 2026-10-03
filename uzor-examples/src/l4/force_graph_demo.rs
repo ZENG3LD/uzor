@@ -195,8 +195,8 @@ fn build_clusters_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
     (graph, positions, cluster_members)
 }
 
-// ── Wave (owner order: "хочу более древовидные визуализации, не только
-// пятиугольник") — 3 additional deterministic fixtures ──────────────────
+// ── Wave (owner order: "more tree-like visualizations, not only
+// the pentagon") — 3 additional deterministic fixtures ──────────────────
 
 const TREE_NODE_BUDGET: usize = 300;
 /// Every node below this depth always branches — guarantees the tree
@@ -204,7 +204,7 @@ const TREE_NODE_BUDGET: usize = 300;
 /// it off early (a "few hundred nodes, deep" shape, not a shallow bush).
 const TREE_MIN_BRANCH_DEPTH: u32 = 4;
 /// Hard depth cap — with `TREE_MIN_BRANCH_DEPTH` this produces 5-6
-/// branching levels beneath the root ("хочу более древовидные... branching
+/// branching levels beneath the root ("more tree-like... branching
 /// 4-5 levels").
 const TREE_MAX_DEPTH: u32 = 6;
 
@@ -349,8 +349,8 @@ fn build_sparse_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
 }
 
 /// Which deterministic demo graph shape is currently loaded — the
-/// owner's own live-verdict order ("хочу более древовидные
-/// визуализации, не только пятиугольник"). `Clusters` is the ORIGINAL
+/// owner's own live-verdict order ("more tree-like
+/// visualizations, not only the pentagon"). `Clusters` is the ORIGINAL
 /// ~534-node fixture (unchanged) and stays the default at launch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fixture {
@@ -553,9 +553,8 @@ impl NavModeState {
     }
 }
 
-/// Fly-mode mouse-look sub-state (owner order 2026-07-19: "прицел и
-/// сброс прицела по МКМ") — the foxhound source app's own "MMB CLICK:
-/// CURSOR / LOOK" toggle, which the original lift skipped. While ON (the
+/// Fly-mode mouse-look sub-state (owner order 2026-07-19: "aim and
+/// reset aim with MMB") — a "MMB CLICK: CURSOR / LOOK" toggle. While ON (the
 /// default whenever fly mode is entered) the app requests
 /// `CursorCaptureMode::LockedHidden`, `PointerDelta` drives free look,
 /// and the overlay paints a center crosshair; a middle-click flips it
@@ -679,8 +678,7 @@ impl SurfaceSizeState {
 
 /// Center crosshair painted into the 3D overlay while fly-mode
 /// mouse-look is active (owner order 2026-07-19) — the captured-cursor
-/// aim marker, the foxhound source app's own convention (its HUD's
-/// "MMB CLICK: CURSOR / LOOK" pairing). Four short bars around a small
+/// aim marker (paired with the "MMB CLICK: CURSOR / LOOK" toggle). Four short bars around a small
 /// center gap plus a center dot, drawn with plain `fill_rect` (no
 /// stroke-path machinery needed for axis-aligned bars); light gray at
 /// partial alpha so it reads over both the dark background and a bright
@@ -701,17 +699,17 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
     ctx.set_global_alpha(1.0);
 }
 
-// ── Control HUD (owner defect fix — foxhound-style control panel) ───────
+// ── Control HUD (owner defect fix — control panel) ──────────────────────
 //
 // Owner report: this demo was an agent-api test stand with nothing for a
 // human — no dimension hotkey, no toggles/menu. This section builds a
-// left/sidebar control panel mirroring `foxhound-app-shell-native`'s own
+// left/sidebar control panel with a conventional
 // HUD structure (title, FIXTURE/NAVIGATION button rows, SENSITIVITY
 // sliders, MOUSE legend, STATUS line) at the APP level — `uzor-graph`
 // itself gains no new API.
 //
 // **Placement, ONE consistent position — owner defect fix (2026-07-23):
-// "тут слева, тут справа — что за хуйня"**. The panel used to float at a
+// "left here, right there — makes no sense"**. The panel used to float at a
 // fixed top-LEFT origin in 3D while 2D extended the pre-existing
 // RIGHT-docked sidebar (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`) — a real,
 // reported left/right inconsistency, not a deliberate design choice
@@ -841,8 +839,8 @@ enum HudSliderId {
 /// One laid-out, clickable button row — geometry (`rect`, LOGICAL px),
 /// what it does (`control`), its drawn label, and whether it should
 /// paint in the "active" highlighted style. `paused` is a further,
-/// LAYOUT-section-only refinement of `active` (owner rule «если 1
-/// вариант — должен тоглиться», generalized to re-click-toggles-pause for
+/// LAYOUT-section-only refinement of `active` (owner rule «a single
+/// option must toggle», generalized to re-click-toggles-pause for
 /// FORCE) — always `false` for every other button.
 struct HudButtonRect {
     control: HudControl,
@@ -853,9 +851,8 @@ struct HudButtonRect {
 }
 
 /// One laid-out sensitivity slider — `track` is the thin visual bar,
-/// `hit` a taller (18px) surrounding hit-test band around it (matching
-/// the foxhound reference app's own `TOOLBAR_SLIDER_HIT_HEIGHT`
-/// convention — a bare 4px track would be nearly unclickable).
+/// `hit` a taller (18px) surrounding hit-test band around it (a bare 4px
+/// track would be nearly unclickable).
 struct HudSliderRect {
     id: HudSliderId,
     track: Rect,
@@ -875,8 +872,7 @@ struct HudLayout {
     headings: Vec<(&'static str, f64)>,
     buttons: Vec<HudButtonRect>,
     sliders: Vec<HudSliderRect>,
-    /// `(input label, action label, y)` — mirrors the foxhound
-    /// reference app's own two-column `draw_toolbar_hint` convention.
+    /// `(input label, action label, y)` — a two-column input/action hint.
     legend: Vec<(&'static str, &'static str, f64)>,
     /// y of the FIRST status text line; each subsequent line advances by
     /// [`HUD_TEXT_LINE_H`]. Exactly [`HUD_STATUS_LINE_COUNT`] lines are
@@ -922,8 +918,8 @@ struct HudSnapshot {
 /// Build the panel's full layout at `(origin_x, origin_y)` with content
 /// `width` — the ONE function both painting (`draw_hud_static`/
 /// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
-/// drawn and clickable geometry can never drift apart. Section order
-/// mirrors the foxhound reference app's own HUD: FIXTURE (4
+/// drawn and clickable geometry can never drift apart. Section order:
+/// FIXTURE (4
 /// buttons, always), LAYOUT (ONLY [`available_layout_kinds`]'s modes for
 /// the current fixture — tree/hierarchy get FORCE/LAYERED/RADIAL,
 /// clusters/sparse get FORCE alone; re-clicking the ACTIVE button
@@ -960,7 +956,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
 
     // LAYOUT — ONLY the modes that genuinely exist for the current
     // fixture's data shape ([`available_layout_kinds`]'s own doc — the
-    // owner rule «показывать только те режимы которые там есть»):
+    // owner rule «show only the modes that exist there»):
     // tree/hierarchy show FORCE/LAYERED/RADIAL, clusters/sparse show
     // FORCE alone (which still acts — re-clicking it toggles pause). A
     // button whose kind is already active AND is FORCE AND is currently
@@ -1114,8 +1110,8 @@ fn scaled_rect(r: Rect, scale: f64) -> Rect {
 /// fixture/layout/navigation buttons (with active-state highlight),
 /// sensitivity sliders, and the mouse legend. Painted fresh every frame
 /// in BOTH dimensions (the former 3D `CachedOverlayJob` static/dynamic
-/// split is gone — owner z-order rule 2026-07-24, «менюшка всегда выше
-/// сцены»: render-hub blits a cached job UNDER the plain overlay, which
+/// split is gone — owner z-order rule 2026-07-24, «the menu is always above
+/// the scene»: render-hub blits a cached job UNDER the plain overlay, which
 /// put scene labels above the card; see `DemoApp::scene3d`'s own
 /// z-order comment). Does NOT draw the STATUS/SELECTION line content —
 /// [`draw_hud_status`] paints those after this, above the card bg.
@@ -1329,8 +1325,8 @@ fn default_layout_kind_for_fixture(fixture: Fixture) -> LayoutKind {
 }
 
 /// Which layout modes genuinely EXIST for a fixture's data shape — the
-/// owner's HUD rule («показывать только те режимы которые там есть, чужие
-/// не показывать»): `tree`/`hierarchy` are rooted hierarchical data, so
+/// owner's HUD rule («show only the modes that exist there, never
+/// foreign ones»): `tree`/`hierarchy` are rooted hierarchical data, so
 /// Layered/Radial are real modes for them; `clusters`/`sparse` are
 /// mesh-shaped (cyclic, no root, no levels), so a layered/radial pass
 /// over them isn't a mode that exists, just garbage rows — those
@@ -1544,8 +1540,7 @@ struct DemoApp {
     /// doc comment already established for the 3D viewport case.
     last_sidebar_body: Rect,
     /// Which HUD button is currently pressed (`PointerDown` matched, not
-    /// yet released) — mirrors the foxhound reference app's own
-    /// press-then-release-confirm button convention (`pressed_control`):
+    /// yet released) — press-then-release-confirm button convention:
     /// the action only actually fires on `PointerUp` if the cursor is
     /// STILL over the same button, so a drag-off cancels the click.
     hud_pressed_button: Option<HudControl>,
@@ -1805,9 +1800,8 @@ impl DemoApp {
                     return true;
                 }
             }
-            // Owner order 2026-07-19 — the foxhound source app's own
-            // "MMB CLICK: CURSOR / LOOK" mechanic the original lift
-            // skipped: a middle-click toggles mouse-look (crosshair +
+            // Owner order 2026-07-19 — the "MMB CLICK: CURSOR / LOOK"
+            // mechanic: a middle-click toggles mouse-look (crosshair +
             // captured cursor <-> ordinary free cursor). Both halves of
             // the click are consumed so the middle-drag PAN gesture the
             // 3D engine would otherwise start can never fire while
@@ -1982,10 +1976,9 @@ impl DemoApp {
     /// from box-select origination" as the exact SAME mechanism — a
     /// box-select can only ever START from a `PointerDown` the graph
     /// engine actually sees, which a panel-consumed `PointerDown` never
-    /// reaches). Mirrors the foxhound reference app's own press-then-
-    /// release-confirm button convention (a drag-off before release
-    /// cancels the click) and its own live slider-drag-follows-the-
-    /// cursor convention. Returns `Some(consumed)` once this event is
+    /// reaches). Uses a press-then-release-confirm button convention (a
+    /// drag-off before release cancels the click) and a live
+    /// slider-drag-follows-the-cursor convention. Returns `Some(consumed)` once this event is
     /// fully handled by the HUD; `None` means "not the HUD's concern,
     /// let the caller's existing dispatch run."
     fn on_event_hud(&mut self, event: &PlatformEvent) -> Option<bool> {
@@ -2043,8 +2036,7 @@ impl DemoApp {
     }
 
     /// Drive a sensitivity slider from a pointer x position (start-drag
-    /// or continued-drag alike) — mirrors the foxhound reference app's
-    /// own `apply_slider_at`.
+    /// or continued-drag alike).
     fn apply_hud_slider(&mut self, id: HudSliderId, x: f64, track: Rect) {
         let t = (((x - track.x) / track.width) as f32).clamp(0.0, 1.0);
         let mut fly = Self::lock_fly(&self.fly);
@@ -2066,10 +2058,10 @@ impl DemoApp {
                 rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
             }
             // Owner defect fix 2026-07-23 — re-click semantics generalize
-            // the owner's own rule «если 1 вариант — должен тоглиться»:
+            // the owner's own rule «a single option must toggle»:
             // clicking the ALREADY-active mode toggles instead of being a
-            // silent no-op (the exact "зажат форс, нихуя не
-            // переключается" defect — FORCE was hardcoded active in 3D
+            // silent no-op (the exact "FORCE stuck on, does not
+            // switch" defect — FORCE was hardcoded active in 3D
             // and its own button click did nothing at all). FORCE
             // pauses/resumes the sim IN PLACE (no camera jump — nothing
             // actually moved); LAYERED/RADIAL (one-shot) re-run their
@@ -2233,8 +2225,8 @@ impl BlackboxAgentSurface for DemoBlackbox {
                     }),
                 );
             }
-            // 2026-07-22 (3D-parity-arc tail) — same field name the
-            // foxhound source app's own `FrameProfile` publishes under
+            // 2026-07-22 (3D-parity-arc tail) — same field name
+            // `FrameProfiler` publishes under
             // (`uzor::framework::frame_profiler::FrameProfiler::to_json`'s
             // own doc comment), reported unconditionally like `fixture`/
             // `nav_mode`/`grid` above: `scene3d()` only ever records into
@@ -2648,8 +2640,8 @@ impl DemoBlackbox {
 impl App<NoPanel> for DemoApp {
     fn init(&mut self, key: &WindowKey, layout: &mut LayoutManager<NoPanel>) {
         // Kill the LayoutManager's DEFAULT chrome strip (owner defect
-        // report 2026-07-24: «невидимая полоска за которую я могу
-        // драгать» — `ChromeSlot::default()` is `visible: true`, so the
+        // report 2026-07-24: «an invisible strip I can
+        // drag» — `ChromeSlot::default()` is `visible: true`, so the
         // solver reserved an unpainted 32px band under the REAL OS
         // titlebar this window already has, and `Manager`'s
         // `handle_chrome_press` hit-tested its caption zone into
@@ -2914,7 +2906,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let mut engine3d = Self::lock3d(&self.engine3d);
         // 2026-07-22 (3D-parity-arc tail) — `Instant`-bracket `tick`/
         // `build_scene` independently and feed both into `frame_profiler`,
-        // mirroring foxhound's own `FrameProfile` stage-naming
+        // using `FrameProfiler`'s stage-naming
         // (`uzor::framework::frame_profiler`'s own module doc).
         let tick_started = std::time::Instant::now();
         engine3d.tick(dt);
@@ -2995,8 +2987,8 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // `Copy` so capturing it here doesn't disturb the `camera` value
         // returned below in `Scene3DFrame`.
         //
-        // Z-ORDER RULE (owner defect fix 2026-07-24: «менюшка всегда
-        // выше сцены» — node labels used to leak straight through the
+        // Z-ORDER RULE (owner defect fix 2026-07-24: «the menu always
+        // above the scene» — node labels used to leak straight through the
         // HUD card): EVERYTHING scene-space (engine overlay labels,
         // rings, grid ticks, hover card, crosshair) paints FIRST, the
         // WHOLE HUD card (static chrome + dynamic status/selection
@@ -3562,7 +3554,7 @@ mod tests {
     /// Owner defect fix 2026-07-23 — the exact defect report: the LAYOUT
     /// section's FORCE button in 3D used to be a single, hardcoded,
     /// always-active, ALWAYS-DEAD button — clicking it did nothing at
-    /// all («зажат форс, нихуя не переключается, не отключается»). Now
+    /// all («FORCE stuck on, does not switch, does not turn off»). Now
     /// it toggles pause/resume in place.
     #[test]
     fn re_clicking_the_active_force_button_pauses_and_resumes_in_place_in_3d() {

@@ -301,7 +301,7 @@ pub fn register_context_manager_panel(
     let coord = &mut ctx_mgr.input;
     let panel_id =
         register_input_coordinator_panel(coord, id, rect, state, view, settings, kind, layer);
-    draw_panel_with_coord(render, rect, coord, &panel_id, state, view, settings, kind);
+    draw_panel(render, rect, coord, &panel_id, state, view, settings, kind);
     panel_id
 }
 
@@ -309,7 +309,10 @@ pub fn register_context_manager_panel(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_panel_with_coord(
+/// Paint a panel frame. `panel_id` is the composite id returned by
+/// [`register_input_coordinator_panel`] (child highlights read the
+/// coordinator). No registration happens here.
+pub fn draw_panel(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     coord:    &mut InputCoordinator,

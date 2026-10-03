@@ -6,12 +6,13 @@
 //! to show consumers how `Backend::auto` is meant to be wired into
 //! their own apps.
 //!
-//! Run with default features (wgpu-backend only — Hybrid disabled):
-//!   cargo run -p uzor-urx-engine --example backend_auto_demo --release
+//! Run with the wgpu backend (Hybrid disabled):
+//!   cargo run -p uzor-urx-engine --example backend_auto_demo --release \
+//!     --features wgpu-backend
 //!
 //! Run with hybrid-backend ALSO enabled to see Hybrid wins:
 //!   cargo run -p uzor-urx-engine --example backend_auto_demo --release \
-//!     --features hybrid-backend
+//!     --features wgpu-backend,hybrid-backend
 //!
 //! Note: `Backend::auto` resolves available variants at compile time via
 //! cfg(feature = ...). With only wgpu-backend, retained-mode workloads

@@ -52,6 +52,7 @@ pub struct PerfDefaults {
 /// Pick a [`RenderBackend`] from wgpu adapter info.
 ///
 /// Match arms copied verbatim from mlc.
+#[cfg(feature = "gpu")]
 pub fn detect_backend(info: &wgpu::AdapterInfo) -> RenderBackend {
     match info.device_type {
         wgpu::DeviceType::DiscreteGpu   => RenderBackend::VelloGpu,
@@ -83,6 +84,7 @@ pub fn detect_backend(info: &wgpu::AdapterInfo) -> RenderBackend {
 /// optimistic default) → [`RenderBackend::UrxWgpu`], keeping the same
 /// "assume GPU-capable" policy the Vello-family tree has for that
 /// fallthrough arm.
+#[cfg(feature = "gpu")]
 pub fn detect_backend_urx(info: &wgpu::AdapterInfo) -> RenderBackend {
     match info.device_type {
         wgpu::DeviceType::DiscreteGpu   => RenderBackend::UrxWgpu,
@@ -100,6 +102,7 @@ pub fn detect_backend_urx(info: &wgpu::AdapterInfo) -> RenderBackend {
 /// for [`RenderFamily::Urx`]. The one place both call sites
 /// (`RenderHub::autodetect`, `uzor-desktop::create_window`) go through,
 /// so neither one names either tree directly.
+#[cfg(feature = "gpu")]
 pub fn detect_backend_for_family(info: &wgpu::AdapterInfo, family: RenderFamily) -> RenderBackend {
     match family {
         RenderFamily::Vello => detect_backend(info),
@@ -232,6 +235,7 @@ pub enum RecommendedBackend {
 }
 
 /// GPU info extracted from a wgpu adapter.
+#[cfg(feature = "gpu")]
 #[derive(Debug, Clone)]
 pub struct GpuInfo {
     pub name: String,
@@ -242,6 +246,7 @@ pub struct GpuInfo {
 }
 
 /// Detect GPU + recommend a backend.
+#[cfg(feature = "gpu")]
 pub fn detect(info: &wgpu::AdapterInfo) -> GpuInfo {
     let backend = detect_backend(info);
     let recommended = match info.device_type {
@@ -264,6 +269,7 @@ pub fn detect(info: &wgpu::AdapterInfo) -> GpuInfo {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "gpu")]
     fn info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
             name: "test-adapter".to_string(),
@@ -284,18 +290,21 @@ mod tests {
     /// covering all 5 `wgpu::DeviceType` variants (the 5th, `Other`,
     /// exercises the `_` fallthrough).
     #[test]
+    #[cfg(feature = "gpu")]
     fn discrete_and_integrated_gpu_map_to_urx_wgpu() {
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::DiscreteGpu)), RenderBackend::UrxWgpu);
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::IntegratedGpu)), RenderBackend::UrxWgpu);
     }
 
     #[test]
+    #[cfg(feature = "gpu")]
     fn virtual_gpu_and_cpu_map_to_urx_cpu() {
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::VirtualGpu)), RenderBackend::UrxCpu);
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::Cpu)), RenderBackend::UrxCpu);
     }
 
     #[test]
+    #[cfg(feature = "gpu")]
     fn unknown_device_type_falls_through_to_urx_wgpu() {
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::Other)), RenderBackend::UrxWgpu);
     }
@@ -304,6 +313,7 @@ mod tests {
     /// whole point of this decision tree is that autodetect, once
     /// flipped onto it, only ever lands on `UrxCpu`/`UrxWgpu`.
     #[test]
+    #[cfg(feature = "gpu")]
     fn never_returns_a_non_urx_backend() {
         for dt in [
             wgpu::DeviceType::DiscreteGpu,
@@ -367,6 +377,7 @@ mod tests {
     /// Family -> adapter-present tree mapping (owner scope item 6):
     /// `Urx+DiscreteGpu -> UrxWgpu`, `Vello+DiscreteGpu -> VelloGpu`.
     #[test]
+    #[cfg(feature = "gpu")]
     fn detect_backend_for_family_dispatches_to_the_right_tree_on_discrete_gpu() {
         let i = info(wgpu::DeviceType::DiscreteGpu);
         assert_eq!(detect_backend_for_family(&i, RenderFamily::Urx), RenderBackend::UrxWgpu);
@@ -384,6 +395,7 @@ mod tests {
     /// must agree (owner scope item 4) -- both are "this box is
     /// CPU-only" verdicts and should never diverge.
     #[test]
+    #[cfg(feature = "gpu")]
     fn urx_cpu_device_type_and_urx_no_adapter_fallback_agree() {
         assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::Cpu)), RenderBackend::UrxCpu);
         assert_eq!(no_adapter_backend_for_family(RenderFamily::Urx), RenderBackend::UrxCpu);

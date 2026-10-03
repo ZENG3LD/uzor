@@ -318,7 +318,7 @@ pub fn draw_tags_tabs_sidebar_tab(
 /// trait — suitable for custom variants or generic tab strips where the caller
 /// does not need a specific mlc variant.
 ///
-/// For mlc-parity callers, prefer the dedicated `draw_chrome_tab`,
+/// For callers needing MLC parity, prefer the dedicated `draw_chrome_tab`,
 /// `draw_modal_sidebar_tab`, `draw_modal_horizontal_tab`,
 /// `draw_tags_tabs_sidebar_tab` functions with their typed style structs.
 pub fn draw_tab(

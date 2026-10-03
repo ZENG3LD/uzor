@@ -16,7 +16,7 @@ pub use input::{
     register_input_coordinator_text,
     register_layout_manager_text,
 };
-pub use render::draw_text;
+pub use render::{draw_text, draw_text_with_selection};
 pub use settings::TextSettings;
 pub use state::TextState;
 pub use style::{DefaultTextStyle, TextStyle};

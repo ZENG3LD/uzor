@@ -28,9 +28,13 @@
 use std::collections::HashSet;
 
 use crate::backend::{RenderBackend, RenderFamily};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::backend::is_backend_compiled;
 use crate::detect::default_perf;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::detect::{detect_backend_for_family, no_adapter_backend_for_family};
+use crate::detect::no_adapter_backend_for_family;
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
+use crate::detect::detect_backend_for_family;
 use crate::metrics::RenderMetrics;
 
 // ── HubError ──────────────────────────────────────────────────────────────────
@@ -81,6 +85,23 @@ impl BackendPool {
         initialized.insert(RenderBackend::UrxWgpu);
         initialized.insert(RenderBackend::UrxHybrid);
         initialized.insert(RenderBackend::UrxWgpuFull);
+        // Drop backends whose Cargo feature is off (no-op with default
+        // features, where every native backend is compiled in).
+        initialized.retain(|b| is_backend_compiled(*b));
+        let recommended = compiled_or_fallback(
+            recommended,
+            &[
+                RenderBackend::VelloGpu,
+                RenderBackend::UrxWgpu,
+                RenderBackend::VelloHybrid,
+                RenderBackend::UrxHybrid,
+                RenderBackend::InstancedWgpu,
+                RenderBackend::UrxWgpuFull,
+                RenderBackend::VelloCpu,
+                RenderBackend::TinySkia,
+                RenderBackend::UrxCpu,
+            ],
+        );
         Self { has_gpu: true, initialized, recommended }
     }
 
@@ -91,10 +112,14 @@ impl BackendPool {
         initialized.insert(RenderBackend::VelloCpu);
         initialized.insert(RenderBackend::TinySkia);
         initialized.insert(RenderBackend::UrxCpu);
+        initialized.retain(|b| is_backend_compiled(*b));
         Self {
             has_gpu: false,
             initialized,
-            recommended: RenderBackend::TinySkia,
+            recommended: compiled_or_fallback(
+                RenderBackend::TinySkia,
+                &[RenderBackend::TinySkia, RenderBackend::VelloCpu, RenderBackend::UrxCpu],
+            ),
         }
     }
 
@@ -109,6 +134,22 @@ impl BackendPool {
             recommended: backend,
         }
     }
+}
+
+/// `preferred` when its feature is compiled in, otherwise the first
+/// compiled backend of `fallbacks`, otherwise `preferred` unchanged (a
+/// build with no backend feature at all). Always `preferred` with default
+/// features.
+#[cfg(not(target_arch = "wasm32"))]
+fn compiled_or_fallback(preferred: RenderBackend, fallbacks: &[RenderBackend]) -> RenderBackend {
+    if is_backend_compiled(preferred) {
+        return preferred;
+    }
+    fallbacks
+        .iter()
+        .copied()
+        .find(|b| is_backend_compiled(*b))
+        .unwrap_or(preferred)
 }
 
 // ── PerfSettings ──────────────────────────────────────────────────────────────
@@ -199,11 +240,14 @@ impl RenderHub {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let (pool, recommended) = match probe_adapter() {
-                Some(info) => {
-                    let rec = detect_backend_for_family(&info, family);
-                    (BackendPool::from_gpu(rec), rec)
-                }
+            // Without the `gpu` feature there is no wgpu to probe with, so
+            // the machine is treated exactly like one with no adapter.
+            #[cfg(feature = "gpu")]
+            let detected = probe_adapter().map(|info| detect_backend_for_family(&info, family));
+            #[cfg(not(feature = "gpu"))]
+            let detected: Option<RenderBackend> = None;
+            let (pool, recommended) = match detected {
+                Some(rec) => (BackendPool::from_gpu(rec), rec),
                 None => {
                     let rec = no_adapter_backend_for_family(family);
                     (BackendPool::software_only(), rec)
@@ -335,27 +379,29 @@ impl RenderHub {
     /// [`AppBuilder::surface_factory`].
     #[cfg(not(target_arch = "wasm32"))]
     pub fn factory_for(&self, backend: RenderBackend) -> Option<Box<dyn crate::surface::RenderSurfaceFactory>> {
-        use crate::factories::{
-            VelloGpuSurfaceFactory, VelloHybridSurfaceFactory,
-            WgpuInstancedSurfaceFactory, TinySkiaSurfaceFactory, VelloCpuSurfaceFactory,
-            UrxSurfaceFactory,
-        };
         if !self.pool.initialized.contains(&backend) {
             return None;
         }
-        let factory: Box<dyn crate::surface::RenderSurfaceFactory> = match backend {
-            RenderBackend::VelloGpu      => Box::new(VelloGpuSurfaceFactory::new()),
-            RenderBackend::VelloHybrid   => Box::new(VelloHybridSurfaceFactory::new(1.0)),
-            RenderBackend::InstancedWgpu => Box::new(WgpuInstancedSurfaceFactory::new()),
-            RenderBackend::TinySkia      => Box::new(TinySkiaSurfaceFactory::new()),
-            RenderBackend::VelloCpu      => Box::new(VelloCpuSurfaceFactory::new(1.0)),
+        // Backends whose Cargo feature is off fall through to `_` and
+        // yield `None`, same as a backend with no native factory.
+        match backend {
+            #[cfg(feature = "vello-gpu")]
+            RenderBackend::VelloGpu      => Some(Box::new(crate::factories::VelloGpuSurfaceFactory::new())),
+            #[cfg(feature = "vello-hybrid")]
+            RenderBackend::VelloHybrid   => Some(Box::new(crate::factories::VelloHybridSurfaceFactory::new(1.0))),
+            #[cfg(feature = "wgpu-instanced")]
+            RenderBackend::InstancedWgpu => Some(Box::new(crate::factories::WgpuInstancedSurfaceFactory::new())),
+            #[cfg(feature = "tiny-skia")]
+            RenderBackend::TinySkia      => Some(Box::new(crate::factories::TinySkiaSurfaceFactory::new())),
+            #[cfg(feature = "vello-cpu")]
+            RenderBackend::VelloCpu      => Some(Box::new(crate::factories::VelloCpuSurfaceFactory::new(1.0))),
+            #[cfg(feature = "urx")]
             RenderBackend::UrxCpu
             | RenderBackend::UrxWgpu
             | RenderBackend::UrxHybrid
-            | RenderBackend::UrxWgpuFull => Box::new(UrxSurfaceFactory::new()),
-            _                            => return None,
-        };
-        Some(factory)
+            | RenderBackend::UrxWgpuFull => Some(Box::new(crate::factories::UrxSurfaceFactory::new())),
+            _                            => None,
+        }
     }
 
     /// wasm32 stub — Canvas2d is the only backend, canvas factory needs the
@@ -372,7 +418,7 @@ impl RenderHub {
 ///
 /// Returns `None` if no suitable adapter exists (pure software / headless).
 /// Not available on `wasm32` — use [`RenderHub::fixed`]`(RenderBackend::Canvas2d)` instead.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 fn probe_adapter() -> Option<wgpu::AdapterInfo> {
     // wgpu 29: Instance::new takes the descriptor by value; default() is gone,
     // use new_without_display_handle() instead.
@@ -393,6 +439,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu", feature = "urx"))]
     fn autodetect_returns_nonempty_pool() {
         let hub = RenderHub::autodetect(RenderFamily::Vello);
         assert!(!hub.pool().initialized.is_empty(), "pool must have at least one backend");
@@ -414,6 +461,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "tiny-skia")]
     fn set_active_accepts_pooled() {
         let mut hub = RenderHub::autodetect(RenderFamily::Vello);
         // autodetect always includes TinySkia on desktop.
@@ -440,6 +488,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "urx")]
     fn factory_for_returns_native_surface_factory_for_every_urx_backend() {
         let handle = uzor::layout::window::RawHandle::RawWindowHandle(Box::new(42u32));
 

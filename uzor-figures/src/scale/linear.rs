@@ -2,7 +2,7 @@
 //! algorithm this whole crate's tick generation is built on.
 //!
 //! Ported and generalized from `mylittlechart`'s `PriceScale` nice-number
-//! ladder (`mlc-core/src/chart/types/price_scale.rs:113-207`) — same
+//! ladder — same
 //! `[2, 2.5, 2]` multiplier walk, same index-based tick loop (avoids
 //! float-accumulation drift over many ticks), with all "price" vocabulary
 //! removed: this is generic axis-tick math, not a trading concept.
