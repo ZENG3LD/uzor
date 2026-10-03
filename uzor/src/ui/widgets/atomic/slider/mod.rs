@@ -21,16 +21,14 @@ pub use types::{
     DualSliderHandle, SliderType,
     SliderConfig, SliderEditingInfo, SliderTrackInfo,
     SingleSliderView, DualSliderView, LineWidthSliderView,
-    SingleSliderResult, DualSliderResult, LineWidthSliderResult,
-};
+    SingleSliderResult, DualSliderResult, LineWidthSliderResult};
 pub use state::SliderDragState;
 pub use theme::SliderTheme;
 pub use style::{DefaultSliderStyle, SliderStyle};
 pub use settings::SliderSettings;
 pub use render::{
     draw_slider, SliderResult, SliderView,
-    draw_single_slider, draw_dual_slider, draw_line_width_slider,
-};
+    draw_single_slider, draw_dual_slider, draw_line_width_slider};
 pub use input::{
     register,
     // Math helpers
@@ -42,7 +40,4 @@ pub use input::{
     handle_slider_text_input,
     handle_slider_arrow_key, ArrowDirection,
     // Level 1 / Level 2
-    register_input_coordinator_slider,
-    register_context_manager_slider,
-    register_layout_manager_slider,
-};
+    register_input_coordinator_slider};

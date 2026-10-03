@@ -13,7 +13,7 @@ the owner runs/visually verifies the desktop app.
 
 ```
 cd <uzor repo root>
-cargo run -p uzor-examples --bin force-graph-demo
+cargo run -p the archived force-graph demo under `_deprecated/uzor-examples`
 ```
 
 Window title: "uzor-graph — force graph demo". Canvas on the left,
@@ -39,7 +39,7 @@ force simulation itself is what moves them.
 ## Verify — Tier 1 (semantic, no screenshots)
 
 Agent-api HTTP control plane on `:17481` (same pattern as
-`l4-dashboard`'s `:17480`, see `uzor-agent-api/README.md`):
+`l4-dashboard`'s `:17480`, see `agent control plane (archived with C1)
 
 ```bash
 curl -s :17481/blackboxes                          # -> ["graph"]

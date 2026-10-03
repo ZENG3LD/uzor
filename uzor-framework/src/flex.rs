@@ -1,4 +1,4 @@
-//! 1-D flex solve for the `view!` macro (moved from `uzor::framework::layout`).
+//! 1-D flex solve for the `view!` macro (moved from `the old framework module::layout`).
 //!
 //! Pure: a parent [`Rect`] plus child specs, nothing else. Free space on the
 //! main axis (after padding and gaps) is given to children in proportion to

@@ -1,5 +1,5 @@
 //! Chainable builders, the `view!` surface, retargeted from
-//! `&mut LayoutManager` to a [`ContentCx`] (a [`PanelCx`] or an
+//! `&mut layout façade` to a [`ContentCx`] (a [`PanelCx`] or an
 //! [`OverlayCx`]).
 //!
 //! `.build(cx)` registers and draws. There is no layout-tree parent and no

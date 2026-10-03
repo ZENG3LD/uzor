@@ -4,8 +4,6 @@
 //! regardless of which `ChromeRenderKind` is active.
 
 use crate::input::core::coordinator::InputCoordinator;
-use crate::layout::docking::DockPanel;
-use crate::layout::LayoutManager;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;
 
@@ -156,8 +154,8 @@ impl ChromeState {
 
     /// Sync per-tab hover state from the input coordinator.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` instead when a
-    /// `LayoutManager` is available.  Kept for back-compat with L3 callers that
+    /// **Deprecated** — use `sync_hover_from_coordinator` instead when a
+    /// `layout façade` is available.  Kept for back-compat with L3 callers that
     /// hold a raw `InputCoordinator` reference.
     ///
     /// The coordinator tracks which registered child widget is hovered; this
@@ -165,22 +163,10 @@ impl ChromeState {
     /// `{chrome_id}:tab:{i}` and `{chrome_id}:tab_close:{i}` into the
     /// corresponding `TabState` hover flags.
     ///
-    /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`
+    /// `chrome_id` — the stable id passed to `the old L3 register helper`
     ///               (e.g. `"chrome-widget"`).
     pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
         let hovered = coord.hovered_widget().map(|w| w.0.clone());
-        self.apply_hover_from_id(hovered, chrome_id);
-    }
-
-    /// Sync per-tab hover state from the `LayoutManager` (L3 authoritative hover).
-    ///
-    /// Preferred over `sync_hover_from_coordinator` — reads from
-    /// `LayoutManager::hovered_widget()` which is kept current by
-    /// `on_pointer_move` and is not reset by `begin_frame`.
-    ///
-    /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`.
-    pub fn sync_hover_from_layout<P: DockPanel>(&mut self, layout: &LayoutManager<P>, chrome_id: &str) {
-        let hovered = layout.hovered_widget().map(|w| w.0.clone());
         self.apply_hover_from_id(hovered, chrome_id);
     }
 

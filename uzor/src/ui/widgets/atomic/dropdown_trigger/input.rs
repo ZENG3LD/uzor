@@ -1,17 +1,11 @@
 //! InputCoordinator registration helpers for dropdown trigger widgets.
 
-use crate::app_context::ContextManager;
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId, WidgetState};
+use crate::types::{Rect, WidgetId};
 
-use super::render::draw_dropdown_trigger;
-use super::settings::DropdownTriggerSettings;
 use super::state::DropdownTriggerState;
-use super::types::DropdownTriggerRenderKind;
 
 /// Register a dropdown trigger widget with the coordinator for this frame.
 pub fn register_dropdown_trigger(
@@ -32,44 +26,4 @@ pub fn register_input_coordinator_dropdown_trigger(
     _state: &mut DropdownTriggerState,
 ) {
     coord.register_atomic(id, WidgetKind::DropdownTrigger, rect, Sense::CLICK, layer);
-}
-
-/// Level 2 — register a dropdown trigger via `ContextManager`, pulling state from the registry,
-/// and draw it using the provided render context.
-///
-/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
-/// `settings` supplies visual style. `kind` selects the render variant.
-pub fn register_context_manager_dropdown_trigger(
-    ctx: &mut ContextManager,
-    render: &mut dyn RenderContext,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    layer: &LayerId,
-    widget_state: WidgetState,
-    settings: &DropdownTriggerSettings,
-    kind: &DropdownTriggerRenderKind<'_>,
-) {
-    let id: WidgetId = id.into();
-    let state = ctx.registry.get_or_insert_with(id.clone(), DropdownTriggerState::default);
-    register_input_coordinator_dropdown_trigger(&mut ctx.input, id, rect, layer, state);
-    draw_dropdown_trigger(render, rect, widget_state, settings, kind);
-}
-
-/// Level 3 — register a dropdown trigger via `LayoutManager`, forwarding to L2.
-pub fn register_layout_manager_dropdown_trigger<P: DockPanel>(
-    layout: &mut LayoutManager<P>,
-    render: &mut dyn RenderContext,
-    parent: LayoutNodeId,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    widget_state: WidgetState,
-    settings: &DropdownTriggerSettings,
-    kind: &DropdownTriggerRenderKind<'_>,
-) {
-    let id: WidgetId = id.into();
-    let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DropdownTrigger, rect, sense: Sense::CLICK, label: None });
-    register_context_manager_dropdown_trigger(
-        layout.ctx_mut(), render, id, rect, &layer, widget_state, settings, kind,
-    );
 }

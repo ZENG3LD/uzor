@@ -1051,14 +1051,14 @@ impl WindowRenderState {
     /// Call `f` with a `&mut dyn RenderContext` wired to the active backend.
     ///
     /// This is the ergonomic entry point for user code inside `App::ui`.
-    /// Widget L3 helpers (e.g. `register_layout_manager_button`) accept
+    /// Widget L3 helpers (e.g. `the old L3 register helper`) accept
     /// `&mut dyn RenderContext`; pass the argument you receive here directly
     /// to those helpers:
     ///
     /// ```rust,ignore
-    /// fn ui(&mut self, layout: &mut LayoutManager<NoPanel>, state: &mut WindowRenderState) {
+    /// fn ui(&mut self, layout: &mut layout façade<NoPanel>, state: &mut WindowRenderState) {
     ///     state.with_render_context(|render| {
-    ///         register_layout_manager_button(layout, render, "btn", rect, &layer, &view, &settings);
+    ///         the old L3 register helper(layout, render, "btn", rect, &layer, &view, &settings);
     ///     });
     /// }
     /// ```

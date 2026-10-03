@@ -11,7 +11,7 @@
 //! Forbidden: winit / web-sys / render backends inside kernel, engine, types, handle, runtime;
 //!       HTTP, MCP, scripting, plugins, persistence, file I/O, business data anywhere;
 //!       locks / threads / RefCell outside handle and hosts; pub fields on kernel / engine structs;
-//!       a second door into on-screen state (the old LayoutManager / framework::* paths).
+//!       a second door into on-screen state (the old layout façade / framework::* paths).
 //!
 //! Module roles: types | engine/* | kernel | handle | runtime (shell) | host/* (shell).
 //! Gate: CICD/uzor/scripts/gate-next.sh --crates uzor-framework  (release profile; never

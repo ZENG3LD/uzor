@@ -8,8 +8,7 @@ use crate::types::Rect;
 
 use super::style::{
     BorderedContainerStyle, CardContainerStyle, ClippingContainerStyle, ContainerStyle,
-    PanelContainerStyle, PlainContainerStyle, SectionContainerStyle,
-};
+    PanelContainerStyle, PlainContainerStyle, SectionContainerStyle};
 use super::theme::ContainerTheme;
 use super::types::{ContainerType, PanelRole};
 

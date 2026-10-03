@@ -3,9 +3,8 @@
 //! Unlike Dropdown, ContextMenu positions at raw cursor coordinates with
 //! smart screen-edge clamping (`open_smart`). There is no anchor widget.
 
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::InputCoordinator;
-use crate::layout::LayoutManager;
 
 /// All per-instance state for a context menu.
 #[derive(Debug, Clone, Default)]
@@ -102,28 +101,13 @@ impl ContextMenuState {
 
     /// Sync the hovered-item index from the coordinator's hovered widget.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` when a `LayoutManager`
+    /// **Deprecated** — use `sync_hover_from_layout` when a `layout façade`
     /// is available.  Kept for back-compat with L3 callers.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.is_open {
             return;
         }
         let hovered = coord.hovered_widget().map(|id| id.0.clone());
-        self.apply_hover(hovered, widget_id_prefix);
-    }
-
-    /// Sync the hovered-item index from the `LayoutManager` (L3 authoritative hover).
-    ///
-    /// Preferred over `sync_hover_from`.
-    pub fn sync_hover_from_layout<P: DockPanel>(
-        &mut self,
-        layout: &LayoutManager<P>,
-        widget_id_prefix: &str,
-    ) {
-        if !self.is_open {
-            return;
-        }
-        let hovered = layout.hovered_widget().map(|id| id.0.clone());
         self.apply_hover(hovered, widget_id_prefix);
     }
 

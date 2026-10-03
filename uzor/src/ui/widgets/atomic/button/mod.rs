@@ -49,8 +49,7 @@ pub mod a11y;
 pub use types::{
     ButtonType, ActionVariant, ToggleVariant, CheckboxVariant, TabVariant,
     ColorSwatchVariant, DropdownVariant, ButtonStyle as ButtonStyleEnum,
-    ButtonContent, ChevronDirection,
-};
+    ButtonContent, ChevronDirection};
 pub use state::{ButtonState, SplitButtonHoverZone};
 pub use theme::ButtonTheme;
 pub use style::{
@@ -63,8 +62,7 @@ pub use style::{
     // tab-as-button styles
     SidebarTabStyle, HorizontalTabStyle,
     // dropdown menu row geometry (section 38) — stays in button until composite Dropdown
-    DropdownMenuRowStyle, RoundedDropdownMenuRowStyle, FlatDropdownMenuRowStyle,
-};
+    DropdownMenuRowStyle, RoundedDropdownMenuRowStyle, FlatDropdownMenuRowStyle};
 pub use settings::ButtonSettings;
 pub use render::{
     // base
@@ -103,14 +101,10 @@ pub use render::{
     draw_horizontal_tab_button,
     // dropdown menu row (section 38) — stays in button until composite Dropdown
     DropdownMenuRowView,
-    draw_dropdown_menu_row,
-};
+    draw_dropdown_menu_row};
 pub use input::{
     register,
-    register_input_coordinator_button,
-    register_context_manager_button,
-    register_layout_manager_button,
-};
+    register_input_coordinator_button};
 pub use a11y::node_for;
 
 // Re-exports from extracted atomic modules (backward-compat surface).
@@ -119,14 +113,12 @@ pub use super::color_swatch::{
     ColorSwatchStyle, ColorSwatchTheme, ColorSwatchView, FillToggleView,
     SimpleSwatchStyle, IndicatorSwatchStyle, AppearanceSwatchStyle, PrimitiveSwatchStyle,
     FillToggleStyle, PrimitiveFillToggleStyle,
-    draw_color_swatch, draw_fill_toggle,
-};
+    draw_color_swatch, draw_fill_toggle};
 pub use super::dropdown_trigger::{
     SplitDropdownView, DropdownFieldView,
     SplitDropdownStyle, DefaultSplitDropdownStyle,
     DropdownFieldStyle, DefaultDropdownFieldStyle,
-    draw_split_dropdown, draw_dropdown_field,
-};
+    draw_split_dropdown, draw_dropdown_field};
 
 // Re-exports from extracted atomic modules (backward-compat surface).
 // New code should import directly from atomic::close_button, etc.
@@ -134,21 +126,17 @@ pub use super::close_button::{
     CloseButtonStyle, DefaultCloseButtonStyle, LargeCloseButtonStyle,
     CloseButtonTheme,
     CloseButtonView, CloseButtonResult,
-    draw_close_button,
-};
+    draw_close_button};
 pub use super::scroll_chevron::{
     ScrollChevronStyle, DefaultScrollChevronStyle,
     ScrollChevronTheme,
     ScrollChevronView, ScrollChevronResult, ChevronDirection as ScrollChevronDirection,
-    draw_scroll_chevron,
-};
+    draw_scroll_chevron};
 pub use super::clock::{
     ClockView, ClockRenderKind,
     ClockTheme,
-    draw_clock,
-};
+    draw_clock};
 pub use super::item::{
     ItemView, ItemRenderKind,
     ItemTheme,
-    draw_item,
-};
+    draw_item};

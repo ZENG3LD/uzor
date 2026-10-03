@@ -4,8 +4,8 @@
 //!
 //! - `register_input_coordinator_chrome` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `register_context_manager_chrome`   — convenience wrapper: registers and
-//!   draws in one call via a `ContextManager`.
+//! - `the old L2 register helper`   — convenience wrapper: registers and
+//!   draws in one call via a `app context`.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -26,7 +26,6 @@
 //! 15. Context menu (if open)
 //! 16. Tooltip overlay (if visible)
 
-use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::core::render::draw_svg_icon;
@@ -352,29 +351,8 @@ pub fn register_input_coordinator_chrome(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — ContextManager convenience wrapper
+// Public API — app context convenience wrapper
 // ---------------------------------------------------------------------------
-
-/// Register + draw the Chrome composite in one call using a `ContextManager`.
-///
-/// Returns the [`CompositeId`] assigned to the composite.
-pub fn register_context_manager_chrome(
-    ctx_mgr:  &mut ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut ChromeState,
-    view:     &ChromeView<'_>,
-    settings: &ChromeSettings,
-    kind:     &ChromeRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let chrome_id =
-        register_input_coordinator_chrome(coord, id, rect, state, view, settings, kind, layer);
-    draw_chrome(render, rect, state, view, settings, kind);
-    chrome_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline
@@ -386,7 +364,7 @@ pub fn register_context_manager_chrome(
 /// state + view + settings.  Self-contained: no L1 / L2 / L3 / WM
 /// dependency.  Promoted from a private `draw_chrome_internal` so
 /// embedders can drive their own input pipeline without touching
-/// `LayoutManager` or `InputCoordinator`.
+/// `layout façade` or `InputCoordinator`.
 pub fn draw_chrome(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,

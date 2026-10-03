@@ -4,7 +4,7 @@
 //!
 //! - `register_input_coordinator_blackbox_panel` — registers ONE composite rect.
 //!   **No drawing.**  No children (BlackboxPanel rejects children).
-//! - `register_context_manager_blackbox_panel`   — registers + draws in one call.
+//! - `the old L2 register helper`   — registers + draws in one call.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -77,36 +77,8 @@ pub fn register_input_coordinator_blackbox_panel(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-/// Register + draw the blackbox panel in one call.
-///
-/// Returns the [`CompositeId`] assigned to the panel.
-pub fn register_context_manager_blackbox_panel(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut BlackboxState,
-    view:     &mut BlackboxView<'_>,
-    settings: &BlackboxPanelSettings,
-    kind:     &BlackboxRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let panel_id = register_input_coordinator_blackbox_panel(
-        &mut ctx_mgr.input,
-        id,
-        rect,
-        state,
-        view,
-        settings,
-        kind,
-        layer,
-    );
-    draw_blackbox(render, rect, view, settings, kind);
-    panel_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline

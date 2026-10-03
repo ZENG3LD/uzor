@@ -27,8 +27,7 @@ pub use theme::TabTheme;
 // Style — generic trait + all variant presets
 pub use style::{
     ChromeTabStyle, DefaultTabStyle, ModalHorizontalTabStyle, ModalSidebarTabStyle,
-    TagsTabsSidebarTabStyle, TabStyle,
-};
+    TagsTabsSidebarTabStyle, TabStyle};
 
 // Settings bundle
 pub use settings::TabSettings;
@@ -36,14 +35,10 @@ pub use settings::TabSettings;
 // Render — generic + all variant-specific draw functions
 pub use render::{
     draw_chrome_tab, draw_modal_horizontal_tab, draw_modal_sidebar_tab,
-    draw_tags_tabs_sidebar_tab, draw_tab, draw_tab_variant, TabResult, TabView,
-};
+    draw_tags_tabs_sidebar_tab, draw_tab, draw_tab_variant, TabResult, TabView};
 
 // Input registration helpers
 pub use input::{
     register_chrome_tab, register_horizontal_tab, register_sidebar_tab, register_tab,
     register_tab_on_layer,
-    register_input_coordinator_tab,
-    register_context_manager_tab,
-    register_layout_manager_tab,
-};
+    register_input_coordinator_tab};

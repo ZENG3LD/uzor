@@ -18,16 +18,11 @@
 //! `drag.floating_value.unwrap_or(committed_value)` as the `value` param so
 //! the handle follows the pointer in real time.
 
-use crate::app_context::ContextManager;
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId, WidgetState};
+use crate::types::{Rect, WidgetId};
 
-use super::render::{draw_slider, SliderView};
-use super::settings::SliderSettings;
 use super::state::SliderDragState;
 use super::types::{DualSliderHandle, SliderConfig, SliderTrackInfo};
 
@@ -311,45 +306,4 @@ pub fn register_input_coordinator_slider(
 ) {
     let _ = state; // drag state is managed by the drag helper fns
     register(coord, id, rect, layer);
-}
-
-/// Level 2 — register a slider via `ContextManager`, pulling `SliderDragState`
-/// from the registry, and draw the track + handle using the provided render context.
-///
-/// `widget_state` is supplied by the caller — the app owns the hover/drag state machine.
-/// `view` supplies per-frame value, kind, hover, and drag state.
-/// `settings` supplies visual style.
-pub fn register_context_manager_slider(
-    ctx: &mut ContextManager,
-    render: &mut dyn RenderContext,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    layer: &LayerId,
-    widget_state: WidgetState,
-    view: &SliderView,
-    settings: &SliderSettings,
-) {
-    let id: WidgetId = id.into();
-    let state = ctx.registry.get_or_insert_with(id.clone(), SliderDragState::default);
-    register_input_coordinator_slider(&mut ctx.input, id, rect, layer, state);
-    draw_slider(render, rect, widget_state, view, settings);
-}
-
-/// Level 3 — register a slider via `LayoutManager`.
-pub fn register_layout_manager_slider<P: DockPanel>(
-    layout: &mut LayoutManager<P>,
-    render: &mut dyn RenderContext,
-    parent: LayoutNodeId,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    widget_state: WidgetState,
-    view: &SliderView,
-    settings: &SliderSettings,
-) {
-    let id: WidgetId = id.into();
-    let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Slider, rect, sense: Sense::CLICK_AND_DRAG, label: None });
-    register_context_manager_slider(
-        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings,
-    );
 }

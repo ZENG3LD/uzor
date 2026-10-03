@@ -1,12 +1,12 @@
-//! Window-level traits owned by `LayoutManager`.
+//! Window-level traits owned by `layout façade`.
 //!
-//! `LayoutManager` is the root of the application — it owns every window's
+//! `layout façade` is the root of the application — it owns every window's
 //! tree, every dock, every overlay, every separator.  But it cannot poke
-//! the OS by itself: the **window manager** (e.g. `uzor_desktop::Manager`,
+//! the OS by itself: the **window manager** (e.g. `the old desktop runtime::Manager`,
 //! a winit-driven event loop) implements these traits so the layout
 //! manager can ask for redraws, drag operations, presenters, surfaces.
 //!
-//! The window manager calls `LayoutManager::attach_window` to register
+//! The window manager calls `layout façade::attach_window` to register
 //! each OS window as a top-level branch in the layout tree.  From that
 //! point on the layout manager addresses the window through its
 //! `WindowKey` and routes commands back via the `WindowProvider` trait
@@ -66,7 +66,7 @@ pub enum RawHandle {
 // WindowProvider
 // =============================================================================
 
-/// Capabilities one OS window must expose so `LayoutManager` can drive it.
+/// Capabilities one OS window must expose so `layout façade` can drive it.
 ///
 /// Implemented by:
 /// - `uzor_window_desktop::WinitWindowProvider` (winit / native desktop)

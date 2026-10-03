@@ -34,13 +34,9 @@ pub use style::{
     AppearanceSwatchStyle, ColorSwatchStyle,
     FillToggleStyle, IndicatorSwatchStyle,
     PrimitiveFillToggleStyle, PrimitiveSwatchStyle,
-    SimpleSwatchStyle,
-};
+    SimpleSwatchStyle};
 pub use settings::ColorSwatchSettings;
 pub use render::{draw_color_swatch, draw_fill_toggle};
 pub use input::{
     register_color_swatch,
-    register_input_coordinator_color_swatch,
-    register_context_manager_color_swatch,
-    register_layout_manager_color_swatch,
-};
+    register_input_coordinator_color_swatch};

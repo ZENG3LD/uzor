@@ -7,5 +7,4 @@ pub mod types;
 
 pub use render::{draw_sticky_chevron, register_sticky_chevron};
 pub use types::{
-    place_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility,
-};
+    place_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility};

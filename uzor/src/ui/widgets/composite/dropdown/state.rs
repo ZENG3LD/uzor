@@ -3,9 +3,8 @@
 //! `DropdownState` is a flat struct — fields irrelevant to the active
 //! `DropdownRenderKind` are never touched.
 
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::InputCoordinator;
-use crate::layout::LayoutManager;
 use crate::types::Rect;
 
 /// All per-dropdown instance state.
@@ -196,7 +195,7 @@ impl DropdownState {
 
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` when a `LayoutManager`
+    /// **Deprecated** — use `sync_hover_from_layout` when a `layout façade`
     /// is available.  Kept for back-compat with L3 callers.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.open {
@@ -209,22 +208,6 @@ impl DropdownState {
             .map(|s| s[widget_id_prefix.len()..].to_owned());
     }
 
-    /// Sync hover state for a Flat dropdown via the `LayoutManager`.
-    ///
-    /// Preferred over `sync_flat_hover` — reads from `LayoutManager::hovered_widget()`
-    /// which is kept current by `on_pointer_move` and not reset by `begin_frame`.
-    pub fn sync_flat_hover_from_layout<P: DockPanel>(
-        &mut self,
-        layout: &LayoutManager<P>,
-        dropdown_id: &str,
-    ) {
-        if !self.open {
-            return;
-        }
-        let hovered = layout.hovered_widget().map(|w| w.0.clone());
-        self.apply_flat_hover(hovered, dropdown_id);
-    }
-
     /// Sync hover state for a Flat dropdown that has both a main panel
     /// and a submenu panel.  Recognises four child-id prefixes:
     /// `:item:`, `:submenu:`, `:submenu-chevron:`, `:sub-item:`.
@@ -232,7 +215,7 @@ impl DropdownState {
     /// (submenu panel).
     ///
     /// **Deprecated** — use `sync_flat_hover_from_layout` when a
-    /// `LayoutManager` is available.
+    /// `layout façade` is available.
     pub fn sync_flat_hover(&mut self, coord: &InputCoordinator, dropdown_id: &str) {
         if !self.open {
             return;

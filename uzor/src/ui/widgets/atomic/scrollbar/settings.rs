@@ -1,8 +1,7 @@
 //! Scrollbar settings bundle — style + theme in one place.
 
 use super::style::{
-    CompactScrollbarStyle, ScrollbarStyle, SignalScrollbarStyle, StandardScrollbarStyle,
-};
+    CompactScrollbarStyle, ScrollbarStyle, SignalScrollbarStyle, StandardScrollbarStyle};
 use super::theme::ScrollbarTheme;
 use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 

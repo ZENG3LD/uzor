@@ -1,4 +1,4 @@
-//! Dispatch table for L3 LayoutManager.
+//! Dispatch table for L3 layout façade.
 //!
 //! Composites and the app register patterns against `WidgetId`s; when a
 //! click resolves to a `WidgetId`, the dispatcher walks the table and emits
@@ -8,7 +8,7 @@
 //! # Why this lives in `layout`, not in app code
 //!
 //! - `InputCoordinator` (L1) returns a `WidgetId` from `process_click`.
-//! - `LayoutManager` (L3) owns the coord and knows which composites it
+//! - `layout façade` (L3) owns the coord and knows which composites it
 //!   registered. So it's the right place to decide what a hit on
 //!   `"modal-widget:close"` semantically means.
 //! - The app no longer writes `if id_str == "modal-widget:close" { ... }`
@@ -24,7 +24,7 @@
 //! Exact patterns win over prefix patterns when both could match the same
 //! id. Within the same flavour, **last-registered wins** — the app can
 //! override a composite's default handler by registering its own pattern
-//! after `register_layout_manager_*`.
+//! after `the old L3 register helper*`.
 
 use crate::layout::docking::LeafId;
 use crate::types::WidgetId;
@@ -275,7 +275,7 @@ struct Entry {
     builder: EventBuilder,
 }
 
-/// Dispatch table embedded in [`LayoutManager`](super::manager::LayoutManager).
+/// Dispatch table embedded in [`layout façade`](super::manager::layout façade).
 ///
 /// Composites add patterns at `register_*` time; the app may add overrides.
 /// Patterns are matched in **registration order, exact-first** — the first
@@ -295,7 +295,7 @@ impl ClickDispatcher {
 
     /// Forget every registered pattern.
     ///
-    /// `LayoutManager` calls this at the start of each frame so composites
+    /// `layout façade` calls this at the start of each frame so composites
     /// can re-register their handlers cleanly. App-level handlers must also
     /// be re-added every frame (same model as the rest of the immediate-mode
     /// composite registration).

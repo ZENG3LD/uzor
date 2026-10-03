@@ -29,8 +29,7 @@ pub use theme::ScrollbarTheme;
 // ── Style ─────────────────────────────────────────────────────────────────────
 pub use style::{
     CompactScrollbarStyle, DefaultScrollbarStyle, ScrollbarStyle, SignalScrollbarStyle,
-    StandardScrollbarStyle,
-};
+    StandardScrollbarStyle};
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 pub use settings::ScrollbarSettings;
@@ -38,8 +37,7 @@ pub use settings::ScrollbarSettings;
 // ── Render ────────────────────────────────────────────────────────────────────
 pub use render::{
     draw_scrollbar, draw_scrollbar_compact, draw_scrollbar_signal, draw_scrollbar_standard,
-    ScrollbarResult, ScrollbarView, ScrollbarVisualState,
-};
+    ScrollbarResult, ScrollbarView, ScrollbarVisualState};
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 pub use input::{
@@ -47,7 +45,4 @@ pub use input::{
     start_thumb_drag, try_end_scrollbar_drag, try_handle_scrollbar_drag,
     try_handle_track_click, try_handle_wheel, try_start_scrollbar_drag, update_thumb_drag,
     ScrollableInfo,
-    register_input_coordinator_scrollbar,
-    register_context_manager_scrollbar,
-    register_layout_manager_scrollbar,
-};
+    register_input_coordinator_scrollbar};

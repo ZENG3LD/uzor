@@ -1,7 +1,6 @@
 use super::style::{
     DefaultSeparatorStyle, ModalSectionDividerStyle, SeparatorStyle, SidebarSeparatorStyle,
-    SplitPanelSeparatorStyle, SubPaneSeparatorStyle,
-};
+    SplitPanelSeparatorStyle, SubPaneSeparatorStyle};
 use super::theme::SeparatorTheme;
 use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 

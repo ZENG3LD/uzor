@@ -3,15 +3,10 @@
 
 pub use super::render::register_input_coordinator_toolbar;
 
-use super::render::register_context_manager_toolbar;
 
-use super::settings::ToolbarSettings;
 use super::state::ToolbarState;
-use super::types::{ToolbarRenderKind, ToolbarView};
-use crate::layout::docking::DockPanel;
-use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarHandle, ToolbarNode, WidgetNode};
-use crate::render::RenderContext;
+
+use crate::layout::{ChevronStepDirection, DispatchEvent};
 use crate::types::{Rect, WidgetId};
 
 /// Cursor position and view metadata for events that need spatial context
@@ -77,93 +72,6 @@ pub fn drag_outcome_toolbar(state: &ToolbarState, which: &'static str) -> Option
         return Some(crate::layout::DragOutcome::ToolbarResize { which });
     }
     None
-}
-
-/// Register + draw a toolbar in one call using a [`LayoutManager`].
-///
-/// Resolves the rect from the edge slot identified by `slot_id`, then
-/// forwards to [`register_context_manager_toolbar`].  Returns `None` if the
-/// slot is not present in the edge panels.
-pub fn register_layout_manager_toolbar<P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    render:   &mut dyn RenderContext,
-    parent:   LayoutNodeId,
-    slot_id:  &str,
-    handle:   &ToolbarHandle,
-    view:     &ToolbarView<'_>,
-    settings: &ToolbarSettings,
-    kind:     &ToolbarRenderKind,
-) -> Option<ToolbarNode> {
-    let id: WidgetId = handle.id.clone();
-    let rect = layout.rect_for_edge_slot(slot_id)?;
-
-    // Take state out of the map (or create default), work with it, then
-    // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.toolbars_map_mut().remove(&id).unwrap_or_default();
-
-    let layer = layout.compute_layer_for(parent);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK, label: None });
-
-    // Toolbar item ids land as "{toolbar-widget-id}:tb-foo" in the coordinator;
-    // register a prefix pattern so any item click surfaces as
-    // DispatchEvent::ToolbarItemClicked { toolbar, item_id = "tb-foo" }.
-    layout.dispatcher_mut().on_prefix(
-        format!("{}:", id.0),
-        EventBuilder::ToolbarItem { handle: handle.clone() },
-    );
-
-    // Overflow chevrons — register paging step events for the two strips.
-    // Exact-pattern dispatch beats the per-item prefix above.
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
-        use crate::layout::ChevronStepDirection;
-        let is_vertical = matches!(kind, ToolbarRenderKind::Vertical);
-        let (back_dir, fwd_dir) = if is_vertical {
-            (ChevronStepDirection::Up, ChevronStepDirection::Down)
-        } else {
-            (ChevronStepDirection::Left, ChevronStepDirection::Right)
-        };
-        let back_id = WidgetId(format!("{}:chevron_back", id.0));
-        let fwd_id  = WidgetId(format!("{}:chevron_fwd",  id.0));
-        layout.dispatcher_mut().on_exact(
-            format!("{}:chevron_back", id.0),
-            EventBuilder::ChevronStep { chevron_id: back_id, direction: back_dir },
-        );
-        layout.dispatcher_mut().on_exact(
-            format!("{}:chevron_fwd", id.0),
-            EventBuilder::ChevronStep { chevron_id: fwd_id, direction: fwd_dir },
-        );
-    }
-
-    // Resize handle (opt-in) — fires ResizeHandleDragStarted on mouse-down.
-    // Caller picks the edge so a Vertical toolbar on the right side reports
-    // W (drag-left-edge → grow leftward) instead of always E.
-    if let Some(edge) = view.resize_edge {
-        layout.dispatcher_mut().on_exact(
-            format!("{}:resize", id.0),
-            EventBuilder::ResizeHandle { host_id: id.clone(), edge },
-        );
-    }
-
-    // Auto-forward hovered_item_id from the layout manager (L3 authoritative hover source).
-    let prefix = format!("{}:", id.0);
-    state.sync_hover_from_layout(layout, &prefix);
-
-    register_context_manager_toolbar(
-        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
-    );
-
-    // Register this composite in the per-frame registry so consume_event can route it.
-    layout.push_composite_registration(CompositeRegistration {
-        kind:       CompositeKind::Toolbar,
-        slot_id:    slot_id.to_string(),
-        widget_id:  id.clone(),
-        frame_rect: rect,
-    });
-
-    // Return state to the map.
-    layout.toolbars_map_mut().insert(id, state);
-
-    Some(ToolbarNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

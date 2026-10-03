@@ -34,7 +34,4 @@ pub use settings::CloseButtonSettings;
 pub use render::{CloseButtonResult, CloseButtonView, draw_close_button};
 pub use input::{
     register,
-    register_input_coordinator_close_button,
-    register_context_manager_close_button,
-    register_layout_manager_close_button,
-};
+    register_input_coordinator_close_button};

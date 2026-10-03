@@ -2,7 +2,7 @@
 //! geometry, and the small OS-facing enums (cursor mode, IME purpose, ...).
 //!
 //! [`WindowCommand`] is the only thing a host executor receives from the
-//! kernel. It replaces the old `WindowHost` trait and per-window host
+//! kernel. It replaces the old `the old window-host trait` trait and per-window host
 //! adapters; every command passes through the WindowEngine queue, so the
 //! output vocabulary has one writer and one drain point.
 

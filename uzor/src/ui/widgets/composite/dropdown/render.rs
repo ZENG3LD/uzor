@@ -5,8 +5,8 @@
 //! - `register_input_coordinator_dropdown` — registers the composite + child
 //!   hit-rects with an `InputCoordinator`.  No drawing.  Use when explicit
 //!   z-order control is needed.
-//! - `register_context_manager_dropdown` — convenience wrapper: registers and
-//!   draws in one call using a `ContextManager`.
+//! - `the old L2 register helper` — convenience wrapper: registers and
+//!   draws in one call using a `app context`.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -15,7 +15,6 @@
 //! 3. Per-kind content
 //! 4. Submenu sibling panel (if `view.kind` carries submenu data and state has one open)
 
-use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
@@ -24,8 +23,7 @@ use crate::types::{Rect, WidgetId, WidgetState, CompositeId};
 use super::settings::DropdownSettings;
 use super::state::DropdownState;
 use super::types::{
-    DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind,
-};
+    DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind};
 
 // ---------------------------------------------------------------------------
 // Public API — measurement
@@ -174,33 +172,8 @@ pub fn register_input_coordinator_dropdown(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-/// Register + draw a dropdown in one call using a `ContextManager`.
-///
-/// Returns the [`CompositeId`] assigned to the dropdown composite.
-pub fn register_context_manager_dropdown(
-    ctx_mgr:  &mut ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut DropdownState,
-    view:     &mut DropdownView<'_>,
-    settings: &DropdownSettings,
-    kind:     DropdownRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let dd_id =
-        register_input_coordinator_dropdown(coord, id, rect, state, view, settings, kind, layer);
-
-    if view.open {
-        draw_dropdown(render, rect, state, view, settings, kind);
-    }
-
-    dd_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline

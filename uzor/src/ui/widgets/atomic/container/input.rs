@@ -10,16 +10,11 @@
 //! for the rare case where a container acts as a clickable backdrop (e.g. a
 //! dismissal surface behind a popup).
 
-use crate::app_context::ContextManager;
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
-use super::render::{draw_container, ContainerView};
-use super::settings::ContainerSettings;
 use super::state::ContainerState;
 
 /// Register a non-interactive container in the input coordinator.
@@ -57,41 +52,4 @@ pub fn register_input_coordinator_container(
     _state: &mut ContainerState,
 ) {
     coord.register_atomic(id, WidgetKind::Custom, rect, Sense::NONE, layer);
-}
-
-/// Level 2 — register a container via `ContextManager`, pulling state from the registry,
-/// and draw it using the provided render context.
-///
-/// `view` selects the container variant and border flag. `settings` supplies theme and style.
-pub fn register_context_manager_container(
-    ctx: &mut ContextManager,
-    render: &mut dyn RenderContext,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    layer: &LayerId,
-    view: &ContainerView,
-    settings: &ContainerSettings,
-) {
-    let id: WidgetId = id.into();
-    let state = ctx.registry.get_or_insert_with(id.clone(), ContainerState::default);
-    register_input_coordinator_container(&mut ctx.input, id, rect, layer, state);
-    draw_container(render, rect, view, settings.theme.as_ref(), settings.style.as_ref());
-}
-
-/// Level 3 — register a container via `LayoutManager`, forwarding to L2.
-pub fn register_layout_manager_container<P: DockPanel>(
-    layout: &mut LayoutManager<P>,
-    render: &mut dyn RenderContext,
-    parent: LayoutNodeId,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    view: &ContainerView,
-    settings: &ContainerSettings,
-) {
-    let id: WidgetId = id.into();
-    let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense: Sense::NONE, label: None });
-    register_context_manager_container(
-        layout.ctx_mut(), render, id, rect, &layer, view, settings,
-    );
 }

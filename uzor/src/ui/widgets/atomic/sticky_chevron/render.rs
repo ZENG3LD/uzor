@@ -6,8 +6,7 @@ use crate::types::{Rect, WidgetId, WidgetState, CompositeId};
 use crate::ui::widgets::atomic::chevron::{
     render::draw_chevron,
     settings::ChevronSettings,
-    types::{ChevronUseCase, ChevronView, HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
-};
+    types::{ChevronUseCase, ChevronView, HitAreaPolicy, PlacementPolicy, VisibilityPolicy}};
 
 use super::types::{place_sticky_chevron, StickyChevronSpec, StickyVisibility};
 

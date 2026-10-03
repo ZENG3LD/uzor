@@ -5,100 +5,22 @@
 
 pub use super::render::register_input_coordinator_context_menu;
 
-use super::render::register_context_manager_context_menu;
 
-use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
-use super::types::{ContextMenuRenderKind, ContextMenuView};
-use crate::layout::docking::DockPanel;
-use crate::input::core::coordinator::LayerId;
-use crate::input::{Sense, WidgetKind};
-use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, ContextMenuHandle, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
-use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId};
+
+use crate::layout::{
+    ClickDispatcher, ContextMenuHandle, EventBuilder,
+};
+use crate::types::Rect;
 
 /// Register a context menu's click patterns (`"{menu-id}:item:N"`) into
-/// `dispatcher`. Used by [`register_layout_manager_context_menu`] and by any
-/// engine that owns context-menu state without a `LayoutManager`.
+/// `dispatcher`. Used by [`the old L3 register helper`] and by any
+/// engine that owns context-menu state without a `layout façade`.
 pub fn register_context_menu_dispatch(dispatcher: &mut ClickDispatcher, handle: &ContextMenuHandle) {
     dispatcher.on_prefix(
         format!("{}:item:", handle.id.0),
         EventBuilder::ContextMenuItem { handle: handle.clone() },
     );
-}
-
-/// Register + draw a context menu in one call using a [`LayoutManager`].
-///
-/// Pushes the overlay entry, then registers the context-menu layer with the
-/// coordinator (blocking lower layers) and forwards to
-/// [`register_context_manager_context_menu`].  The menu positions itself from
-/// `state.x`/`state.y`; `overlay_rect` is used for dismiss-frame resolution.
-///
-/// `slot_id`      — stable overlay id (e.g. `"ctx-menu-overlay"`).
-/// `overlay_rect` — screen-space rect of the menu panel this frame.
-/// `anchor`       — optional anchor rect for positioning.
-pub fn register_layout_manager_context_menu<P: DockPanel>(
-    layout:       &mut LayoutManager<P>,
-    render:       &mut dyn RenderContext,
-    parent:       LayoutNodeId,
-    slot_id:      &str,
-    handle:       &ContextMenuHandle,
-    overlay_rect: Rect,
-    anchor:       Option<Rect>,
-    view:         &mut ContextMenuView<'_>,
-    settings:     &ContextMenuSettings,
-    kind:         &ContextMenuRenderKind<'_>,
-) -> Option<ContextMenuNode> {
-    let id: WidgetId = handle.id.clone();
-
-    // Take state out of the map (or create default), work with it, then
-    // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.context_menus_map_mut().remove(&id).unwrap_or_default();
-
-    layout.push_overlay(OverlayEntry {
-        id:   slot_id.to_string(),
-        kind: OverlayKind::ContextMenu,
-        rect: overlay_rect,
-        anchor,
-    });
-    let slot_rect = overlay_rect;
-    let layer = LayerId::new("context_menu");
-    let z_order = layout.z_layers().context_menu as u32;
-    // Register this overlay for outside-click dismiss resolution.
-    layout.push_dismiss_frame(DismissFrame {
-        z: z_order,
-        rect: slot_rect,
-        overlay_id: WidgetId(slot_id.to_owned()),
-    });
-    // Context menu blocks lower layers — push the layer into the coordinator.
-    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK, label: None });
-
-    // Item ids are "{menu-id}:item:N" — surface as
-    // DispatchEvent::ContextMenuItemClicked { menu, item_index }.
-    register_context_menu_dispatch(layout.dispatcher_mut(), handle);
-
-    // Auto-forward hovered_index from the layout manager (L3 authoritative hover source).
-    let prefix = format!("{}:item:", id.0);
-    state.sync_hover_from_layout(layout, &prefix);
-
-    register_context_manager_context_menu(
-        layout.ctx_mut(), render, id.clone(), &mut state, view, settings, kind, &layer,
-    );
-
-    // Register this composite in the per-frame registry so consume_event can route it.
-    layout.push_composite_registration(CompositeRegistration {
-        kind:       CompositeKind::ContextMenu,
-        slot_id:    slot_id.to_string(),
-        widget_id:  id.clone(),
-        frame_rect: overlay_rect,
-    });
-
-    // Return state to the map.
-    layout.context_menus_map_mut().insert(id, state);
-
-    Some(ContextMenuNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

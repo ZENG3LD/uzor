@@ -4,8 +4,8 @@
 //!
 //! - `register_input_coordinator_toolbar` — registers the composite and all
 //!   child hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `register_context_manager_toolbar`   — convenience wrapper: registers
-//!   and draws in one call via a `ContextManager`.
+//! - `the old L2 register helper`   — convenience wrapper: registers
+//!   and draws in one call via a `app context`.
 //!
 //! # Draw order (all non-Custom kinds)
 //!
@@ -114,28 +114,8 @@ fn register_toolbar_resize_handle(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — ContextManager convenience wrapper
+// Public API — app context convenience wrapper
 // ---------------------------------------------------------------------------
-
-/// Register + draw a toolbar in one call using a `ContextManager`.
-///
-/// This is the recommended entry point for typical use.
-pub fn register_context_manager_toolbar(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut ToolbarState,
-    view:     &ToolbarView<'_>,
-    settings: &ToolbarSettings,
-    kind:     &ToolbarRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let toolbar_id = register_input_coordinator_toolbar(coord, id, rect, state, view, settings, kind, layer);
-    draw_toolbar(render, rect, state, view, settings, kind);
-    toolbar_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw dispatcher

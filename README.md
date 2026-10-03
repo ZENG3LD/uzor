@@ -22,7 +22,7 @@ The workspace is one version (**1.5.2**). Every crate below publishes at that nu
 | `uzor-vision` | GPU-first CV (denoise + SLIC); CPU fallback |
 | `uzor-vectorize` | PNG/JPEG → SVG tracer (flat-color) |
 | `uzor-framework-macros` | `view!` DSL |
-| `uzor-agent-api` | Local HTTP control plane for live apps |
+| `uzor-agent-api` | _(archived in `_deprecated/` as of C1)_ |
 
 **Windows**
 
@@ -31,7 +31,7 @@ The workspace is one version (**1.5.2**). Every crate below publishes at that nu
 | `uzor-window-desktop` | winit desktop |
 | `uzor-window-web` | WASM / browser |
 | `uzor-window-mobile` | iOS / Android |
-| `uzor-desktop` | Desktop runtime (`AppBuilder::run`) |
+| `uzor-desktop` | _(archived in `_deprecated/` as of C1; use `uzor-framework`) |
 | `uzor-tui` | Cell-buffer TUI (crossterm). Feature `ascii` pulls `uzor-text` |
 
 **Render backends** (`RenderContext` implementations)
@@ -84,7 +84,8 @@ The workspace is one version (**1.5.2**). Every crate below publishes at that nu
 [dependencies]
 uzor = "1.5"
 uzor-render-vello-gpu = "1.5"
-uzor-desktop = "1.5"
+# uzor-desktop archived (C1); use uzor-framework
+# uzor-desktop = "1.5"
 ```
 
 Core feature flags: `serde`, `animation`, `shaper` (cosmic-text).

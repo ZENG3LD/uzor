@@ -1,45 +1,17 @@
 //! Modal input-coordinator helpers.
 //!
 //! `register_input_coordinator_modal` is defined in `render.rs` (alongside
-//! `register_context_manager_modal`) because both share the layout computation.
+//! `the old L2 register helper`) because both share the layout computation.
 //! This module re-exports it and adds the drag helper.
 
 pub use super::render::register_input_coordinator_modal;
 
-use super::render::register_context_manager_modal;
 
-use super::settings::ModalSettings;
 use super::state::ModalState;
-use super::types::{ModalRenderKind, ModalView};
-use crate::input::text::store::TextFieldConfig;
-use crate::layout::docking::DockPanel;
-use crate::input::core::coordinator::LayerId;
-use crate::types::CompositeId;
-use crate::input::{Sense, WidgetKind};
-use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalHandle, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
-use crate::render::RenderContext;
+use crate::layout::{
+    ClickDispatcher, DispatchEvent, EventBuilder, ModalHandle,
+};
 use crate::types::{Rect, WidgetId};
-
-/// Return the widget id hovered by the pointer when the cursor is inside
-/// `body_rect`, or `None` if the cursor is outside the body or no widget
-/// is hovered.
-///
-/// Use this instead of a bespoke geometric hit-test to find which widget
-/// inside a modal body the user is hovering.  The coordinator's retained
-/// hover state is already up-to-date by the time rendering starts.
-///
-/// `body_rect` — screen-space content rect of the modal body (header
-///               already subtracted, same rect you pass to the render helpers).
-pub fn modal_body_hovered_widget<'a, P: DockPanel>(
-    layout:    &'a LayoutManager<P>,
-    body_rect: Rect,
-) -> Option<&'a WidgetId> {
-    let (mx, my) = layout.ctx().input.pointer_pos()?;
-    if !body_rect.contains(mx, my) {
-        return None;
-    }
-    layout.ctx().input.hovered_widget()
-}
 
 /// Cursor position and view metadata for events that need spatial context
 /// (resize start, scrollbar drag start, track click).
@@ -111,8 +83,8 @@ pub fn consume_event(
 /// Register a modal's click patterns (close, footer, tabs, wizard, body
 /// scrollbar, chevrons and — when `resizable` — the eight resize handles)
 /// into `dispatcher`, so clicks on its parts surface as typed
-/// [`DispatchEvent`]s. Used by [`register_layout_manager_modal`] and by any
-/// engine that owns modal state without a `LayoutManager`.
+/// [`DispatchEvent`]s. Used by [`the old L3 register helper`] and by any
+/// engine that owns modal state without a `layout façade`.
 pub fn register_modal_dispatch(dispatcher: &mut ClickDispatcher, handle: &ModalHandle, resizable: bool) {
     let id: &WidgetId = &handle.id;
     dispatcher.on_exact(
@@ -186,81 +158,6 @@ pub fn register_modal_dispatch(dispatcher: &mut ClickDispatcher, handle: &ModalH
     }
 }
 
-/// Register + draw a modal in one call using a [`LayoutManager`].
-///
-/// Pushes the overlay entry onto the layout's overlay stack, then registers
-/// the modal layer with the coordinator (so it blocks lower layers) and
-/// forwards to [`register_context_manager_modal`].
-///
-/// State is taken from the layout manager's internal `modals` map (keyed by
-/// `id`) and created with `Default` if absent — the caller no longer owns or
-/// passes `&mut ModalState`.
-///
-/// `slot_id`      — stable overlay id (e.g. `"modal-overlay"`).  Used for
-///                  dismiss-frame identity; must be unique per open overlay.
-/// `overlay_rect` — screen-space rect of the modal frame this frame.
-/// `anchor`       — optional anchor rect (e.g. trigger button) for
-///                  repositioning logic.
-pub fn register_layout_manager_modal<P: DockPanel>(
-    layout:       &mut LayoutManager<P>,
-    render:       &mut dyn RenderContext,
-    parent:       LayoutNodeId,
-    slot_id:      &str,
-    handle:       &ModalHandle,
-    overlay_rect: Rect,
-    anchor:       Option<Rect>,
-    view:         &mut ModalView<'_>,
-    settings:     &ModalSettings,
-    kind:         &ModalRenderKind,
-) -> Option<ModalNode> {
-    let id: WidgetId = handle.id.clone();
-
-    // Take state out of the map (or create default), work with it, then
-    // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.modals_map_mut().remove(&id).unwrap_or_default();
-
-    // Push the overlay entry so rect_for_overlay and dismiss resolution work.
-    layout.push_overlay(OverlayEntry {
-        id:   slot_id.to_string(),
-        kind: OverlayKind::Modal,
-        rect: overlay_rect,
-        anchor,
-    });
-    let rect = overlay_rect;
-    let layer = LayerId::modal();
-    let z_order = layout.z_layers().modal as u32;
-    // Register this overlay for outside-click dismiss resolution.
-    layout.push_dismiss_frame(DismissFrame {
-        z: z_order,
-        rect,
-        overlay_id: WidgetId(slot_id.to_owned()),
-    });
-    // Push the modal layer so that the coordinator's hit-test blocks lower layers.
-    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK, label: None });
-
-    // Register dispatcher patterns so the app gets semantic events instead of
-    // raw "modal-widget:close" string matching.
-    register_modal_dispatch(layout.dispatcher_mut(), handle, view.resizable);
-
-    register_context_manager_modal(
-        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
-    );
-
-    // Register this composite in the per-frame registry so consume_event can route it.
-    layout.push_composite_registration(CompositeRegistration {
-        kind:       CompositeKind::Modal,
-        slot_id:    slot_id.to_string(),
-        widget_id:  id.clone(),
-        frame_rect: rect,
-    });
-
-    // Return state to the map.
-    layout.modals_map_mut().insert(id, state);
-
-    Some(ModalNode(node_id))
-}
-
 /// Inspect modal state after `consume_event` returned `None` (consumed) to
 /// determine what drag was started.
 ///
@@ -291,158 +188,6 @@ pub fn handle_modal_drag(
     modal_size:  (f64, f64),
 ) {
     state.update_drag(cursor_pos, screen_size, modal_size);
-}
-
-/// Register one or more text fields inside a modal body.
-///
-/// For each `(id, local_rect, config)` entry, computes the screen-space rect
-/// by adding the modal frame origin (accounting for drag) and the body header
-/// height from `settings`, then registers the field with the input coordinator.
-///
-/// `body_rect` — rect of the modal body in screen space (header already
-///               subtracted; this is the content area, not the full frame).
-///
-/// `fields`    — slice of `(field_id, local_rect, config)` where `local_rect`
-///               is relative to `body_rect` origin.
-pub fn register_modal_text_fields<P: DockPanel>(
-    layout:    &mut LayoutManager<P>,
-    body_rect: Rect,
-    fields:    &[(&str, Rect, TextFieldConfig)],
-) {
-    let coord = &mut layout.ctx_mut().input;
-    // Scope registration to the modal's own layer — the modal frame itself
-    // was pushed on `LayerId::modal()` (see `register_input_coordinator_modal`
-    // above), which blocks lower layers while it's open. A text field
-    // registered without this would land on main, behind that barrier, and
-    // never receive a click.
-    coord.set_default_layer(Some(LayerId::modal()));
-    for (id, local_rect, config) in fields {
-        let screen_rect = Rect::new(
-            body_rect.x + local_rect.x,
-            body_rect.y + local_rect.y,
-            local_rect.width,
-            local_rect.height,
-        );
-        coord.register_text_field(*id, screen_rect, config.clone());
-    }
-    coord.set_default_layer(None);
-}
-
-/// Register a button inside a modal body as a composite Panel + atomic Button child.
-///
-/// Some callers need the button to act as a composite host so that sticky
-/// chevrons or other child widgets can attach to it.  This helper registers
-/// a `Panel` composite (with `Sense::NONE`) and immediately adds the visual
-/// `Button` as an atomic child, returning the composite `CompositeId` so the
-/// caller can attach further children (e.g. `register_sticky_chevron`).
-///
-/// `host_id`  — stable id for the composite Panel host (e.g. `"l2-btn-connect-host"`).
-/// `child_id` — stable id for the atomic Button child (e.g. `"l2-btn-connect"`).
-/// `rect`     — screen-space rect for both host and child (they share the same rect).
-/// `sense`    — sense flags for the Button child (typically `CLICK | HOVER`).
-/// `layer`    — current render layer.
-pub fn register_modal_button<P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    host_id:  impl Into<WidgetId>,
-    child_id: impl Into<WidgetId>,
-    rect:     Rect,
-    sense:    Sense,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut layout.ctx_mut().input;
-    let host = coord.register_composite(host_id, WidgetKind::Panel, rect, Sense::NONE, layer);
-    coord.register_child(&host, child_id, WidgetKind::Button, rect, sense);
-    host
-}
-
-/// Complete the modal two-pass body rendering: paint overflow overlays then
-/// re-register overflow hit-zones after app body-content has been drawn.
-///
-/// Call this AFTER drawing all body widgets (and after calling `render.restore()`
-/// to close the body clip). It replaces the explicit
-/// `draw_body_overflow_chevrons` + `register_body_overflow` pair.
-///
-/// The `modal_id` defaults to `"modal-widget"` which is the standard id used
-/// by `register_layout_manager_modal`.
-pub fn modal_body_finish<P: DockPanel>(
-    layout:     &mut LayoutManager<P>,
-    render:     &mut dyn RenderContext,
-    frame_rect: Rect,
-    state:      &mut ModalState,
-    view:       &ModalView<'_>,
-    settings:   &ModalSettings,
-    kind:       &ModalRenderKind,
-) {
-    use super::render::{draw_body_overflow_chevrons, register_body_overflow};
-
-    // Paint chevron/scrollbar overlays on top of body content.
-    draw_body_overflow_chevrons(render, frame_rect, state, view, settings, kind);
-
-    // Re-register overflow hit-zones last so they outrank body widgets.
-    let modal_id = CompositeId(WidgetId::new("modal-widget"));
-    register_body_overflow(
-        &mut layout.ctx_mut().input,
-        &modal_id,
-        frame_rect,
-        view,
-        settings,
-        kind,
-        state,
-    );
-}
-
-/// Draw the modal body content and register overflow (scrollbar / chevrons) in one call.
-///
-/// This replaces the two-pass pattern in app code where:
-/// 1. `body_fn` draws body widgets and registers them with the coordinator.
-/// 2. `draw_body_overflow_chevrons` paints chevron/scrollbar overlays on top.
-/// 3. `register_body_overflow` registers the overflow hit zones last so they
-///    sit above body widgets in the coordinator's hit-test.
-///
-/// Using this helper eliminates the need to call steps 2 and 3 manually.
-///
-/// # Arguments
-/// - `layout`    — the LayoutManager (for coord access).
-/// - `render`    — the render context.
-/// - `frame_rect`— the modal's full screen-space rect (from `rect_for_overlay`).
-/// - `state`     — mutable modal state.
-/// - `view`      — modal view description.
-/// - `settings`  — modal settings.
-/// - `kind`      — render kind.
-/// - `body_fn`   — closure that draws body widgets. Receives `(render, body_rect)`.
-pub fn modal_body_scope<P: DockPanel, F>(
-    layout:     &mut LayoutManager<P>,
-    render:     &mut dyn RenderContext,
-    frame_rect: Rect,
-    state:      &mut ModalState,
-    view:       &ModalView<'_>,
-    settings:   &ModalSettings,
-    kind:       &ModalRenderKind,
-    body_fn:    F,
-) where
-    F: FnOnce(&mut dyn RenderContext, Rect),
-{
-    use super::render::{body_rect as modal_body_rect, draw_body_overflow_chevrons, register_body_overflow};
-
-    let br = modal_body_rect(frame_rect, view, settings, kind);
-
-    // Step 1: let caller draw body content.
-    body_fn(render, br);
-
-    // Step 2: paint overflow overlays on top of body content.
-    draw_body_overflow_chevrons(render, frame_rect, state, view, settings, kind);
-
-    // Step 3: register overflow hit zones last (outruns body widgets in coord).
-    let modal_id = CompositeId(WidgetId::new("modal-widget"));
-    register_body_overflow(
-        &mut layout.ctx_mut().input,
-        &modal_id,
-        frame_rect,
-        view,
-        settings,
-        kind,
-        state,
-    );
 }
 
 /// Hit-test whether a pointer position is inside the modal header drag zone.

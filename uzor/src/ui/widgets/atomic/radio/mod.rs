@@ -27,8 +27,7 @@ pub mod input;
 
 pub use types::{
     DotShape, RadioConfig, RadioDotView, RadioGroupView, RadioOption, RadioPairView,
-    RadioRenderKind,
-};
+    RadioRenderKind};
 pub use state::RadioState;
 pub use theme::RadioTheme;
 pub use style::{DefaultRadioPairStyle, DefaultRadioStyle, RadioPairStyle, RadioStyle};
@@ -36,7 +35,4 @@ pub use settings::RadioSettings;
 pub use render::draw_radio;
 pub use input::{
     register_radio,
-    register_input_coordinator_radio,
-    register_context_manager_radio,
-    register_layout_manager_radio,
-};
+    register_input_coordinator_radio};

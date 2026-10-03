@@ -13,7 +13,7 @@
 //! # Entry points
 //!
 //! - `register_input_coordinator_sidebar` — hit-rect registration only
-//! - `register_context_manager_sidebar`   — register + draw in one call
+//! - `the old L2 register helper`   — register + draw in one call
 
 pub mod input;
 pub mod render;

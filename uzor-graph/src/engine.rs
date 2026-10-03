@@ -1,6 +1,6 @@
 //! `GraphEngine` — the facade tying graph + particles + camera + layout
 //! + interaction + render + agent surface together into one owned
-//! object an app registers as a blackbox and drives from `App::ui`/
+//! object an app registers as a panel slot and drives from `App::ui`/
 //! `App::on_event`/`App::regions`.
 
 use std::time::Instant;
@@ -73,7 +73,7 @@ pub(crate) const DEFAULT_LABEL_HALO: &str = "#0d0f14";
 
 /// Wave 2.5 default transition duration (ms) for `zoom_to_fit`/
 /// `zoom_to_node` when the caller doesn't specify one. `pub(crate)` so
-/// `agent.rs`'s `zoom_to_fit`/`zoom_to_node` actions default to the exact
+/// the removed agent module's `zoom_to_fit`/`zoom_to_node` actions default to the exact
 /// same value the engine API itself would use for an omitted argument.
 pub(crate) const DEFAULT_TRANSITION_MS: f64 = 400.0;
 /// Wave 2.5 default screen-space padding (px) for `zoom_to_fit` —
@@ -272,7 +272,7 @@ impl CameraTransition {
 /// grammar without the two ever being conflated). Typed AND-semantics
 /// predicate — no query-language strings inside the engine; a caller/
 /// agent boundary is free to compile one of these from a string DSL, but
-/// that translation lives OUTSIDE this crate (`agent.rs`'s JSON args are
+/// that translation lives OUTSIDE this crate (the removed agent module's JSON args are
 /// already exactly that kind of boundary, and take the fields directly,
 /// no string grammar). A `None` field means "don't filter on this axis";
 /// every `Some` field must pass for a node to remain visible.
@@ -504,8 +504,8 @@ pub struct NodeFacts<'a> {
 
 /// The engine's owned state: graph topology, simulated positions,
 /// camera, the active layout algorithm, and interaction/selection
-/// state. Implements [`uzor::layout::agent::BlackboxAgentSurface`] (see
-/// `agent.rs`) so it can be registered directly as a blackbox — the
+/// state. Implements [`agent surface`] (see
+/// the removed agent module) so it can be registered directly as a panel slot — the
 /// same `Arc<Mutex<...>>` a human-driven `App::ui`/`on_event` and the
 /// HTTP agent control plane both mutate.
 pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {

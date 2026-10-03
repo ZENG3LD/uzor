@@ -29,20 +29,14 @@ pub mod input;
 pub use types::{InputType, TextInputType};
 pub use behavior::{
     ConfirmedValue, TextFieldBehavior, TextFieldConfig as TextFieldBehaviorConfig,
-    TextInputAction, TextInputKey,
-};
+    TextInputAction, TextInputKey};
 pub use state::{
-    InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore,
-};
+    InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore};
 pub use theme::TextInputTheme;
 pub use style::{DefaultTextInputStyle, TextInputStyle};
 pub use settings::TextInputSettings;
 pub use render::{
-    cursor_from_char_positions, draw_input, draw_input_cursor, InputResult, InputView,
-};
+    cursor_from_char_positions, draw_input, draw_input_cursor, InputResult, InputView};
 pub use input::{
     register,
-    register_input_coordinator_text_input,
-    register_context_manager_text_input,
-    register_layout_manager_text_input,
-};
+    register_input_coordinator_text_input};

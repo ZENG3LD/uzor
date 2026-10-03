@@ -4,9 +4,9 @@
 //!
 //! - `register_input_coordinator_popup` — registers the composite + body
 //!   overflow strips with an `InputCoordinator`. **No drawing.**
-//! - `register_context_manager_popup`   — convenience wrapper: registers,
+//! - `the old L2 register helper`   — convenience wrapper: registers,
 //!   draws the chrome, and (for `Custom`) hands off to the caller closure.
-//! - `register_layout_manager_popup`    — public entry that resolves a
+//! - `the old L3 register helper`    — public entry that resolves a
 //!   layout overlay slot and drives the above.
 //!
 //! # Draw order (Plain)
@@ -89,26 +89,8 @@ fn register_popup_body_overflow(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-pub fn register_context_manager_popup(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut PopupState,
-    view:     &mut PopupView<'_>,
-    settings: &PopupSettings,
-    kind:     PopupRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let popup_id =
-        register_input_coordinator_popup(coord, id, rect, state, view, settings, kind, layer);
-    draw_popup(render, rect, state, view, settings, kind);
-    popup_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline

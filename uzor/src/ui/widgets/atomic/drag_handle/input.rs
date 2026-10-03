@@ -1,17 +1,11 @@
 //! InputCoordinator registration helpers for drag handle widgets.
 
-use crate::app_context::ContextManager;
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
-use super::render::draw_drag_handle;
-use super::settings::DragHandleSettings;
 use super::state::DragHandleState;
-use super::types::{DragHandleRenderKind, DragHandleView};
 
 /// Register a drag handle widget with the coordinator for this frame.
 ///
@@ -34,44 +28,4 @@ pub fn register_input_coordinator_drag_handle(
     _state: &mut DragHandleState,
 ) {
     coord.register_atomic(id, WidgetKind::DragHandle, rect, Sense::DRAG, layer);
-}
-
-/// Level 2 — register a drag handle via `ContextManager`, pulling state from the registry,
-/// and draw it using the provided render context.
-///
-/// `view` supplies the bounding rect. `settings` supplies visual style.
-/// `kind` selects the render variant (invisible hit zone, grip dots, or custom).
-pub fn register_context_manager_drag_handle(
-    ctx: &mut ContextManager,
-    render: &mut dyn RenderContext,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    layer: &LayerId,
-    view: &DragHandleView,
-    settings: &DragHandleSettings,
-    kind: &DragHandleRenderKind,
-) {
-    let id: WidgetId = id.into();
-    let state = ctx.registry.get_or_insert_with(id.clone(), DragHandleState::default);
-    register_input_coordinator_drag_handle(&mut ctx.input, id, rect, layer, state);
-    draw_drag_handle(render, rect, view, settings, kind);
-}
-
-/// Level 3 — register a drag handle via `LayoutManager`, forwarding to L2.
-pub fn register_layout_manager_drag_handle<P: DockPanel>(
-    layout: &mut LayoutManager<P>,
-    render: &mut dyn RenderContext,
-    parent: LayoutNodeId,
-    id: impl Into<WidgetId>,
-    rect: Rect,
-    view: &DragHandleView,
-    settings: &DragHandleSettings,
-    kind: &DragHandleRenderKind,
-) {
-    let id: WidgetId = id.into();
-    let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DragHandle, rect, sense: Sense::DRAG, label: None });
-    register_context_manager_drag_handle(
-        layout.ctx_mut(), render, id, rect, &layer, view, settings, kind,
-    );
 }

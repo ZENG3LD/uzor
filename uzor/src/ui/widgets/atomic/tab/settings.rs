@@ -2,8 +2,7 @@
 
 use super::style::{
     ChromeTabStyle, DefaultTabStyle, ModalHorizontalTabStyle, ModalSidebarTabStyle,
-    TagsTabsSidebarTabStyle, TabStyle,
-};
+    TagsTabsSidebarTabStyle, TabStyle};
 use super::theme::TabTheme;
 use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 

@@ -4,8 +4,8 @@
 //!
 //! - `register_input_coordinator_panel` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `register_context_manager_panel`   — convenience wrapper: takes a
-//!   `ContextManager`, registers, and draws in one call.
+//! - `the old L2 register helper`   — convenience wrapper: takes a
+//!   `app context`, registers, and draws in one call.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -23,8 +23,7 @@ use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
 use crate::types::{Rect, WidgetId, CompositeId};
 use crate::ui::widgets::atomic::scrollbar::render::{
-    draw_scrollbar_standard, ScrollbarVisualState,
-};
+    draw_scrollbar_standard, ScrollbarVisualState};
 
 use super::settings::PanelSettings;
 use super::state::PanelState;
@@ -281,29 +280,8 @@ pub fn register_input_coordinator_panel(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-/// Register + draw a panel in one call using a `ContextManager`.
-///
-/// Returns the [`CompositeId`] assigned to the panel composite.
-pub fn register_context_manager_panel(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut PanelState,
-    view:     &mut PanelView<'_>,
-    settings: &PanelSettings,
-    kind:     &PanelRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let panel_id =
-        register_input_coordinator_panel(coord, id, rect, state, view, settings, kind, layer);
-    draw_panel(render, rect, coord, &panel_id, state, view, settings, kind);
-    panel_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline

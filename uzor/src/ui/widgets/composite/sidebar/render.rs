@@ -4,8 +4,8 @@
 //!
 //! - `register_input_coordinator_sidebar` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `register_context_manager_sidebar`   — convenience wrapper: takes a
-//!   `ContextManager`, registers, and draws in one call.
+//! - `the old L2 register helper`   — convenience wrapper: takes a
+//!   `app context`, registers, and draws in one call.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -22,8 +22,7 @@ use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
 use crate::types::{Rect, WidgetId, CompositeId};
 use crate::ui::widgets::atomic::scrollbar::render::{
-    draw_scrollbar_standard, ScrollbarVisualState,
-};
+    draw_scrollbar_standard, ScrollbarVisualState};
 
 use super::settings::SidebarSettings;
 use super::state::SidebarState;
@@ -250,41 +249,8 @@ pub fn register_input_coordinator_sidebar(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-/// Register + draw a sidebar in one call using a `ContextManager`.
-///
-/// # Arguments
-/// - `ctx_mgr`  — context manager (`coord` extracted as `&mut ctx_mgr.input`).
-/// - `render`   — render context.
-/// - `id`       — stable widget id.
-/// - `rect`     — bounding rect (full sidebar area).
-/// - `state`    — mutable sidebar state.
-/// - `view`     — per-frame data (header, body closure, etc.).
-/// - `settings` — theme + style configuration.
-/// - `kind`     — selects the layout pipeline.
-/// - `layer`    — coordinator layer.
-///
-/// Returns the `WidgetId` assigned to the sidebar composite.
-pub fn register_context_manager_sidebar(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut SidebarState,
-    view:     &mut SidebarView<'_>,
-    settings: &SidebarSettings,
-    kind:     &SidebarRenderKind,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let sidebar_id =
-        register_input_coordinator_sidebar(coord, id, rect, state, view, settings, kind, layer);
-    let _ = coord;
-    draw_sidebar(render, rect, state, view, settings, kind);
-    sidebar_id
-}
 
 // ---------------------------------------------------------------------------
 // Pure paint — `uzor::l0::sidebar::draw_sidebar`

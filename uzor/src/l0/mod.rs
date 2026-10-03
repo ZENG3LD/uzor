@@ -4,10 +4,10 @@
 //! pipelines + per-widget data types.  Each composite already
 //! exposes a private internal draw function that takes only
 //! `(RenderContext, rect, state, view, settings, kind)` — no
-//! `LayoutManager`, no `InputCoordinator`, no `ContextManager`.
+//! `layout façade`, no `InputCoordinator`, no `app context`.
 //!
-//! The L1 / L2 / L3 wrappers (`register_layout_manager_*`,
-//! `register_input_coordinator_*`, `register_context_manager_*`)
+//! The L1 / L2 / L3 wrappers (`the old L3 register helper*`,
+//! `register_input_coordinator_*`, `the old L2 register helper*`)
 //! sit on top of those internals and add the framework plumbing.
 //! Embedders that drive their own input pipeline (tessera, future
 //! tui / web runtimes, custom L0 apps) only need the internals.

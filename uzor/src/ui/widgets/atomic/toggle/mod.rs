@@ -27,13 +27,9 @@ pub use state::ToggleState;
 pub use theme::ToggleTheme;
 pub use style::{
     DefaultToggleIconStyle, IndicatorToggleStyle, SignalsToggleStyle,
-    ToggleIconStyle, ToggleSwitchStyle,
-};
+    ToggleIconStyle, ToggleSwitchStyle};
 pub use settings::ToggleSettings;
 pub use render::draw_toggle;
 pub use input::{
     register_toggle,
-    register_input_coordinator_toggle,
-    register_context_manager_toggle,
-    register_layout_manager_toggle,
-};
+    register_input_coordinator_toggle};

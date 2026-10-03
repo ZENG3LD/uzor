@@ -2,16 +2,10 @@
 
 pub use super::render::register_input_coordinator_popup;
 
-use super::render::register_context_manager_popup;
-
-use super::settings::PopupSettings;
 use super::state::PopupState;
-use super::types::{PopupRenderKind, PopupView};
-use crate::layout::docking::DockPanel;
-use crate::input::core::coordinator::LayerId;
-use crate::input::{Sense, WidgetKind};
-use crate::layout::{ClickDispatcher, CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupHandle, PopupNode, WidgetNode};
-use crate::render::RenderContext;
+use crate::layout::{
+    ClickDispatcher, DispatchEvent, EventBuilder, PopupHandle,
+};
 use crate::types::{Rect, WidgetId};
 
 /// Cursor position and view metadata for events that need spatial context
@@ -81,8 +75,8 @@ pub fn drag_outcome_popup(state: &PopupState) -> Option<crate::layout::DragOutco
 }
 
 /// Register a popup's click patterns (overflow chevrons) into `dispatcher`.
-/// Used by [`register_layout_manager_popup`] and by any engine that owns
-/// popup state without a `LayoutManager`.
+/// Used by [`the old L3 register helper`] and by any engine that owns
+/// popup state without a `layout façade`.
 pub fn register_popup_dispatch(dispatcher: &mut ClickDispatcher, handle: &PopupHandle) {
     use crate::layout::ChevronStepDirection;
     let id: &WidgetId = &handle.id;
@@ -98,75 +92,6 @@ pub fn register_popup_dispatch(dispatcher: &mut ClickDispatcher, handle: &PopupH
             EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
         );
     }
-}
-
-/// Register + draw a popup in one call using a [`LayoutManager`].
-///
-/// Pushes the overlay entry, then registers the popup layer with the
-/// coordinator and forwards to [`register_context_manager_popup`].
-///
-/// `slot_id`      — stable overlay id (e.g. `"demo-popup-overlay"`).
-/// `overlay_rect` — screen-space rect of the popup frame this frame.
-/// `anchor`       — optional anchor rect for repositioning logic.
-pub fn register_layout_manager_popup<P: DockPanel>(
-    layout:       &mut LayoutManager<P>,
-    render:       &mut dyn RenderContext,
-    parent:       LayoutNodeId,
-    slot_id:      &str,
-    handle:       &PopupHandle,
-    overlay_rect: Rect,
-    anchor:       Option<Rect>,
-    view:         &mut PopupView<'_>,
-    settings:     &PopupSettings,
-    kind:         PopupRenderKind,
-) -> Option<PopupNode> {
-    let id: WidgetId = handle.id.clone();
-
-    // Take state out of the map (or create default), work with it, then
-    // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.popups_map_mut().remove(&id).unwrap_or_default();
-
-    layout.push_overlay(OverlayEntry {
-        id:   slot_id.to_string(),
-        kind: OverlayKind::Popup,
-        rect: overlay_rect,
-        anchor,
-    });
-    let rect = overlay_rect;
-    let layer = LayerId::popup();
-    let z_order = layout.z_layers().popup as u32;
-    // Register this overlay for outside-click dismiss resolution.
-    layout.push_dismiss_frame(DismissFrame {
-        z: z_order,
-        rect,
-        overlay_id: WidgetId(slot_id.to_owned()),
-    });
-    // Popup blocks lower layers when open — push the layer so the coordinator
-    // can apply the modal-blocking hit-test rule.
-    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK, label: None });
-
-    // Popup overflow guard — chevrons only (popup auto-sizes; scrollbar /
-    // compress are non-applicable). Chevron routing is unconditional so
-    // Clip-content-overflow falls back without re-registration.
-    register_popup_dispatch(layout.dispatcher_mut(), handle);
-
-    register_context_manager_popup(
-        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
-    );
-
-    // Register this composite in the per-frame registry so consume_event can route it.
-    layout.push_composite_registration(CompositeRegistration {
-        kind:       CompositeKind::Popup,
-        slot_id:    slot_id.to_string(),
-        widget_id:  id.clone(),
-        frame_rect: rect,
-    });
-
-    // Return state to the map.
-    layout.popups_map_mut().insert(id, state);
-
-    Some(PopupNode(node_id))
 }
 
 /// Returns `true` if `click_pos` is outside the popup rect and the popup
@@ -192,66 +117,4 @@ pub struct PopupGridCell<'a> {
     pub id: &'a str,
     /// Fill color string (e.g. `"#ef5350"`).
     pub color: &'a str,
-}
-
-/// Register and draw a grid of color/swatch cells inside an open popup body.
-///
-/// Cells are laid out in `cols` columns with `gap` pixels between cells.
-/// Each cell is `cell_size × cell_size` pixels, filled with `cell.color` and
-/// rounded with radius `4.0`. A `theme.grid_hover_halo()` halo is drawn when
-/// the cell is hovered.
-///
-/// All cells are registered as `Button` children of `popup_id` on `layer`.
-///
-/// # Parameters
-///
-/// - `layout`    — layout manager (coordinator accessed via `ctx_mut()`).
-/// - `render`    — render context.
-/// - `popup_id`  — composite id of the parent popup (for `register_child`).
-/// - `body_rect` — popup body rect in screen space.
-/// - `cells`     — slice of cell descriptors.
-/// - `cols`      — number of columns.
-/// - `cell_size` — width and height of each cell in pixels.
-/// - `gap`       — gap between cells in pixels.
-/// - `theme`     — colour tokens; only `grid_hover_halo()` is read (H1 Brief
-///                 8b — the hover halo used to be a bare `"#ffffff"` literal
-///                 with no theme parameter to read at all).
-pub fn register_popup_grid<P: DockPanel>(
-    layout:    &mut LayoutManager<P>,
-    render:    &mut dyn RenderContext,
-    popup_id:  &str,
-    body_rect: Rect,
-    cells:     &[PopupGridCell<'_>],
-    cols:      usize,
-    cell_size: f64,
-    gap:       f64,
-    theme:     &dyn super::theme::PopupTheme,
-) {
-    use crate::types::CompositeId;
-    let composite_id = CompositeId(WidgetId::new(popup_id));
-    let coord = &mut layout.ctx_mut().input;
-    for (i, cell) in cells.iter().enumerate() {
-        let col = i % cols.max(1);
-        let row = i / cols.max(1);
-        let cx = body_rect.x + col as f64 * (cell_size + gap);
-        let cy = body_rect.y + row as f64 * (cell_size + gap);
-        let cell_rect = Rect::new(cx, cy, cell_size, cell_size);
-        coord.register_child(
-            &composite_id,
-            cell.id,
-            WidgetKind::Button,
-            cell_rect,
-            Sense::CLICK | Sense::HOVER,
-        );
-        // Hover halo
-        let hovered = coord.hovered_widget()
-            .map(|id| id.0.as_str() == cell.id)
-            .unwrap_or(false);
-        if hovered {
-            render.set_fill_color(theme.grid_hover_halo());
-            render.fill_rounded_rect(cx - 2.0, cy - 2.0, cell_size + 4.0, cell_size + 4.0, 5.0);
-        }
-        render.set_fill_color(cell.color);
-        render.fill_rounded_rect(cx, cy, cell_size, cell_size, 4.0);
-    }
 }

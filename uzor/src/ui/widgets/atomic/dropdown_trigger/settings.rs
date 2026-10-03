@@ -2,8 +2,7 @@
 
 use super::style::{
     DefaultDropdownFieldStyle, DefaultSplitDropdownStyle,
-    DropdownFieldStyle, SplitDropdownStyle,
-};
+    DropdownFieldStyle, SplitDropdownStyle};
 use super::theme::DropdownTriggerTheme;
 use crate::tokens::{BuiltinSet, Tokens, TokenTheme};
 

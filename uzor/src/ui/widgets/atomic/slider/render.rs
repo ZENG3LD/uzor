@@ -20,15 +20,13 @@ use crate::types::{Rect, WidgetState};
 use super::settings::SliderSettings;
 use super::types::{
     DualSliderHandle, DualSliderResult, DualSliderView, LineWidthSliderResult,
-    LineWidthSliderView, SingleSliderResult, SingleSliderView, SliderTrackInfo, SliderType,
-};
+    LineWidthSliderView, SingleSliderResult, SingleSliderView, SliderTrackInfo, SliderType};
 
 use crate::ui::widgets::atomic::text_input::{
     render::{draw_input, InputView},
     settings::TextInputSettings,
     state::TextFieldConfig,
-    types::InputType,
-};
+    types::InputType};
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 

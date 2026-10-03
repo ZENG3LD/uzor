@@ -4,8 +4,8 @@
 //!
 //! - `register_input_coordinator_context_menu` — registers the composite +
 //!   child hit-rects with an `InputCoordinator`.  No drawing.
-//! - `register_context_manager_context_menu`   — convenience wrapper: registers
-//!   and draws in one call using a `ContextManager`.
+//! - `the old L2 register helper`   — convenience wrapper: registers
+//!   and draws in one call using a `app context`.
 //!
 //! # Draw order
 //!
@@ -14,7 +14,6 @@
 //! 3. Frame border
 //! 4. Per-item rows (icon, label, separator as needed)
 
-use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
@@ -66,33 +65,8 @@ pub fn register_input_coordinator_context_menu(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — ContextManager convenience
+// Public API — app context convenience
 // ---------------------------------------------------------------------------
-
-/// Register + draw a context menu in one call using a `ContextManager`.
-///
-/// Returns the `WidgetId` assigned to the context menu composite.
-pub fn register_context_manager_context_menu(
-    ctx_mgr:  &mut ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    state:    &mut ContextMenuState,
-    view:     &mut ContextMenuView<'_>,
-    settings: &ContextMenuSettings,
-    kind:     &ContextMenuRenderKind<'_>,
-    layer:    &LayerId,
-) -> CompositeId {
-    let coord = &mut ctx_mgr.input;
-    let cm_id = register_input_coordinator_context_menu(
-        coord, id, state, view, settings, kind, layer,
-    );
-
-    if state.is_open {
-        draw_context_menu(render, state, view, settings, kind);
-    }
-
-    cm_id
-}
 
 // ---------------------------------------------------------------------------
 // Internal draw pipeline

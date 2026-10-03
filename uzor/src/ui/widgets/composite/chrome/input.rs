@@ -6,82 +6,12 @@
 
 pub use super::render::register_input_coordinator_chrome;
 
-use super::render::register_context_manager_chrome;
 
 use super::settings::ChromeSettings;
 use super::state::ChromeState;
 use super::types::{ChromeAction, ChromeHit, ChromeRenderKind, ChromeView, ResizeCorner};
 use crate::core::types::Rect;
-use crate::layout::docking::DockPanel;
-use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChromeNode, CompositeKind, CompositeRegistration, LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
-use crate::types::WidgetId;
 
-/// Level-3 registration: register and draw the chrome composite using rects
-/// resolved from `LayoutManager`.
-///
-/// Returns `None` if chrome has not been solved yet (e.g. `solve()` not called
-/// or chrome slot is hidden).
-pub fn register_layout_manager_chrome<P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    render:   &mut dyn RenderContext,
-    parent:   LayoutNodeId,
-    id:       impl Into<WidgetId>,
-    view:     &ChromeView<'_>,
-    settings: &ChromeSettings,
-    kind:     &ChromeRenderKind,
-) -> Option<ChromeNode> {
-    let id: WidgetId = id.into();
-    let rect = layout.rect_for_chrome()?;
-
-    // Take state out of the layout (or use default), work with it, then put back.
-    let mut state = std::mem::take(layout.chrome_widget_state_mut());
-
-    // Persist the layout-affecting flags so the window-host press path
-    // (`handle_chrome_press`) hit-tests the SAME button layout drawn here.
-    state.layout_config = super::types::ChromeLayoutConfig::from_view(view);
-
-    let layer = layout.compute_layer_for(parent);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE, label: None });
-
-    // Dispatcher patterns — translate child hits into semantic chrome events.
-    {
-        use crate::layout::{ChromeWindowControl as CC, EventBuilder};
-        let d = layout.dispatcher_mut();
-        d.on_prefix(format!("{}:tab_close:", id.0), EventBuilder::ChromeTabCloseFromSuffix);
-        d.on_prefix(format!("{}:tab:",       id.0), EventBuilder::ChromeTabFromSuffix);
-        d.on_exact(format!("{}:new_tab",   id.0), EventBuilder::ChromeNewTab);
-        d.on_exact(format!("{}:menu",      id.0), EventBuilder::ChromeControl(CC::Menu));
-        d.on_exact(format!("{}:new_win",   id.0), EventBuilder::ChromeControl(CC::NewWindow));
-        d.on_exact(format!("{}:close_win", id.0), EventBuilder::ChromeControl(CC::CloseWindow));
-        d.on_exact(format!("{}:min",       id.0), EventBuilder::ChromeControl(CC::Minimize));
-        d.on_exact(format!("{}:max",       id.0), EventBuilder::ChromeControl(CC::MaximizeRestore));
-        d.on_exact(format!("{}:close",     id.0), EventBuilder::ChromeControl(CC::CloseApp));
-    }
-
-    // Sync hover flags from the layout manager (L3 authoritative hover source).
-    // Dropdown does the same — see `state.sync_flat_hover(...)` in its
-    // register_layout_manager_*.
-    state.sync_hover_from_layout(layout, id.0.as_str());
-
-    register_context_manager_chrome(
-        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
-    );
-
-    // Register this composite in the per-frame registry so consume_event can route it.
-    layout.push_composite_registration(CompositeRegistration {
-        kind:       CompositeKind::Chrome,
-        slot_id:    id.0.clone(),
-        widget_id:  id.clone(),
-        frame_rect: rect,
-    });
-
-    // Return state to the layout.
-    *layout.chrome_widget_state_mut() = state;
-
-    Some(ChromeNode(node_id))
-}
 
 // ---------------------------------------------------------------------------
 // Tab width (duplicated locally to avoid coupling to render internals)

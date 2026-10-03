@@ -39,7 +39,4 @@ pub use settings::ItemSettings;
 pub use render::{ItemView, draw_item};
 pub use input::{
     register,
-    register_input_coordinator_item,
-    register_context_manager_item,
-    register_layout_manager_item,
-};
+    register_input_coordinator_item};

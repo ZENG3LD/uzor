@@ -30,13 +30,9 @@ pub use theme::CheckboxTheme;
 pub use style::{
     CheckboxStyle,
     LevelVisibilityCheckboxStyle, NotificationCheckboxStyle,
-    StandardCheckboxStyle, VisibilityCheckboxStyle,
-};
+    StandardCheckboxStyle, VisibilityCheckboxStyle};
 pub use settings::CheckboxSettings;
 pub use render::draw_checkbox;
 pub use input::{
     register_checkbox,
-    register_input_coordinator_checkbox,
-    register_context_manager_checkbox,
-    register_layout_manager_checkbox,
-};
+    register_input_coordinator_checkbox};

@@ -17,8 +17,8 @@ use super::paint::{interaction_state, parts, token_theme};
 /// Register and draw a button.
 ///
 /// This is the one-call convenience the deleted level-2
-/// `register_context_manager_button` used to be, over [`Widgets`] instead of
-/// `ContextManager` (design §6.4). Hover and press come from `cx`'s
+/// `the old L2 register helper` used to be, over [`Widgets`] instead of
+/// `app context` (design §6.4). Hover and press come from `cx`'s
 /// [`VisualView`]; `view.disabled` forces the disabled colours. A click is
 /// not consumed here — the app reads [`VisualView::clicked`].
 pub fn button<'a, C: ContentCx<'a>>(

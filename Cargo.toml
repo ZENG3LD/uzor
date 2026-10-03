@@ -6,7 +6,6 @@ members = [
     "uzor",
     # Platform
     "uzor-window-desktop",
-    "uzor-desktop",
     "uzor-framework-macros",
     # App engine: kernel + single-writer engines + handle + hosts
     "uzor-framework",
@@ -52,8 +51,6 @@ members = [
     "uzor-vision",
     # Raster → SVG tracer (inverse of uzor-icon)
     "uzor-vectorize",
-    # Agent control plane (local HTTP API)
-    "uzor-agent-api",
     # Reusable force-directed graph visualization engine
     "uzor-graph",
     # Headless render-to-file (PNG export, no window/GPU dependency)
@@ -120,8 +117,6 @@ uzor-window-web = { version = "1.5.3", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.5.3", path = "./uzor-window-mobile" }
 uzor-framework-macros = { version = "1.5.3", path = "./uzor-framework-macros" }
 uzor-framework = { version = "1.5.3", path = "./uzor-framework" }
-uzor-desktop = { version = "1.5.3", path = "./uzor-desktop" }
-uzor-agent-api = { version = "1.5.3", path = "./uzor-agent-api" }
 uzor-graph = { version = "1.5.3", path = "./uzor-graph" }
 uzor-export = { version = "1.5.3", path = "./uzor-export" }
 uzor-figures = { version = "1.5.3", path = "./uzor-figures" }

@@ -5,8 +5,8 @@
 //! - `register_input_coordinator_modal` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**  Use when you need
 //!   to separate registration from rendering (explicit z-order control).
-//! - `register_context_manager_modal`   — convenience wrapper: takes a
-//!   `ContextManager`, registers, and draws the chrome in one call.
+//! - `the old L2 register helper`   — convenience wrapper: takes a
+//!   `app context`, registers, and draws the chrome in one call.
 //!   Body content is drawn by the caller after this call returns.
 //!
 //! # Draw order for every non-Custom kind
@@ -310,41 +310,8 @@ pub fn register_input_coordinator_modal(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — convenience wrapper (ContextManager)
+// Public API — convenience wrapper (app context)
 // ---------------------------------------------------------------------------
-
-/// Register + draw a modal in one call using a `ContextManager`.
-///
-/// This is the recommended entry point for typical use.  Under the hood it
-/// calls `register_input_coordinator_modal` then the full draw pipeline,
-/// passing `coord` to the body closure so inner widgets can self-register.
-///
-/// # Arguments
-/// - `ctx_mgr`  — context manager (coord extracted as `&mut ctx_mgr.input`).
-/// - `render`   — render context.
-/// - `id`       — stable widget id.
-/// - `rect`     — bounding rect.
-/// - `state`    — mutable modal state.
-/// - `view`     — per-frame data.
-/// - `settings` — theme + style configuration.
-/// - `kind`     — selects the layout pipeline.
-/// - `layer`    — coordinator layer.
-pub fn register_context_manager_modal(
-    ctx_mgr:  &mut crate::app_context::ContextManager,
-    render:   &mut dyn RenderContext,
-    id:       impl Into<WidgetId>,
-    rect:     Rect,
-    state:    &mut ModalState,
-    view:     &mut ModalView<'_>,
-    settings: &ModalSettings,
-    kind:     &ModalRenderKind,
-    layer:    &LayerId,
-) {
-    let coord = &mut ctx_mgr.input;
-    let modal_id = register_input_coordinator_modal(coord, id, rect, state, view, settings, kind, layer);
-    let _ = (coord, modal_id);
-    draw_modal(render, rect, state, view, settings, kind);
-}
 
 // ---------------------------------------------------------------------------
 // Pure paint — `uzor::l0::modal::draw_modal`

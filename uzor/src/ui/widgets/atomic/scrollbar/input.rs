@@ -4,16 +4,11 @@
 //! All free functions operate on a mutable `ScrollState` reference; no
 //! keyboard PgUp/PgDn handling (mlc routes those to PTY only).
 
-use crate::app_context::ContextManager;
-use crate::layout::docking::DockPanel;
+
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
-use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
-use super::render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState};
-use super::settings::ScrollbarSettings;
 use super::state::ScrollState;
 
 // ── Hit-zone registration ─────────────────────────────────────────────────────
@@ -280,99 +275,4 @@ pub fn register_input_coordinator_scrollbar(
     let _ = state; // state is read/written by the drag helpers, not registration
     register_track(coord, track_id, track_rect, layer);
     register_thumb(coord, thumb_id, thumb_rect, inflation_x, layer);
-}
-
-/// Level 2 — register a scrollbar via `ContextManager`, pulling `ScrollState` from the registry,
-/// and draw it using the provided render context.
-///
-/// Uses `track_id` as the registry key. `inflation_x` is the horizontal hit-zone
-/// inflation for the thumb. `content_height`, `viewport_height`, and `scroll_offset`
-/// supply the scrollable content geometry. `settings` supplies style and theme.
-#[allow(clippy::too_many_arguments)]
-pub fn register_context_manager_scrollbar(
-    ctx: &mut ContextManager,
-    render: &mut dyn RenderContext,
-    track_id: impl Into<WidgetId>,
-    thumb_id: impl Into<WidgetId>,
-    track_rect: Rect,
-    thumb_rect: Rect,
-    inflation_x: f64,
-    layer: &LayerId,
-    content_height: f64,
-    viewport_height: f64,
-    scroll_offset: f64,
-    settings: &ScrollbarSettings,
-) {
-    let track_id: WidgetId = track_id.into();
-    let thumb_id: WidgetId = thumb_id.into();
-    let state = ctx.registry.get_or_insert_with(track_id.clone(), ScrollState::default);
-    register_input_coordinator_scrollbar(
-        &mut ctx.input,
-        track_id,
-        thumb_id,
-        track_rect,
-        thumb_rect,
-        inflation_x,
-        layer,
-        state,
-    );
-    let view = ScrollbarView {
-        content_height,
-        viewport_height,
-        scroll_offset,
-        state: ScrollbarVisualState::Active,
-        drag_pos_y: None,
-        style: settings.style.as_ref(),
-        theme: settings.theme.as_ref(),
-    };
-    draw_scrollbar(render, track_rect, &view);
-}
-
-/// Level 3 — register a scrollbar via `LayoutManager`.
-#[allow(clippy::too_many_arguments)]
-pub fn register_layout_manager_scrollbar<P: DockPanel>(
-    layout: &mut LayoutManager<P>,
-    render: &mut dyn RenderContext,
-    parent: LayoutNodeId,
-    track_id: impl Into<WidgetId>,
-    thumb_id: impl Into<WidgetId>,
-    track_rect: Rect,
-    thumb_rect: Rect,
-    inflation_x: f64,
-    content_height: f64,
-    viewport_height: f64,
-    scroll_offset: f64,
-    settings: &ScrollbarSettings,
-) {
-    let track_id: WidgetId = track_id.into();
-    let thumb_id: WidgetId = thumb_id.into();
-    let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: track_id.clone(), kind: WidgetKind::ScrollbarTrack, rect: track_rect, sense: Sense::CLICK, label: None });
-    layout.tree_mut().add_widget(parent, WidgetNode { id: thumb_id.clone(), kind: WidgetKind::ScrollbarHandle, rect: thumb_rect, sense: Sense::DRAG, label: None });
-
-    // Register dispatcher patterns so app gets semantic events for both
-    // track-jump (click) and thumb-drag (mouse-down on the inflated thumb).
-    layout.dispatcher_mut().on_exact(
-        track_id.0.clone(),
-        crate::layout::EventBuilder::ScrollbarTrack { track_id: track_id.clone() },
-    );
-    layout.dispatcher_mut().on_exact(
-        thumb_id.0.clone(),
-        crate::layout::EventBuilder::ScrollbarThumb { thumb_id: thumb_id.clone() },
-    );
-
-    register_context_manager_scrollbar(
-        layout.ctx_mut(),
-        render,
-        track_id,
-        thumb_id,
-        track_rect,
-        thumb_rect,
-        inflation_x,
-        &layer,
-        content_height,
-        viewport_height,
-        scroll_offset,
-        settings,
-    );
 }

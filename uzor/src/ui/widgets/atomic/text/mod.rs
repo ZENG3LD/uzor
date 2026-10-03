@@ -12,10 +12,7 @@ pub mod tokens;
 pub mod types;
 
 pub use input::{
-    register_context_manager_text,
-    register_input_coordinator_text,
-    register_layout_manager_text,
-};
+    register_input_coordinator_text};
 pub use render::{draw_text, draw_text_with_selection};
 pub use settings::TextSettings;
 pub use state::TextState;

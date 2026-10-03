@@ -13,8 +13,8 @@
 //! bespoke drag machine), cluster collapse ([`cluster::ClusterRegistry`]
 //! — one super-node per collapsed cluster, aggregated cross-cluster
 //! edges, exact-position expand), and a
-//! [`uzor::layout::agent::BlackboxAgentSurface`] impl so the whole thing
-//! is driveable headlessly over `uzor-agent-api`.
+//! [`uzor::layout::agent::agent surface`] impl so the whole thing
+//! is driveable headlessly over `the old agent control plane`.
 //!
 //! `FocusSet` is re-pointed onto [`uzor_figures::interact::FocusSet`]
 //! (Phase D, 2026-07-17) — see [`interaction`]'s module doc and
@@ -28,12 +28,11 @@
 //! wave-by-wave build-out alongside the 2D engine above; Wave 1 landed
 //! the physics core, Wave 2 lands the render path, orbit/dolly/pan
 //! camera controls, and desktop `Manager`/`App` wiring
-//! (`uzor-desktop::scene3d_app`).
+//! (`the old desktop runtime::scene3d_app`).
 //!
 //! See `RUN.md` for the runnable demo (`uzor-examples --bin force-graph-demo`)
-//! and agent-api verification steps.
+//! and agent control plane verification steps.
 
-pub mod agent;
 pub mod camera;
 pub mod camera3d;
 pub mod cluster;

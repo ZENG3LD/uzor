@@ -1,6 +1,6 @@
 //! Generic named-stage frame profiler + the shared EMA helper.
 //!
-//! Moved from `uzor::framework::frame_profiler`. There is no JSON
+//! Moved from `the old framework module::frame_profiler`. There is no JSON
 //! sink (design L-U7); callers read [`FrameProfiler::stage_ms`] /
 //! [`FrameProfiler::stages`].
 //!

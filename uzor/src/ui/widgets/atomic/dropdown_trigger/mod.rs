@@ -35,13 +35,9 @@ pub use state::DropdownTriggerState;
 pub use theme::DropdownTriggerTheme;
 pub use style::{
     DefaultDropdownFieldStyle, DefaultSplitDropdownStyle,
-    DropdownFieldStyle, SplitDropdownStyle,
-};
+    DropdownFieldStyle, SplitDropdownStyle};
 pub use settings::DropdownTriggerSettings;
 pub use render::{draw_dropdown_field, draw_dropdown_trigger, draw_split_dropdown};
 pub use input::{
     register_dropdown_trigger,
-    register_input_coordinator_dropdown_trigger,
-    register_context_manager_dropdown_trigger,
-    register_layout_manager_dropdown_trigger,
-};
+    register_input_coordinator_dropdown_trigger};

@@ -10,7 +10,7 @@
 //! `cx: &mut impl uzor_framework::widgets::ContentCx` in scope.
 //!
 //! Overlay tags (`modal`, `popup`, `dropdown`, `context_menu`) emit a
-//! compile error in M1: F8 left those LayoutManager-backed chain builders
+//! compile error in M1: F8 left those layout façade-backed chain builders
 //! unported; M1 does not revive them. Use `OverlayCmd` plus the
 //! `widgets::{modal,popup,…}` convenience functions until a later brief.
 //!
@@ -101,16 +101,16 @@ fn lower_element_body(el: &Element, path: &str, idx: usize) -> TokenStream {
     }
 }
 
-/// Overlay chain builders still need LayoutManager handles (F8 left them
+/// Overlay chain builders still need layout façade handles (F8 left them
 /// unported). M1 only retargets paths onto `uzor_framework::{widgets, flex}`;
 /// it does not revive those builders. Emit a clear error instead of a
-/// LayoutManager call chain.
+/// layout façade call chain.
 fn lower_overlay_deferred(el: &Element) -> TokenStream {
     let tag = el.tag.to_string();
     syn::Error::new(
         el.tag.span(),
         format!(
-            "<{tag}> is deferred past M1: F8 left LayoutManager-backed overlay chain builders unported, and M1 does not revive LayoutManager. Open overlays with OverlayCmd and paint with uzor_framework::widgets::{{{tag}, …}} for now"
+            "<{tag}> is deferred past M1: F8 left layout façade-backed overlay chain builders unported, and M1 does not revive layout façade. Open overlays with OverlayCmd and paint with uzor_framework::widgets::{{{tag}, …}} for now"
         ),
     )
     .to_compile_error()

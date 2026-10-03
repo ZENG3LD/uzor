@@ -1,6 +1,6 @@
 /// Chrome strip slot — the system-level titlebar/menubar at the top of the window.
 ///
-/// Managed internally by `LayoutManager`; app developers configure it via
+/// Managed internally by `layout façade`; app developers configure it via
 /// `layout_manager.chrome_mut()` but do not add/remove it at runtime.
 #[derive(Debug, Clone)]
 pub struct ChromeSlot {

@@ -188,7 +188,7 @@ impl<'a> ToolbarSection<'a> {
 // ---------------------------------------------------------------------------
 
 /// Per-frame data handed to `register_input_coordinator_toolbar` /
-/// `register_context_manager_toolbar`.
+/// `the old L2 register helper`.
 ///
 /// # Layout
 ///

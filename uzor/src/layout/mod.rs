@@ -1,55 +1,35 @@
-//! LayoutManager — top-level macro layout for uzor.
+//! Pure layout mechanics for uzor: docking, solve, dispatch, overlays.
 //!
-//! Single source of truth for all widget rects: chrome, edges (toolbars/sidebars),
-//! dock panels, floating panels, and z-ordered overlays.
-//!
-//! ## User-vs-system access split
-//!
-//! - System slots (chrome, edges, overlays): managed by uzor internals.
-//! - User slots (dock panels, floating panels): app accesses via `panels_mut()`.
-//!
-//! ## See also
-//!
-//! `docs/uzor-widget-research/layout-manager-deep.md` for the full design doc.
+//! The old single-writer layout façade and its agent / sync / host doors
+//! were removed in brief C1. Window composition now goes through
+//! `uzor-framework` engines; this module keeps the pure trees, docking
+//! math, click dispatch vocabulary, and overlay helpers those engines
+//! call.
 
-pub mod agent;
-mod branch;
 mod chrome_slot;
-mod consume_chain;
 mod dispatcher;
 pub mod dock_state;
 pub mod docking;
 pub mod panel_api;
 mod edge_panels;
 mod handles;
-pub mod host;
 pub mod window;
-mod manager;
 mod overlay_stack;
-mod registry;
 mod solve;
-pub mod sync;
 mod tree;
 mod types;
 mod z_layers;
 
 pub use chrome_slot::ChromeSlot;
-pub use host::WindowHost;
-pub use consume_chain::consume_event_chain;
-pub use dispatcher::{ChevronStepDirection, ChromeWindowControl, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
+pub use dispatcher::{
+    ChevronStepDirection, ChromeWindowControl, ClickDispatcher, DispatchEvent, EventBuilder,
+    ResizeEdge,
+};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
-pub use branch::{WindowBranch, WindowSlot};
-pub use registry::{CompositeKind, CompositeRegistration, DismissFrame};
-pub use manager::{ClickOutcome, LayoutManager, PointerUpOutcome};
-pub use sync::{SyncGroupId, SyncMode, SyncRegistry};
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
 pub use handles::{
-    BlackboxPanelNode, ChromeNode, ContextMenuNode, DropdownNode, ModalNode,
-    PanelNode, PopupNode, SidebarNode, ToolbarNode,
-    // State handles — opaque composite keys returned by LayoutManager::add_*
-    ContextMenuHandle, DropdownHandle, ModalHandle, OverlayHandle, PopupHandle,
-    SidebarHandle, ToolbarHandle,
+    ContextMenuHandle, DropdownHandle, ModalHandle, PopupHandle, SidebarHandle, ToolbarHandle,
 };
 pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNodeKind, WidgetNode};
 pub use types::{DragOutcome, EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};

@@ -1,7 +1,7 @@
 //! Golden grid (H1 Brief 10a-4): tooltip × 4 built-in sets × its own real
 //! default state. `draw_tooltip` (generic, back-compat) is the render path
 //! actually wired to the widget's input registration
-//! (`register_context_manager_tooltip` calls it directly, `input.rs`) — the
+//! (`the old L2 register helper` calls it directly, `input.rs`) — the
 //! other two entry points, `draw_chrome_tooltip` and `draw_crosshair_tooltip`,
 //! are separate MLC parity variants used by other call sites (`uzor-figures`
 //! guides), not this atomic widget's own registered path.

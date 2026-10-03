@@ -112,7 +112,7 @@ impl SidebarState {
     /// (size = fraction of viewport WIDTH), `false` for `Top` / `Bottom`
     /// (size = fraction of viewport HEIGHT).
     ///
-    /// Composite `register_layout_manager_sidebar` calls this automatically.
+    /// Composite `the old L3 register helper` calls this automatically.
     /// Once set, future calls are no-ops — the user's resize stays sticky.
     pub fn ensure_sized(&mut self, viewport_w: f64, viewport_h: f64, is_horizontal_kind: bool) {
         if self.width > 0.0 {

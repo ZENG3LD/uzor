@@ -3,13 +3,13 @@
 //! One call registers the widget with the hook's [`Widgets`] face and draws
 //! it through the library paint function (design §6.4, brief F8). The
 //! chainable [`lm`] builders are the same surface the [`view!`](crate::view)
-//! macro lowers to (brief M1), retargeted off `LayoutManager` onto a
+//! macro lowers to (brief M1), retargeted off `layout façade` onto a
 //! [`ContentCx`]. [`raw`] re-exports the level-1 register functions for
 //! callers that draw themselves.
 //!
 //! Blackbox panels are not in this module. Overlay chain builders for
 //! modal/dropdown/context menu/popup/panel/sidebar/toolbar were left
-//! unported in F8 (they held `LayoutManager` handles); M1 does not revive
+//! unported in F8 (they held `layout façade` handles); M1 does not revive
 //! them.
 
 mod atomics;

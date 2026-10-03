@@ -32,7 +32,7 @@ use proc_macro::TokenStream;
 /// ```
 ///
 /// Overlay tags (`modal`, `popup`, `dropdown`, `context_menu`) are deferred
-/// past M1 — they still needed LayoutManager handles after F8.
+/// past M1 — they still needed layout façade handles after F8.
 #[proc_macro]
 pub fn view(input: TokenStream) -> TokenStream {
     let node = match syn::parse::<parse::Node>(input) {

@@ -88,7 +88,7 @@ pub enum ResizeCorner {
 // ---------------------------------------------------------------------------
 
 /// Per-frame data handed to `register_input_coordinator_chrome` /
-/// `register_context_manager_chrome`.
+/// `the old L2 register helper`.
 pub struct ChromeView<'a> {
     /// Ordered tab configs, left-to-right.
     pub tabs: &'a [ChromeTabConfig<'a>],
@@ -127,11 +127,11 @@ pub struct ChromeView<'a> {
 
 /// The layout-affecting subset of [`ChromeView`], captured at register time.
 ///
-/// The window-host press path (`LayoutManager::handle_chrome_press`) runs on
+/// The window-host press path (`layout façade::handle_chrome_press`) runs on
 /// pointer-down to decide drag / minimize / maximize / close / resize.  It must
 /// hit-test the SAME button layout that was actually drawn this frame — but it
 /// has no access to the caller's per-frame `ChromeView` (which is borrowed and
-/// gone by the time the press arrives).  So `register_layout_manager_chrome`
+/// gone by the time the press arrives).  So `the old L3 register helper`
 /// stores these flags in `ChromeState`, and the press path rebuilds an
 /// equivalent view from them instead of guessing a default layout.
 ///

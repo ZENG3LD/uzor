@@ -1,10 +1,10 @@
-pub mod context;
-pub mod state;
-pub mod layout;
-pub mod widget_state;
-pub mod builders;
+//! App-owned widget state registry helpers.
+//!
+//! The old context façade and micro-layout builders were removed in brief C1.
+//! What remains is the typed state registry widgets and engines still use.
 
-pub use context::ContextManager;
+pub mod state;
+pub mod widget_state;
+
 pub use state::StateRegistry;
-pub use layout::tree::LayoutTree;
 pub use widget_state::*;

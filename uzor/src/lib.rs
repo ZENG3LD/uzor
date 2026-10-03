@@ -30,14 +30,12 @@ pub use self::core::types;
 pub use self::core::window;
 
 // Compat shims — old names
-pub use app_context as context;
 // `docking` was absorbed into `layout`. Keep the old paths as aliases for now.
 pub use layout::docking as docking_panels;
 pub use layout::docking as panels;
 pub use layout::panel_api;
 pub mod docking { pub use crate::layout::docking::*; pub use crate::layout::docking as panels; pub use crate::layout::panel_api; }
 /// CSS-flex micro-layout engine (widget subtrees). Macro layout lives in `crate::layout`.
-pub use app_context::layout as app_layout;
 pub use app_context::state;
 
 // Compat shims — ui internals at crate root
@@ -52,8 +50,6 @@ pub use assets::icons as icons;
 // Compat shim — old `engine` path
 pub use self::core as engine;
 
-pub mod framework;
-pub use framework::render_control::RenderControl;
 
 /// Per-cluster text shaper (requires feature `shaper` / cosmic-text).
 #[cfg(feature = "shaper")]
@@ -66,7 +62,6 @@ pub mod shaper;
 pub mod testing;
 
 // Re-export key types
-pub use app_context::ContextManager;
 pub use i18n::{Translate, current_lang_index, set_lang_index, t};
 pub use ui::animation::AnimationCoordinator;
 pub use types::{IconId, Rect, WidgetId, WidgetState, CompositeId, AtomicId, unsafe_widget_id};
@@ -85,9 +80,7 @@ pub use platform::types::{
     RgbaIcon, RenderBackend, Scene2DBackend, UrxBackend, ResizeDirection, CornerStyle,
 };
 
-// Note: tier-organised registration shortcuts (`coord`, `ctx`, `lm`) live in
-// `uzor-framework::widgets` — this core crate exposes only the long-form
-// names (`register_layout_manager_*`, etc.) for tests and legacy callers
-// that pin the old API.
+// Note: L1 registration helpers live under `ui::widgets::*::input`;
+// declarative paint helpers live in `uzor-framework::widgets`.
 
 

@@ -5,8 +5,8 @@
 //! - `register_input_coordinator_popup` — registers the composite + child
 //!   hit-rects with an `InputCoordinator`. No drawing. Use for explicit
 //!   z-order control.
-//! - `register_context_manager_popup`   — convenience wrapper: takes a
-//!   `ContextManager`, registers, and draws in one call.
+//! - `the old L2 register helper`   — convenience wrapper: takes a
+//!   `app context`, registers, and draws in one call.
 //!
 //! ## Templates (`PopupRenderKind`)
 //!
@@ -30,8 +30,7 @@ pub mod types;
 
 // --- Re-exports ---------------------------------------------------------------
 
-pub use input::{handle_popup_dismiss, register_input_coordinator_popup, register_layout_manager_popup};
-pub use render::register_context_manager_popup;
+pub use input::{handle_popup_dismiss, register_input_coordinator_popup};
 pub use settings::PopupSettings;
 pub use state::PopupState;
 pub use style::{BackgroundFill, DefaultPopupStyle, PopupStyle};

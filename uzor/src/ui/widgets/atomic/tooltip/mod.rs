@@ -24,20 +24,14 @@ pub mod input;
 pub use types::{TooltipConfig, TooltipKind, TooltipPosition, TooltipResponse};
 pub use state::{
     TooltipState, CHROME_SHOW_DELAY_MS, CROSSHAIR_SHOW_DELAY_MS, FADE_IN_DURATION_MS,
-    TOOLBAR_SHOW_DELAY_MS,
-};
+    TOOLBAR_SHOW_DELAY_MS};
 pub use theme::TooltipTheme;
 pub use style::{
-    ChromeTooltipStyle, CrosshairTooltipStyle, DefaultTooltipStyle, TooltipStyle,
-};
+    ChromeTooltipStyle, CrosshairTooltipStyle, DefaultTooltipStyle, TooltipStyle};
 pub use settings::TooltipSettings;
 pub use render::{
     draw_chrome_tooltip, draw_crosshair_tooltip, draw_tooltip, tooltip_multiline_rect,
-    tooltip_rect_from_anchor,
-};
+    tooltip_rect_from_anchor};
 pub use input::{
     register_tooltip,
-    register_input_coordinator_tooltip,
-    register_context_manager_tooltip,
-    register_layout_manager_tooltip,
-};
+    register_input_coordinator_tooltip};
