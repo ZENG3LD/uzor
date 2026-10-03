@@ -34,6 +34,8 @@ use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
 use uzor::layout::window::SoftwarePresenter;
 #[cfg(all(not(target_arch = "wasm32"), feature = "gpu"))]
 use uzor_window_desktop::SendSyncHandlePair;
+#[cfg(all(not(target_arch = "wasm32"), feature = "gpu", feature = "tiny-skia"))]
+use uzor_window_desktop::WinitSoftbufferPresenter;
 
 // ─── Internal surface target helper (desktop only) ───────────────────────────
 
@@ -589,6 +591,42 @@ fn extract_handle_pair<'a>(
     })
 }
 
+/// `init_gpu_surface` failed because no adapter could drive the window.
+///
+/// Any other init failure (bad handle, create_surface, configure) stays fatal
+/// so a machine that does have a GPU is not silently demoted.
+fn gpu_device_missing(err: &SurfaceError) -> bool {
+    match err {
+        SurfaceError::InitFailed(msg) => {
+            msg.contains("no compatible device") || msg.contains("no adapter")
+        }
+        _ => false,
+    }
+}
+
+/// TinySkia CPU window: the pixmap path plus the existing softbuffer presenter.
+///
+/// Called only after the GPU device request fails. The winit window rides on
+/// [`SendSyncHandlePair`] so this does not need a presenter preinstalled.
+#[cfg(all(not(target_arch = "wasm32"), feature = "tiny-skia", feature = "gpu"))]
+fn tiny_skia_cpu_fallback(
+    pair: &SendSyncHandlePair,
+    size: SurfaceSize,
+) -> Result<WindowRenderState, SurfaceError> {
+    let Some(window) = pair.2.clone() else {
+        return Err(SurfaceError::InitFailed(
+            "TinySkia: GPU device missing and the window handle carries no winit window for the CPU presenter".into(),
+        ));
+    };
+    let presenter = WinitSoftbufferPresenter::new(window).map_err(|e| {
+        SurfaceError::InitFailed(format!("TinySkia: software presenter: {e}"))
+    })?;
+    eprintln!(
+        "[render-hub] TinySkia: GPU device missing, presenting through the CPU software presenter"
+    );
+    Ok(WindowRenderState::new_cpu(size.width, size.height, Box::new(presenter)))
+}
+
 /// Error for a CPU factory asked to present through the wgpu swapchain in a
 /// build without the `gpu` feature (no presenter was supplied).
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "gpu"), any(feature = "tiny-skia", feature = "vello-cpu")))]
@@ -771,14 +809,21 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
             return Ok(WindowRenderState::new_cpu(size.width, size.height, presenter));
         }
 
-        // Default path: render into a tiny-skia pixmap, upload as a
-        // texture, blit through the wgpu swapchain.  Mirrors the
-        // proven mlc submit path; identical for every spawned window.
+        // Default path: render into a tiny-skia pixmap. When a GPU device
+        // exists, upload that pixmap through the wgpu swapchain. When it
+        // does not (no adapter / no compatible device), present the same
+        // pixmap through the CPU software presenter. A missing device must
+        // not fail window spawn.
         #[cfg(feature = "gpu")]
         {
             let pair = extract_handle_pair(handle, backend)?;
-            let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
-            Ok(WindowRenderState::new_tiny_skia_gpu(gpu_pool, surface, dev_id))
+            match init_gpu_surface(pair, size, backend) {
+                Ok((gpu_pool, surface, dev_id)) => {
+                    Ok(WindowRenderState::new_tiny_skia_gpu(gpu_pool, surface, dev_id))
+                }
+                Err(err) if gpu_device_missing(&err) => tiny_skia_cpu_fallback(pair, size),
+                Err(err) => Err(err),
+            }
         }
         #[cfg(not(feature = "gpu"))]
         {
@@ -1208,6 +1253,20 @@ mod tests {
         let f = TinySkiaSurfaceFactory::new();
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloGpu));
         assert!(!f.supports(&canvas_handle(), RenderBackend::VelloCpu));
+    }
+
+    #[test]
+    fn missing_gpu_device_falls_through_other_init_failures_do_not() {
+        assert!(super::gpu_device_missing(&SurfaceError::InitFailed(
+            "TinySkia: no compatible device".into()
+        )));
+        assert!(super::gpu_device_missing(&SurfaceError::InitFailed(
+            "TinySkia: no adapter".into()
+        )));
+        assert!(!super::gpu_device_missing(&SurfaceError::InitFailed(
+            "TinySkia: create_surface: lost".into()
+        )));
+        assert!(!super::gpu_device_missing(&SurfaceError::HandleUnavailable));
     }
 
     // ── VelloCpuSurfaceFactory ────────────────────────────────────────────────

@@ -128,7 +128,7 @@ pub fn geometry_echo(window: &Window) -> (SizePx, f64, Option<(i32, i32)>) {
     (SizePx::new(inner.width, inner.height), dpr, pos)
 }
 
-fn raw_handle_for(window: &Window) -> Option<uzor::layout::window::RawHandle> {
+fn raw_handle_for(window: &Arc<Window>) -> Option<uzor::layout::window::RawHandle> {
     use uzor::layout::window::RawHandle;
     use uzor_window_desktop::winit_provider::SendSyncHandlePair;
     use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -138,7 +138,11 @@ fn raw_handle_for(window: &Window) -> Option<uzor::layout::window::RawHandle> {
     // SAFETY: same contract as `WinitWindowProvider::raw_window_handle` —
     // the Arc<Window> outlives the surface created from these handles.
     let pair: Box<dyn std::any::Any + Send + Sync> =
-        Box::new(SendSyncHandlePair(window_handle, display_handle));
+        Box::new(SendSyncHandlePair(
+            window_handle,
+            display_handle,
+            Some(window.clone()),
+        ));
     Some(RawHandle::RawWindowHandle(pair))
 }
 

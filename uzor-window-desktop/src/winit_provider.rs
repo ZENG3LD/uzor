@@ -47,7 +47,16 @@ use crate::event_mapper::EventMapper;
 ///
 /// The caller must ensure the OS window / display outlive any thread that reads
 /// these handles.
-pub struct SendSyncHandlePair(pub RawWindowHandle, pub RawDisplayHandle);
+pub struct SendSyncHandlePair(
+    pub RawWindowHandle,
+    pub RawDisplayHandle,
+    /// Live winit window, when the handle was minted from one.
+    ///
+    /// The render hub uses this only after a GPU device request fails, so
+    /// TinySkia can present through [`WinitSoftbufferPresenter`] instead of
+    /// dropping the window. `None` keeps the raw-handle-only shape.
+    pub Option<std::sync::Arc<Window>>,
+);
 
 // SAFETY: see doc comment above.
 unsafe impl Send for SendSyncHandlePair {}
@@ -221,7 +230,11 @@ impl WindowProvider for WinitWindowProvider {
         // this usage pattern. On other platforms the handles are similarly safe
         // to copy to the GPU thread.
         let pair: Box<dyn std::any::Any + Send + Sync> =
-            Box::new(SendSyncHandlePair(window_handle, display_handle));
+            Box::new(SendSyncHandlePair(
+                window_handle,
+                display_handle,
+                Some(self.window.clone()),
+            ));
 
         Some(RawHandle::RawWindowHandle(pair))
     }
@@ -304,7 +317,7 @@ pub struct WinitSoftbufferPresenter {
 }
 
 impl WinitSoftbufferPresenter {
-    fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
         let ctx = softbuffer::Context::new(window.clone())
             .map_err(|e| format!("softbuffer context: {e:?}"))?;
         let surface = softbuffer::Surface::new(&ctx, window)
