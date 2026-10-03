@@ -1046,6 +1046,59 @@ mod tests {
         drop(unsafe { Box::from_raw(mock_ptr) });
     }
 
+    /// Paint goes through `with_render_context` before submit. On a software
+    /// surface that used to resize the pixmap to 1×1 (no GPU swapchain), so
+    /// `present()` was skipped. The pixmap must stay at the presenter size
+    /// and the presenter must receive that frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[cfg(feature = "tiny-skia")]
+    fn tinyskia_software_paint_presents_full_surface() {
+        use crate::factory::WindowRenderState;
+        use color::{AlphaColor, Srgb};
+
+        let width = 32u32;
+        let height = 20u32;
+
+        let mock_ptr: *mut MockPresenter = Box::leak(Box::new(MockPresenter::new()));
+
+        struct FwdPresenter(*mut MockPresenter);
+        unsafe impl Send for FwdPresenter {}
+        impl SoftwarePresenter for FwdPresenter {
+            fn present(&mut self, pixels: &[u8], w: u32, h: u32) {
+                unsafe { (*self.0).present(pixels, w, h) };
+            }
+            fn resize(&mut self, w: u32, h: u32) {
+                unsafe { (*self.0).resize(w, h) };
+            }
+        }
+
+        let mut state = WindowRenderState::new_cpu(width, height, Box::new(FwdPresenter(mock_ptr)));
+        let painted = state.with_render_context(|ctx| {
+            ctx.set_fill_color("#112233");
+            ctx.fill_rect(0.0, 0.0, width as f64, height as f64);
+        });
+        assert!(painted.is_some(), "TinySkia context must exist on the CPU path");
+
+        let outcome = submit_frame(
+            &mut state,
+            SubmitParams {
+                base_color: AlphaColor::<Srgb>::new([0.0, 0.0, 0.0, 1.0]),
+                msaa_samples: 8,
+            },
+        );
+        assert!(!outcome.surface_lost);
+
+        let mock = unsafe { &*mock_ptr };
+        assert_eq!(mock.calls.len(), 1, "presenter.present must run after paint");
+        let (pw, ph, ref buf) = mock.calls[0];
+        assert_eq!((pw, ph), (width, height));
+        assert_eq!(buf.len(), (width * height * 4) as usize);
+        assert_ne!(&buf[..4], &[0, 0, 0, 0], "frame must not be an empty clear");
+
+        drop(unsafe { Box::from_raw(mock_ptr) });
+    }
+
     // ── VelloCpu software submit ─────────────────────────────────────────────
 
     /// `submit_frame` with `VelloCpu` + `Software` surface calls `presenter.present`

@@ -906,6 +906,25 @@ impl WindowRenderState {
         }
     }
 
+    /// Pixel size a CPU rasteriser must match before `present()`.
+    ///
+    /// GPU windows use the swapchain. Software windows use the presenter
+    /// buffer. `gpu_surface_size().unwrap_or((1, 1))` is wrong here: on
+    /// the no-device TinySkia path it resized the pixmap to 1×1, the
+    /// submit size check (`cw == width`) failed, and `present()` never
+    /// ran — the mapped window kept whatever was behind it.
+    #[cfg(any(feature = "tiny-skia", feature = "vello-cpu", feature = "wgpu-instanced", feature = "urx"))]
+    fn paint_target_size(&self) -> (u32, u32) {
+        if let Some(size) = self.gpu_surface_size() {
+            return size;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let SurfaceMode::Software { width, height, .. } = &self.surface {
+            return ((*width).max(1), (*height).max(1));
+        }
+        (1, 1)
+    }
+
     /// Lazily create whatever renderer / CPU context the given
     /// backend needs.  No-op if the slot is already populated or if
     /// the backend's slot is created on first submit anyway
@@ -942,7 +961,7 @@ impl WindowRenderState {
             #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
                 if self.tiny_skia_ctx.is_none() {
-                    let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
+                    let (w, h) = self.paint_target_size();
                     self.tiny_skia_ctx = Some(TinySkiaCpuRenderContext::new(w, h, 1.0));
                 }
             }
@@ -1123,7 +1142,7 @@ impl WindowRenderState {
             }
             #[cfg(feature = "vello-cpu")]
             RenderBackend::VelloCpu => {
-                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
+                let (w, h) = self.paint_target_size();
                 self.vello_cpu_ctx.as_mut().map(|c| {
                     c.begin_frame(w, h);
                     f(c)
@@ -1131,7 +1150,7 @@ impl WindowRenderState {
             }
             #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
-                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
+                let (w, h) = self.paint_target_size();
                 self.tiny_skia_ctx.as_mut().map(|c| {
                     if c.width() != w || c.height() != h {
                         c.resize(w, h);
@@ -1248,7 +1267,7 @@ impl WindowRenderState {
             }
             #[cfg(feature = "vello-cpu")]
             RenderBackend::VelloCpu => {
-                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
+                let (w, h) = self.paint_target_size();
                 let Self { vello_cpu_ctx, retained_cache, .. } = self;
                 vello_cpu_ctx.as_mut().map(|c| {
                     c.begin_frame(w, h);
@@ -1257,7 +1276,7 @@ impl WindowRenderState {
             }
             #[cfg(feature = "tiny-skia")]
             RenderBackend::TinySkia => {
-                let (w, h) = self.gpu_surface_size().unwrap_or((1, 1));
+                let (w, h) = self.paint_target_size();
                 let Self { tiny_skia_ctx, retained_cache, .. } = self;
                 tiny_skia_ctx.as_mut().map(|c| {
                     if c.width() != w || c.height() != h {
