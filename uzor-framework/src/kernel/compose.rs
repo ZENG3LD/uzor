@@ -8,11 +8,10 @@
 //! `BeginFrame` and `EndFrame`, and phase 6 turns this frame's clicks on
 //! overlay parts into overlay ops and drains the hooks' declared effects.
 //!
-//! F7 paints the kernel-owned furniture (chrome strip, overlay frames,
-//! modal backdrops) as plain token-colored boxes; the lib composite frame
-//! mapping (`draw_chrome` / `draw_modal` with header, tabs and footer
-//! child widgets) is F8/F11 work — engine hit-testing and routing do not
-//! depend on it (recorded deviation).
+//! F7 painted the chrome strip as a flat token box. F11 draws that strip
+//! with `draw_chrome` and paints dock headers, tab bars, splitters, the
+//! drag ghost and the focus ring (`furniture`). Overlay frames stay plain
+//! boxes; the app's `overlay_body` draws the body.
 
 use uzor::input::{LayerId, Sense};
 use uzor::render::{InvalidateBits, RenderContext};
@@ -93,11 +92,8 @@ impl<S: Spec> Kernel<S> {
                 // The chrome strip (plain paint; the lib `draw_chrome`
                 // mapping lands with F11 goldens). Chrome hit-testing is
                 // the layout engine's own — nothing registers here.
-                if let Some(rect) = wv.solved().chrome {
-                    let css = tokens.semantic.surface_app_chrome.to_css();
-                    render.set_fill_color(&css);
-                    render.fill_rect(rect.x, rect.y, rect.width, rect.height);
-                }
+                // Chrome strip: the same composite the hit-test classifies.
+                super::furniture::paint_chrome(render, wv, &tokens);
 
                 let leaves = wv.dock_view().leaves;
                 for leaf_view in &leaves {
@@ -141,6 +137,7 @@ impl<S: Spec> Kernel<S> {
                 // and tabs publish (snapshot `floating`), the engine drags
                 // and snaps them, but the `DockState` exposes no floating
                 // panel values to hand to `App::panel` (recorded gap).
+                super::furniture::paint_dock(render, wv, &tokens);
             }
         }
 
@@ -202,6 +199,19 @@ impl<S: Spec> Kernel<S> {
                 app.overlay_body(&mut cx);
             }
             hook_ops.append(&mut hooks.ops);
+        }
+
+        // Focus ring over whatever registered this frame (the view's focus
+        // is the last evaluated one; a field focused by the previous tick
+        // has re-registered above).
+        {
+            let ring = view.focused.as_ref().and_then(|id| {
+                self.input
+                    .view()
+                    .coordinator(win)
+                    .and_then(|c| c.widget_rect(id))
+            });
+            super::furniture::paint_focus_ring(render, &tokens, ring);
         }
 
         // `EndFrame`: this frame's registrations evaluate (hover, clicks).

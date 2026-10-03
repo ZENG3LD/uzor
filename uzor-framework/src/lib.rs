@@ -31,8 +31,9 @@
 //! headless host in [`host`]. F8: [`widgets`] convenience functions over the
 //! hook contexts, [`flex`] and [`profiler`]. F9: native host behind feature
 //! `native` (`host::native`). F10: web host behind feature `web`
-//! (`host::web`: listeners, RAF, executor, canvas2d paint). The demo app
-//! follows in a later brief.
+//! (`host::web`: listeners, RAF, executor, canvas2d paint). F11: the demo
+//! (`examples/demo`, one `DemoApp`, native and web entries) and the §9.4
+//! goldens.
 //!
 //! ## Data flow
 //!

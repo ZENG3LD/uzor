@@ -23,7 +23,7 @@ pub use native::{
 pub mod web;
 
 #[cfg(feature = "web")]
-pub use web::run_web;
+pub use web::{run_web, start_web};
 
 #[cfg(test)]
 mod tests;

@@ -185,6 +185,15 @@ where
     Ok(())
 }
 
+/// Same as [`run_web`]. The demo entry (brief F11) calls this name.
+pub fn start_web<S, A>(canvas_id: &str, app: A, cfg: RuntimeConfig) -> Result<(), FrameworkError>
+where
+    S: Spec,
+    A: App<Spec = S>,
+{
+    run_web(canvas_id, app, cfg)
+}
+
 impl<S: Spec, A: App<Spec = S>> RafDriver<S, A> {
     fn on_frame(&mut self, now_ms: f64) {
         self.raf = None;

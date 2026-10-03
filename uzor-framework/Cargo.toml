@@ -102,11 +102,23 @@ web = [
 ]
 
 [dev-dependencies]
-# CPU context for the F8 widget golden (compares against the committed
-# uzor-render-tiny-skia widget PNGs; this crate does not store images).
+# CPU context for goldens. F8 compares against the committed
+# uzor-render-tiny-skia widget PNGs. F11 stores its own synthetic
+# renders under tests/goldens/demo (not photographs).
 uzor-render-tiny-skia = { workspace = true }
 tiny-skia = "0.11"
 
 [[example]]
 name = "native_two_windows"
 required-features = ["native"]
+
+[[example]]
+name = "demo_native"
+path = "examples/demo/main_native.rs"
+required-features = ["native"]
+
+[[example]]
+name = "demo_web"
+path = "examples/demo/main_web.rs"
+required-features = ["web"]
+crate-type = ["cdylib"]

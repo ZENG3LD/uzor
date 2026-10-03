@@ -16,7 +16,7 @@ mod paint;
 mod raf;
 mod translate;
 
-pub use raf::run_web;
+pub use raf::{run_web, start_web};
 
 use crate::types::bus::HostCaps;
 use crate::types::error::FrameworkError;

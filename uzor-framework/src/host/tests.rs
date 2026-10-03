@@ -720,15 +720,15 @@ fn publish_bumps_revision_once_per_pass() {
 /// (`Wake::Immediate`) instead of spinning forever.
 #[test]
 fn settle_loop_is_bounded() {
-    let app = TestApp {
-        answer: Some(AppCommand::Cadence(CadenceCmd::WakeAt {
-            token: 1,
-            at: Seconds::ZERO,
-        })),
-        ..TestApp::default()
-    };
-    let (mut h, _handle) = Host::new(app, RuntimeConfig::default());
+    // The answer is installed after the window exists. `WindowIntent::Opened`
+    // (F11) would otherwise arm a timer during create and leak one extra
+    // fire into this tick.
+    let (mut h, _handle) = Host::new(TestApp::default(), RuntimeConfig::default());
     let win = open_main(&mut h);
+    h.runtime_mut().app_mut().answer = Some(AppCommand::Cadence(CadenceCmd::WakeAt {
+        token: 1,
+        at: Seconds::ZERO,
+    }));
     h.runtime_mut().app_mut().intents.clear();
 
     down(&mut h, win, 700.0, 500.0); // unhandled press -> answer -> storm

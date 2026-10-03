@@ -26,6 +26,7 @@
 //! F1, F2, F4); paint reaches it only as `&mut dyn RenderContext`.
 
 mod compose;
+mod furniture;
 mod phases;
 mod publish;
 mod route;
@@ -248,6 +249,14 @@ impl<S: Spec> Kernel<S> {
                 self.conduct_layout(now, fx);
                 let fx = self.input.apply(InputOp::Open(win));
                 self.conduct_input(now, fx);
+                // The app learns the id here (design `WindowIntent::Opened`).
+                // Layout commands need it; F7 conducted the engines but did
+                // not surface the intent.
+                if let Some(key) = self.windows.view().window(win).map(|w| w.key().clone()) {
+                    self.outbox
+                        .intents
+                        .push(Intent::Window(WindowIntent::Opened { win, key }));
+                }
             }
             WindowEffect::Closed(win) => {
                 let fx = self.layout.apply(LayoutOp::Close(win));
