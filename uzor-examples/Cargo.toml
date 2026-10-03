@@ -6,89 +6,21 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Layered demos for uzor — L1 (raw input coordinator), L2 (context manager + widgets), L3 (layout manager + composites), L4 (App + WindowManager builder)."
+description = "L4 dashboard on uzor-framework (brief E1)."
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-uzor                  = { workspace = true, features = ["framework-png"] }
-uzor-desktop          = { workspace = true }
-uzor-framework-macros = { workspace = true }
-uzor-graph            = { workspace = true, features = ["render3d"] }
-uzor-render-hub       = { workspace = true }
-uzor-render-vello-gpu = { workspace = true }
-uzor-render-vello-cpu = { workspace = true }
-uzor-render-urx       = { workspace = true }
-uzor-urx-core         = { workspace = true }
-uzor-urx-cpu          = { workspace = true }
-uzor-urx-glyph        = { workspace = true }
-uzor-urx-wgpu         = { workspace = true }
-uzor-window-desktop   = { workspace = true }
-uzor-figures          = { workspace = true }
-uzor-text             = { workspace = true }
-uzor-export           = { workspace = true }
-vello                 = "0.9"
-pollster              = "0.4"
-winit                 = "0.30"
-arboard               = "3"
-serde_json            = "1"
-wgpu                  = "29"
-# Wave 6 Commit 2 parity harness (`uzor-examples/src/parity_harness.rs`)
-# — dumps comparison PNGs under target/parity-app/ for human review
-# (`urx-wave6-autodetect-cutover-design-2026-07-25.md` §4.2). Same
-# version/feature spec `uzor-urx-wgpu`'s own Cargo.toml already uses.
-image = { version = "0.25", default-features = false, features = ["png"] }
+uzor = { workspace = true }
+uzor-framework = { workspace = true }
 
-[[bin]]
-name = "l1-coord"
-path = "src/l1/coord.rs"
-
-[[bin]]
-name = "l2-launcher"
-path = "src/l2/launcher.rs"
-
-[[bin]]
-name = "l3-dashboard"
-path = "src/l3/dashboard.rs"
+[features]
+# Native host for the dashboard bin. Not a default feature: `cargo test`
+# stays on the headless host and does not pull winit or a render backend.
+native = ["uzor-framework/native"]
 
 [[bin]]
 name = "l4-dashboard"
 path = "src/l4/dashboard.rs"
-
-# uzor-graph engine demo — synthetic clustered graph, live force
-# settling, drag/zoom/pan, click->sidebar. See uzor-graph/RUN.md.
-[[bin]]
-name = "force-graph-demo"
-path = "src/l4/force_graph_demo.rs"
-
-# uzor-figures V1 figures demo — bars/curve/histogram grid, agent-driven
-# reseed/theme/export. See uzor-figures/CLAUDE.md for the crate scope.
-[[bin]]
-name = "figures-demo"
-path = "src/l4/figures_demo.rs"
-
-# `uzor-text` Arc 2 Phase 3 kinetics demo — a fixed seeded paragraph
-# resize-morphing (yoyo loop) between a narrow and a wide max_width.
-# See uzor-text/CLAUDE.md "Phase 3" for the build_morph/sample/
-# sample_layout API this demo exercises.
-[[bin]]
-name = "text-kinetics-demo"
-path = "src/l4/text_kinetics_demo.rs"
-
-# Typography reference demo — THE text-weight/gamma calibration
-# fixture (owner redirect 2026-07-24: l3-dashboard retired from the
-# reference gate, this replaces it). H1/H2 headings, real-pipeline body
-# paragraphs (uzor_text::layout_text/draw_paragraph), a muted label row,
-# a numbers table — all through RenderContext::fill_text.
-[[bin]]
-name = "typography-demo"
-path = "src/l4/typography_demo.rs"
-
-# URX render-family profiling rigs (Phase 0+).
-# Pinned reference scene + agent HTTP backend switch + FPS readout.
-# Used to A/B every backend (vello_gpu, instanced_wgpu, vello_hybrid,
-# vello_cpu, tiny_skia) on the same workload, scriptable via curl.
-[[bin]]
-name = "urx-smoke-instanced"
-path = "src/urx/smoke_instanced.rs"
+required-features = ["native"]
