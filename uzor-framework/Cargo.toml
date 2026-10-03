@@ -24,10 +24,33 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 smallvec = "1.10"
 thiserror = "1.0"
 
+# Native host (feature `native`) — F9.
+winit = { version = "0.30", optional = true }
+uzor-window-desktop = { workspace = true, optional = true }
+uzor-render-hub = { workspace = true, optional = true }
+arboard = { version = "3", optional = true }
+tray-icon = { version = ">=0.19,<0.21", optional = true }
+png = { version = "0.17", optional = true }
+log = { version = "0.4", optional = true }
+# `SubmitParams::base_color` type (same as hub).
+color = { version = "0.3", optional = true }
+# Screenshot GPU readback uses vello's RenderSurface + wgpu.
+vello = { version = "0.9", optional = true }
+
 [features]
-# Host placeholders. The native (winit) host lands in F9, the web
-# (browser RAF) host in F10; neither pulls a dependency yet.
-native = []
+# Native (winit) host — brief F9.
+native = [
+    "dep:winit",
+    "dep:uzor-window-desktop",
+    "dep:uzor-render-hub",
+    "dep:arboard",
+    "dep:tray-icon",
+    "dep:png",
+    "dep:log",
+    "dep:color",
+    "dep:vello",
+]
+# Web (browser RAF) host — brief F10 (placeholder).
 web = []
 
 [dev-dependencies]
@@ -35,3 +58,7 @@ web = []
 # uzor-render-tiny-skia widget PNGs; this crate does not store images).
 uzor-render-tiny-skia = { workspace = true }
 tiny-skia = "0.11"
+
+[[example]]
+name = "native_two_windows"
+required-features = ["native"]

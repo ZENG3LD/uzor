@@ -29,8 +29,8 @@
 //! (phase pipeline, conduction per design §3.8, routing per §4.3), the
 //! [`App`] contract with the hook contexts, [`Handle`], [`Runtime`] and the
 //! headless host in [`host`]. F8: [`widgets`] convenience functions over the
-//! hook contexts, [`flex`] and [`profiler`]. Native / web hosts and the demo
-//! app follow in later briefs.
+//! hook contexts, [`flex`] and [`profiler`]. F9: native host behind feature
+//! `native` (`host::native`). Web host and the demo app follow in later briefs.
 //!
 //! ## Data flow
 //!

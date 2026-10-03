@@ -165,7 +165,7 @@ impl EventMapper {
 /// Winit always returns a positive finite scale factor in practice, but a
 /// mapper constructed from a stale/placeholder value (or a future platform
 /// quirk) must not divide pointer coordinates by zero or `NaN`.
-fn sanitize_scale(scale: f64) -> f64 {
+pub fn sanitize_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
     } else {
@@ -174,7 +174,7 @@ fn sanitize_scale(scale: f64) -> f64 {
 }
 
 /// Map winit mouse button to uzor mouse button
-fn map_mouse_button(button: WinitMouseButton) -> MouseButton {
+pub fn map_mouse_button(button: WinitMouseButton) -> MouseButton {
     match button {
         WinitMouseButton::Left => MouseButton::Left,
         WinitMouseButton::Right => MouseButton::Right,
@@ -207,7 +207,7 @@ fn map_keyboard_event(event: &KeyEvent) -> Option<PlatformEvent> {
 }
 
 /// Map winit key code to uzor key code
-fn map_key_code(key: WinitKeyCode) -> KeyCode {
+pub fn map_key_code(key: WinitKeyCode) -> KeyCode {
     match key {
         // Letters
         WinitKeyCode::KeyA => KeyCode::A,
@@ -294,7 +294,7 @@ fn map_key_code(key: WinitKeyCode) -> KeyCode {
 }
 
 /// Map winit modifiers to uzor modifiers
-fn map_modifiers(modifiers: &Modifiers) -> ModifierKeys {
+pub fn map_modifiers(modifiers: &Modifiers) -> ModifierKeys {
     ModifierKeys {
         shift: modifiers.state().shift_key(),
         ctrl: modifiers.state().control_key(),
@@ -304,7 +304,7 @@ fn map_modifiers(modifiers: &Modifiers) -> ModifierKeys {
 }
 
 /// Map winit IME event to uzor IME event
-fn map_ime_event(ime: &Ime) -> ImeEvent {
+pub fn map_ime_event(ime: &Ime) -> ImeEvent {
     match ime {
         Ime::Enabled => ImeEvent::Enabled,
         Ime::Preedit(text, cursor) => {
