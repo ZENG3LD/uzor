@@ -16,6 +16,9 @@ pub mod web_provider;
 #[cfg(target_arch = "wasm32")]
 pub use web_provider::{SendSyncCanvas, WebWindowProvider};
 
+mod map;
+pub use map::{map_keycode, map_mouse_button, normalize_wheel_delta_to_css_px};
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;

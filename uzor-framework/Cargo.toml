@@ -37,6 +37,47 @@ color = { version = "0.3", optional = true }
 # Screenshot GPU readback uses vello's RenderSurface + wgpu.
 vello = { version = "0.9", optional = true }
 
+# Web host (feature `web`) — F10. Paint is canvas2d: uzor-render-hub does
+# not build for wasm32 (see host/native/mod.rs).
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "AddEventListenerOptions",
+    "Blob",
+    "CanvasRenderingContext2d",
+    "Clipboard",
+    "ClipboardEvent",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "DataTransfer",
+    "Document",
+    "DomRect",
+    "DragEvent",
+    "Element",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "FileReader",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MouseEvent",
+    "Navigator",
+    "Performance",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
+    "VisibilityState",
+    "WheelEvent",
+    "Window",
+] }
+uzor-render-canvas2d = { workspace = true, optional = true }
+uzor-window-web = { workspace = true, optional = true }
+
 [features]
 # Native (winit) host — brief F9.
 native = [
@@ -50,8 +91,15 @@ native = [
     "dep:color",
     "dep:vello",
 ]
-# Web (browser RAF) host — brief F10 (placeholder).
-web = []
+# Web (browser RAF) host — brief F10. Canvas2d paint, not the render hub.
+web = [
+    "dep:wasm-bindgen",
+    "dep:js-sys",
+    "dep:web-sys",
+    "dep:uzor-render-canvas2d",
+    "dep:uzor-window-web",
+    "dep:log",
+]
 
 [dev-dependencies]
 # CPU context for the F8 widget golden (compares against the committed

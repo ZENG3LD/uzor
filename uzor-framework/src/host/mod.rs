@@ -5,7 +5,7 @@
 //! §9.2 script, and paints into a recording context.
 //!
 //! The native (winit) host lives behind feature `native` ([`native`]); the
-//! web host lands in F10 behind feature `web`.
+//! web host lives behind feature `web` ([`web`]).
 
 mod headless;
 
@@ -18,6 +18,12 @@ pub mod native;
 pub use native::{
     run_native, run_native_default, NativeOptions, RenderPreference, TraySpec, WinitMapper,
 };
+
+#[cfg(feature = "web")]
+pub mod web;
+
+#[cfg(feature = "web")]
+pub use web::run_web;
 
 #[cfg(test)]
 mod tests;

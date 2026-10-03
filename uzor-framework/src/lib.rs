@@ -30,7 +30,9 @@
 //! [`App`] contract with the hook contexts, [`Handle`], [`Runtime`] and the
 //! headless host in [`host`]. F8: [`widgets`] convenience functions over the
 //! hook contexts, [`flex`] and [`profiler`]. F9: native host behind feature
-//! `native` (`host::native`). Web host and the demo app follow in later briefs.
+//! `native` (`host::native`). F10: web host behind feature `web`
+//! (`host::web`: listeners, RAF, executor, canvas2d paint). The demo app
+//! follows in a later brief.
 //!
 //! ## Data flow
 //!

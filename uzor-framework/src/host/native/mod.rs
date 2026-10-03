@@ -10,9 +10,8 @@
 //! **FAILS** (7 errors). Notable: `recreate_target_with_cpu_usage` missing
 //! under wasm cfg gates in `factory.rs`, `ensure_backend_slot` / `gpu_handles`
 //! absent on the wasm `WindowRenderState` shape, and a non-exhaustive
-//! `SurfaceKind` match in `submit_urx.rs` (Software arm). F10 must paint
-//! through `uzor-render-canvas2d` (or a hub build with
-//! `default-features = false` plus a wasm-safe feature set).
+//! `SurfaceKind` match in `submit_urx.rs` (Software arm). F10 paints through `uzor-render-canvas2d` directly
+//! (`host/web/paint.rs`). The hub was not changed.
 
 mod app_handler;
 mod clipboard;
