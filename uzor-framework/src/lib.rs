@@ -33,7 +33,7 @@
 //! `native` (`host::native`). F10: web host behind feature `web`
 //! (`host::web`: listeners, RAF, executor, canvas2d paint). F11: the demo
 //! (`examples/demo`, one `DemoApp`, native and web entries) and the §9.4
-//! goldens.
+//! goldens. M1: [`view!`] retargets onto [`widgets`] / [`flex`].
 //!
 //! ## Data flow
 //!
@@ -53,6 +53,9 @@ pub mod profiler;
 mod runtime;
 pub mod types;
 pub mod widgets;
+
+/// `view!` JSX-like DSL — re-exported from `uzor-framework-macros` (brief M1).
+pub use uzor_framework_macros::view;
 
 pub use handle::{
     App, FrameTime, Handle, HandleError, HookOp, HookOps, InitCx, IntentCx, OverlayCx, PanelCx,

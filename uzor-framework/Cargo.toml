@@ -16,6 +16,7 @@ readme = "../README.md"
 # `default-features = false` is the workspace default; no uzor feature is
 # needed by `types/` (uzor's serde derives are unconditional).
 uzor = { workspace = true, features = ["testing"] }
+uzor-framework-macros = { workspace = true }
 serde = { workspace = true }
 # The handle's lock-free snapshot slot (SWC: channels + Arc only at the handle).
 arc-swap = "1.7"

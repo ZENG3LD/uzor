@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Procedural macros for uzor-framework — view! JSX-like DSL lowering to lm::* builders"
+description = "Procedural macros for uzor-framework — view! JSX-like DSL lowering to widgets::lm::* builders"
 
 [lib]
 proc-macro = true

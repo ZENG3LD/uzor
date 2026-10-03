@@ -33,15 +33,15 @@ pub enum Node {
 
 #[derive(Debug)]
 pub struct Element {
-    pub tag:      Ident,
-    pub props:    Vec<Prop>,
+    pub tag: Ident,
+    pub props: Vec<Prop>,
     pub children: Vec<Node>,
-    pub span:     Span,
+    pub span: Span,
 }
 
 #[derive(Debug)]
 pub struct Prop {
-    pub name:  Ident,
+    pub name: Ident,
     pub value: PropValue,
 }
 
@@ -85,7 +85,12 @@ impl Parse for Element {
         if input.peek(Token![/]) {
             let _: Token![/] = input.parse()?;
             let _: Token![>] = input.parse()?;
-            return Ok(Element { tag, props, children: Vec::new(), span });
+            return Ok(Element {
+                tag,
+                props,
+                children: Vec::new(),
+                span,
+            });
         }
 
         let _: Token![>] = input.parse()?;
@@ -114,7 +119,12 @@ impl Parse for Element {
             ));
         }
 
-        Ok(Element { tag, props, children, span })
+        Ok(Element {
+            tag,
+            props,
+            children,
+            span,
+        })
     }
 }
 
@@ -122,17 +132,26 @@ impl Parse for Prop {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let name: Ident = input.parse()?;
         if !input.peek(Token![=]) {
-            return Ok(Prop { name, value: PropValue::Flag });
+            return Ok(Prop {
+                name,
+                value: PropValue::Flag,
+            });
         }
         let _: Token![=] = input.parse()?;
         if input.peek(token::Brace) {
             let inner;
             braced!(inner in input);
             let expr: Expr = inner.parse()?;
-            Ok(Prop { name, value: PropValue::Expr(expr) })
+            Ok(Prop {
+                name,
+                value: PropValue::Expr(expr),
+            })
         } else {
             let lit: Lit = input.parse()?;
-            Ok(Prop { name, value: PropValue::Lit(lit) })
+            Ok(Prop {
+                name,
+                value: PropValue::Lit(lit),
+            })
         }
     }
 }
@@ -143,9 +162,54 @@ impl Prop {
     pub fn value_tokens(&self) -> TokenStream {
         use quote::ToTokens;
         match &self.value {
-            PropValue::Flag    => quote::quote!(true),
-            PropValue::Lit(l)  => l.to_token_stream(),
+            PropValue::Flag => quote::quote!(true),
+            PropValue::Lit(l) => l.to_token_stream(),
             PropValue::Expr(e) => e.to_token_stream(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_str;
+
+    #[test]
+    fn parses_self_closing_button() {
+        let node: Node = parse_str(r#"<button text="Save" />"#).unwrap();
+        match node {
+            Node::Element(el) => {
+                assert_eq!(el.tag.to_string(), "button");
+                assert_eq!(el.props.len(), 1);
+                assert!(el.children.is_empty());
+            }
+            Node::Expr(_) => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn parses_col_with_children() {
+        let node: Node = parse_str(
+            r#"<col rect={body} gap=8>
+                <button text="A" />
+                <text text="B" />
+            </col>"#,
+        )
+        .unwrap();
+        match node {
+            Node::Element(el) => {
+                assert_eq!(el.tag.to_string(), "col");
+                assert_eq!(el.props.len(), 2);
+                assert_eq!(el.children.len(), 2);
+            }
+            Node::Expr(_) => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn rejects_mismatched_close_tag() {
+        let err = parse_str::<Node>(r#"<row></col>"#).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("does not match"), "{msg}");
     }
 }
