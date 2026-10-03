@@ -1,0 +1,31 @@
+[package]
+name = "uzor-press"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Markdown-subset press: pages and slides to PDF, PNG, DOCX, and PPTX."
+
+[lib]
+name = "uzor_press"
+path = "src/lib.rs"
+
+[[bin]]
+name = "uzor-press"
+path = "src/main.rs"
+
+[dependencies]
+uzor = { workspace = true }
+uzor-text = { workspace = true }
+uzor-figures = { workspace = true }
+uzor-export = { workspace = true }
+uzor-typeset = { workspace = true }
+uzor-fonts = { workspace = true }
+png = "0.17"
+toml = "0.8"
+zip = { version = "2", default-features = false }
+
+[dev-dependencies]
+quick-xml = "0.37"
