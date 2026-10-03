@@ -65,8 +65,8 @@ members = [
     "uzor-text",
     # Typographic composition + slicing engine (Arc 4 — scene model, compose, pages/slides/frames)
     "uzor-typeset",
-    # Markdown-subset press: pages and slides to PDF, PNG, DOCX, and PPTX
-    "uzor-press",
+    # Markdown-subset typography: pages and slides to PDF, PNG, DOCX, and PPTX
+    "uzor-typography",
     # Dev-only multi-backend (tiny-skia/vello-cpu/urx-cpu) headless proof
     # harness — promoted out of uzor-examples/src/parity_harness.rs so
     # uzor-figures (and later uzor-text/uzor-typeset) can reach it as a
@@ -113,7 +113,7 @@ uzor-figures = { version = "1.6.0-dev", path = "./uzor-figures" }
 uzor-figures-registry = { version = "1.6.0-dev", path = "./uzor-figures-registry" }
 uzor-text = { version = "1.6.0-dev", path = "./uzor-text" }
 uzor-typeset = { version = "1.6.0-dev", path = "./uzor-typeset" }
-uzor-press = { version = "1.6.0-dev", path = "./uzor-press" }
+uzor-typography = { version = "1.6.0-dev", path = "./uzor-typography" }
 uzor-urx-region-mixer = { version = "1.6.0-dev", path = "./uzor-urx-region-mixer" }
 uzor-urx-core = { version = "1.6.0-dev", path = "./uzor-urx-core" }
 uzor-urx-cpu  = { version = "1.6.0-dev", path = "./uzor-urx-cpu" }

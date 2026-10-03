@@ -1,3 +1,3 @@
 fn main() -> std::process::ExitCode {
-    uzor_press::cli_main()
+    uzor_typography::cli_main()
 }
