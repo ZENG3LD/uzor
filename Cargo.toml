@@ -86,7 +86,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.5.3"
+version = "1.5.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["ZENG3LD"]
@@ -99,43 +99,43 @@ categories = ["gui", "rendering", "graphics"]
 # default-features = false: every member names the uzor features it uses
 # (`shaper`, `serde`, `framework-png`, `testing`), so no member silently
 # builds `image` just because it sits in this workspace.
-uzor = { version = "1.5.3", path = "./uzor", default-features = false }
-uzor-fonts = { version = "1.5.3", path = "./uzor-fonts" }
-uzor-render-hub = { version = "1.5.3", path = "./uzor-render-hub" }
-uzor-render-vello-gpu = { version = "1.5.3", path = "./uzor-render-vello-gpu" }
-uzor-render-vello-hybrid = { version = "1.5.3", path = "./uzor-render-vello-hybrid" }
-uzor-render-vello-cpu = { version = "1.5.3", path = "./uzor-render-vello-cpu" }
-uzor-render-tiny-skia = { version = "1.5.3", path = "./uzor-render-tiny-skia" }
-uzor-render-svg = { version = "1.5.3", path = "./uzor-render-svg" }
-uzor-render-wgpu-instanced = { version = "1.5.3", path = "./uzor-render-wgpu-instanced" }
-uzor-render-canvas2d = { version = "1.5.3", path = "./uzor-render-canvas2d" }
-uzor-window-desktop = { version = "1.5.3", path = "./uzor-window-desktop" }
-uzor-icon = { version = "1.5.3", path = "./uzor-icon" }
-uzor-vision = { version = "1.5.3", path = "./uzor-vision" }
-uzor-vectorize = { version = "1.5.3", path = "./uzor-vectorize" }
-uzor-window-web = { version = "1.5.3", path = "./uzor-window-web" }
-uzor-window-mobile = { version = "1.5.3", path = "./uzor-window-mobile" }
-uzor-framework-macros = { version = "1.5.3", path = "./uzor-framework-macros" }
-uzor-framework = { version = "1.5.3", path = "./uzor-framework" }
-uzor-graph = { version = "1.5.3", path = "./uzor-graph" }
-uzor-export = { version = "1.5.3", path = "./uzor-export" }
-uzor-figures = { version = "1.5.3", path = "./uzor-figures" }
-uzor-figures-registry = { version = "1.5.3", path = "./uzor-figures-registry" }
-uzor-text = { version = "1.5.3", path = "./uzor-text" }
-uzor-typeset = { version = "1.5.3", path = "./uzor-typeset" }
-uzor-typography = { version = "1.5.3", path = "./uzor-typography" }
-uzor-urx-region-mixer = { version = "1.5.3", path = "./uzor-urx-region-mixer" }
-uzor-urx-core = { version = "1.5.3", path = "./uzor-urx-core" }
-uzor-urx-cpu  = { version = "1.5.3", path = "./uzor-urx-cpu" }
-uzor-urx-wgpu = { version = "1.5.3", path = "./uzor-urx-wgpu" }
-uzor-urx-engine = { version = "1.5.3", path = "./uzor-urx-engine" }
-uzor-urx-hybrid = { version = "1.5.3", path = "./uzor-urx-hybrid" }
-uzor-urx-glyph = { version = "1.5.3", path = "./uzor-urx-glyph" }
-uzor-urx-image = { version = "1.5.3", path = "./uzor-urx-image" }
-uzor-urx-wgpu-full = { version = "1.5.3", path = "./uzor-urx-wgpu-full" }
-uzor-urx-3d = { version = "1.5.3", path = "./uzor-urx-3d" }
-uzor-urx-physics = { version = "1.5.3", path = "./uzor-urx-physics" }
-uzor-render-urx = { version = "1.5.3", path = "./uzor-render-urx" }
-uzor-proof-harness = { version = "1.5.3", path = "./uzor-proof-harness" }
+uzor = { version = "1.5.4", path = "./uzor", default-features = false }
+uzor-fonts = { version = "1.5.4", path = "./uzor-fonts" }
+uzor-render-hub = { version = "1.5.4", path = "./uzor-render-hub" }
+uzor-render-vello-gpu = { version = "1.5.4", path = "./uzor-render-vello-gpu" }
+uzor-render-vello-hybrid = { version = "1.5.4", path = "./uzor-render-vello-hybrid" }
+uzor-render-vello-cpu = { version = "1.5.4", path = "./uzor-render-vello-cpu" }
+uzor-render-tiny-skia = { version = "1.5.4", path = "./uzor-render-tiny-skia" }
+uzor-render-svg = { version = "1.5.4", path = "./uzor-render-svg" }
+uzor-render-wgpu-instanced = { version = "1.5.4", path = "./uzor-render-wgpu-instanced" }
+uzor-render-canvas2d = { version = "1.5.4", path = "./uzor-render-canvas2d" }
+uzor-window-desktop = { version = "1.5.4", path = "./uzor-window-desktop" }
+uzor-icon = { version = "1.5.4", path = "./uzor-icon" }
+uzor-vision = { version = "1.5.4", path = "./uzor-vision" }
+uzor-vectorize = { version = "1.5.4", path = "./uzor-vectorize" }
+uzor-window-web = { version = "1.5.4", path = "./uzor-window-web" }
+uzor-window-mobile = { version = "1.5.4", path = "./uzor-window-mobile" }
+uzor-framework-macros = { version = "1.5.4", path = "./uzor-framework-macros" }
+uzor-framework = { version = "1.5.4", path = "./uzor-framework" }
+uzor-graph = { version = "1.5.4", path = "./uzor-graph" }
+uzor-export = { version = "1.5.4", path = "./uzor-export" }
+uzor-figures = { version = "1.5.4", path = "./uzor-figures" }
+uzor-figures-registry = { version = "1.5.4", path = "./uzor-figures-registry" }
+uzor-text = { version = "1.5.4", path = "./uzor-text" }
+uzor-typeset = { version = "1.5.4", path = "./uzor-typeset" }
+uzor-typography = { version = "1.5.4", path = "./uzor-typography" }
+uzor-urx-region-mixer = { version = "1.5.4", path = "./uzor-urx-region-mixer" }
+uzor-urx-core = { version = "1.5.4", path = "./uzor-urx-core" }
+uzor-urx-cpu  = { version = "1.5.4", path = "./uzor-urx-cpu" }
+uzor-urx-wgpu = { version = "1.5.4", path = "./uzor-urx-wgpu" }
+uzor-urx-engine = { version = "1.5.4", path = "./uzor-urx-engine" }
+uzor-urx-hybrid = { version = "1.5.4", path = "./uzor-urx-hybrid" }
+uzor-urx-glyph = { version = "1.5.4", path = "./uzor-urx-glyph" }
+uzor-urx-image = { version = "1.5.4", path = "./uzor-urx-image" }
+uzor-urx-wgpu-full = { version = "1.5.4", path = "./uzor-urx-wgpu-full" }
+uzor-urx-3d = { version = "1.5.4", path = "./uzor-urx-3d" }
+uzor-urx-physics = { version = "1.5.4", path = "./uzor-urx-physics" }
+uzor-render-urx = { version = "1.5.4", path = "./uzor-render-urx" }
+uzor-proof-harness = { version = "1.5.4", path = "./uzor-proof-harness" }
 serde = { version = "1.0", features = ["derive"] }
 
