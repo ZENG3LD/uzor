@@ -391,4 +391,19 @@ mod tests {
         let _ = execute(&mut w, WindowCommand::SetVisible(true));
         assert_eq!(w.log, ["set_visible:true", "set_visible:true"]);
     }
+
+    /// Chrome drag and bezel resize (`WindowCommand::DragWindow` /
+    /// `DragResizeWindow`) reach the host trait. Expand and drag-out do not
+    /// use these; they send `SetOuterRect`.
+    #[test]
+    fn drag_window_and_drag_resize_window_are_recorded() {
+        let mut w = RecordingWindow::default();
+        assert!(execute(&mut w, WindowCommand::DragWindow).is_none());
+        assert!(execute(
+            &mut w,
+            WindowCommand::DragResizeWindow(ResizeDirection::West),
+        )
+        .is_none());
+        assert_eq!(w.log, ["drag_window", "drag_resize_window:West"]);
+    }
 }
