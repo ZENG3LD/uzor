@@ -138,8 +138,7 @@ impl ToolbarState {
 
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` when a `layout façade`
-    /// is available.  Kept for back-compat with L3 callers.
+    /// Reads the coordinator's hovered widget id.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         let hovered = coord.hovered_widget().map(|id| id.0.clone());
         self.apply_hover(hovered, widget_id_prefix);

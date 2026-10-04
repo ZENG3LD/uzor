@@ -4,7 +4,6 @@
 //!
 //! - `register_input_coordinator_blackbox_panel` — registers ONE composite rect.
 //!   **No drawing.**  No children (BlackboxPanel rejects children).
-//! - `the old L2 register helper`   — registers + draws in one call.
 //!
 //! # Draw order (non-Custom kinds)
 //!

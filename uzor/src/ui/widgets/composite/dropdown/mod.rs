@@ -7,6 +7,7 @@
 //! - `Grouped` — sections with header rows + checkbox list
 //! - `Custom`  — caller-supplied draw closure; composite provides frame
 
+pub mod consume;
 pub mod input;
 pub mod render;
 pub mod settings;

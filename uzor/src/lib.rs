@@ -27,7 +27,6 @@ pub mod tokens;
 pub use ui::animation;
 pub use self::core::render;
 pub use self::core::types;
-pub use self::core::window;
 
 // Compat shims — old names
 // `docking` was absorbed into `layout`. Keep the old paths as aliases for now.

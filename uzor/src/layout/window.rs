@@ -1,21 +1,8 @@
-//! Window-level traits owned by `layout façade`.
+//! Platform window contract: [`WindowKey`], [`WindowProvider`], presenters.
 //!
-//! `layout façade` is the root of the application — it owns every window's
-//! tree, every dock, every overlay, every separator.  But it cannot poke
-//! the OS by itself: the **window manager** (e.g. `the old desktop runtime::Manager`,
-//! a winit-driven event loop) implements these traits so the layout
-//! manager can ask for redraws, drag operations, presenters, surfaces.
-//!
-//! The window manager calls `layout façade::attach_window` to register
-//! each OS window as a top-level branch in the layout tree.  From that
-//! point on the layout manager addresses the window through its
-//! `WindowKey` and routes commands back via the `WindowProvider` trait
-//! object stored in the slot.
-//!
-//! These traits live here, not in a separate crate, because they are
-//! the contract between the layout core and any platform layer.  Old
-//! callers that imported them from `uzor-window-hub` should switch to
-//! `uzor::layout::window::*`.
+//! Hosts implement [`WindowProvider`]:
+//! `uzor-window-desktop`, `uzor-window-web`, and `uzor-window-mobile`.
+//! Import `uzor::layout::window::*`.
 
 use crate::core::types::Rect;
 use crate::input::PlatformEvent;
@@ -66,7 +53,7 @@ pub enum RawHandle {
 // WindowProvider
 // =============================================================================
 
-/// Capabilities one OS window must expose so `layout façade` can drive it.
+/// Capabilities one OS window must expose to its host.
 ///
 /// Implemented by:
 /// - `uzor_window_desktop::WinitWindowProvider` (winit / native desktop)

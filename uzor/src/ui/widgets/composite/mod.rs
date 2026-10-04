@@ -4,19 +4,13 @@
 //! the widget's data, theme, style, state, render math, and input
 //! registration.
 //!
-//! ## Register / Draw convention
+//! ## Register convention
 //!
-//! Every composite widget exposes two entry points:
-//!
-//! - `register_input_coordinator_<widget>` — registers the composite + all
-//!   child hit-rects with an `InputCoordinator`.  **No drawing.**  Use when
-//!   you need explicit z-order control (register multiple composites, then
-//!   draw them in order).
-//! - `the old L2 register helper<widget>`   — convenience wrapper that takes a
-//!   `app context`, registers, and draws in one call (passes `coord` to
-//!   the body closure so inner widgets can self-register).
-//!
-//! For the common case use the `the old L2 register helper*` form.
+//! - `register_input_coordinator_<widget>` — registers the composite and its
+//!   child hit-rects with an `InputCoordinator`. No drawing.
+//! - `consume::consume_event` / `consume::drag_outcome_*` — click consumption
+//!   for modal, popup, dropdown, toolbar, and sidebar. Level-1 registration
+//!   stays in `input`; those modules re-export the consume items.
 
 pub mod blackbox_panel;
 pub mod chrome;

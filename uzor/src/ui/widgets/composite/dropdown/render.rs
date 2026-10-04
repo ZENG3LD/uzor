@@ -5,8 +5,6 @@
 //! - `register_input_coordinator_dropdown` — registers the composite + child
 //!   hit-rects with an `InputCoordinator`.  No drawing.  Use when explicit
 //!   z-order control is needed.
-//! - `the old L2 register helper` — convenience wrapper: registers and
-//!   draws in one call using a `app context`.
 //!
 //! # Draw order (non-Custom kinds)
 //!

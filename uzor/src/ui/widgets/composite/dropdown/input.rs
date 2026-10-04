@@ -1,80 +1,41 @@
-//! Dropdown input-coordinator helpers.
+//! Dropdown input-coordinator helpers (level 1).
 //!
-//! Re-exports `register_input_coordinator_dropdown` from `render.rs` and adds
-//! click-outside dismiss + keyboard navigation helpers.
+//! Re-exports `register_input_coordinator_dropdown` from `render.rs` and keeps
+//! click-outside dismiss plus keyboard navigation. Event consumption lives in
+//! [`super::consume`] and is re-exported here.
 
+pub use super::consume::{consume_event, ConsumeEventCtx};
 pub use super::render::register_input_coordinator_dropdown;
-
 
 use super::state::DropdownState;
 
-use crate::layout::{
-    ClickDispatcher, DispatchEvent, DropdownHandle, EventBuilder,
-};
+use crate::layout::{ClickDispatcher, DropdownHandle, EventBuilder};
 use crate::types::{Rect, WidgetId};
 
-/// Cursor position and view metadata for events that need spatial context.
-///
-/// Included for API uniformity with other composites; not used by dropdown
-/// event handling today.
-pub struct ConsumeEventCtx {
-    /// Current pointer position in screen coordinates.
-    pub cursor: (f64, f64),
-    /// Resolved frame rect of the dropdown this frame.
-    pub frame_rect: Rect,
-    /// Viewport size used for resize cap computation.
-    pub viewport: (f64, f64),
-}
-
-/// Consume a `DispatchEvent` if it belongs to this dropdown. Returns:
-/// - `None` — the event was consumed (composite mutated its state).
-/// - `Some(event)` — the event is not for this dropdown; pass it through.
-///
-/// `host_id` is the dropdown composite's WidgetId. Only events whose carried
-/// `dropdown_id` equals `host_id` are consumed.
-pub fn consume_event(
-    event: DispatchEvent,
-    state: &mut DropdownState,
-    host_id: &WidgetId,
-    _ctx: ConsumeEventCtx,
-) -> Option<DispatchEvent> {
-    match event {
-        DispatchEvent::DropdownSubmenuToggle { ref dropdown, ref trigger_id } => {
-            if dropdown.id == *host_id {
-                if state.submenu_open.as_deref() == Some(trigger_id.as_str()) {
-                    state.submenu_open = None;
-                } else {
-                    state.submenu_open = Some(trigger_id.clone());
-                }
-                None
-            } else {
-                Some(event)
-            }
-        }
-        _ => Some(event),
-    }
-}
-
 /// Register a dropdown's click patterns (items, sub-items, submenu
-/// chevrons, overflow pager chevrons) into `dispatcher`. Used by
-/// [`the old L3 register helper`] and by any engine that owns dropdown
-/// state without a `layout façade`.
+/// chevrons, overflow pager chevrons) into `dispatcher`.
 pub fn register_dropdown_dispatch(dispatcher: &mut ClickDispatcher, handle: &DropdownHandle) {
     let id: &WidgetId = &handle.id;
     // Clicks on items + sub-items both surface as
     // DispatchEvent::DropdownItemClicked { dropdown, item_id }.
     dispatcher.on_prefix(
         format!("{}:item:", id.0),
-        EventBuilder::DropdownItem { handle: handle.clone() },
+        EventBuilder::DropdownItem {
+            handle: handle.clone(),
+        },
     );
     dispatcher.on_prefix(
         format!("{}:sub-item:", id.0),
-        EventBuilder::DropdownItem { handle: handle.clone() },
+        EventBuilder::DropdownItem {
+            handle: handle.clone(),
+        },
     );
     // Submenu chevron clicks (only used for SubmenuTrigger::ChevronClick).
     dispatcher.on_prefix(
         format!("{}:chev:submenu:", id.0),
-        EventBuilder::DropdownSubmenuToggleFromSuffix { handle: handle.clone() },
+        EventBuilder::DropdownSubmenuToggleFromSuffix {
+            handle: handle.clone(),
+        },
     );
     // Body-overflow chevron pager — fires only when the dropdown panel was
     // clipped by the window edge (window guard).  Routes are registered
@@ -83,13 +44,16 @@ pub fn register_dropdown_dispatch(dispatcher: &mut ClickDispatcher, handle: &Dro
     {
         use crate::layout::ChevronStepDirection;
         for (suffix, dir) in [
-            ("chevron_up",    ChevronStepDirection::Up),
-            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_up", ChevronStepDirection::Up),
+            ("chevron_down", ChevronStepDirection::Down),
         ] {
             let cid = WidgetId(format!("{}:{}", id.0, suffix));
             dispatcher.on_exact(
                 format!("{}:{}", id.0, suffix),
-                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+                EventBuilder::ChevronStep {
+                    chevron_id: cid,
+                    direction: dir,
+                },
             );
         }
     }
@@ -101,16 +65,16 @@ pub fn register_dropdown_dispatch(dispatcher: &mut ClickDispatcher, handle: &Dro
 /// `main_rect`    — screen rect of the main dropdown panel.
 /// `submenu_rect` — `Some(rect)` when a submenu panel is currently open.
 pub fn handle_dropdown_dismiss(
-    state:        &DropdownState,
-    click_pos:    (f64, f64),
-    main_rect:    Rect,
+    state: &DropdownState,
+    click_pos: (f64, f64),
+    main_rect: Rect,
     submenu_rect: Option<Rect>,
 ) -> bool {
     if !state.open {
         return false;
     }
     let inside_main = main_rect.contains(click_pos.0, click_pos.1);
-    let inside_sub  = submenu_rect
+    let inside_sub = submenu_rect
         .map(|r| r.contains(click_pos.0, click_pos.1))
         .unwrap_or(false);
     !inside_main && !inside_sub
@@ -126,9 +90,9 @@ pub fn handle_dropdown_dismiss(
 ///
 /// Callers should call `state.close()` when `None` is returned.
 pub fn handle_dropdown_keyboard(
-    state:  &mut DropdownState,
-    key:    DropdownKey,
-    items:  &[Option<&str>],
+    state: &mut DropdownState,
+    key: DropdownKey,
+    items: &[Option<&str>],
 ) -> DropdownKeyResult {
     match key {
         DropdownKey::Esc => {
@@ -151,7 +115,9 @@ pub fn handle_dropdown_keyboard(
                 None => navigable[0].to_owned(),
                 Some(cur) => {
                     let pos = navigable.iter().position(|&s| s == cur.as_str());
-                    let next_idx = pos.map(|i| (i + 1).min(navigable.len().saturating_sub(1))).unwrap_or(0);
+                    let next_idx = pos
+                        .map(|i| (i + 1).min(navigable.len().saturating_sub(1)))
+                        .unwrap_or(0);
                     navigable[next_idx].to_owned()
                 }
             };

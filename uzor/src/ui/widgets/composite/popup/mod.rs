@@ -5,8 +5,6 @@
 //! - `register_input_coordinator_popup` — registers the composite + child
 //!   hit-rects with an `InputCoordinator`. No drawing. Use for explicit
 //!   z-order control.
-//! - `the old L2 register helper`   — convenience wrapper: takes a
-//!   `app context`, registers, and draws in one call.
 //!
 //! ## Templates (`PopupRenderKind`)
 //!
@@ -19,6 +17,7 @@
 //! item lists) is composed by the caller inside a `Plain` popup using
 //! atomic widgets. The composite is intentionally minimal.
 
+pub mod consume;
 pub mod input;
 pub mod render;
 pub mod settings;

@@ -206,7 +206,7 @@ impl InputCoordinator {
     ///
     /// Clears widget registrations, layers, and advances the frame counter, but
     /// does NOT touch `self.input`.  Use this when the pointer state is managed
-    /// externally (e.g. via `set_cursor_pos` + `layout façade::on_pointer_*`)
+    /// externally (via `set_cursor_pos` and the host pointer events)
     /// and must not be reset by a stale `InputState` snapshot.
     ///
     /// Scoped-region propagation is skipped because their pointer coords are

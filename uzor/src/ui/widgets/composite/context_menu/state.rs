@@ -101,8 +101,7 @@ impl ContextMenuState {
 
     /// Sync the hovered-item index from the coordinator's hovered widget.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` when a `layout façade`
-    /// is available.  Kept for back-compat with L3 callers.
+    /// Reads the coordinator's hovered widget id.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.is_open {
             return;

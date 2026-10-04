@@ -4,8 +4,6 @@
 //!
 //! - `register_input_coordinator_panel` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `the old L2 register helper`   — convenience wrapper: takes a
-//!   `app context`, registers, and draws in one call.
 //!
 //! # Draw order (non-Custom kinds)
 //!

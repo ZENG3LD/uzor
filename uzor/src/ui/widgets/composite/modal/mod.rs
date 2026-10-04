@@ -1,24 +1,11 @@
 //! Modal composite widget — full-screen overlay that blocks interaction behind it.
 //!
-//! ## API convention
-//!
-//! - `register_input_coordinator_modal` — registers the composite + child
-//!   hit-rects with an `InputCoordinator`.  No drawing.  Use when you need
-//!   explicit z-order control (register multiple composites, draw in order).
-//! - `the old L2 register helper`   — convenience wrapper that takes a
-//!   `app context`, registers, and draws in one call.
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! use uzor::ui::widgets::composite::modal::{
-//!     register_input_coordinator_modal, the old L2 register helper,
-//!     ModalView, ModalState, ModalSettings, ModalRenderKind,
-//!     BackdropKind, FooterBtn, FooterBtnStyle, WizardPageInfo,
-//!     ModalTheme, DefaultModalStyle, BackgroundFill,
-//! };
-//! ```
+//! Hit registration is `input::register_input_coordinator_modal`.
+//! Click consumption is [`consume::consume_event`](consume::consume_event)
+//! and [`consume::drag_outcome_modal`](consume::drag_outcome_modal)
+//! (also re-exported from `input`).
 
+pub mod consume;
 pub mod input;
 pub mod render;
 pub mod settings;

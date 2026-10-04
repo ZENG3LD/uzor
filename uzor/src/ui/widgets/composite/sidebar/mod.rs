@@ -13,8 +13,9 @@
 //! # Entry points
 //!
 //! - `register_input_coordinator_sidebar` — hit-rect registration only
-//! - `the old L2 register helper`   — register + draw in one call
+//! - `consume::consume_event` / `consume::drag_outcome_sidebar` — click consumption
 
+pub mod consume;
 pub mod input;
 pub mod render;
 pub mod settings;

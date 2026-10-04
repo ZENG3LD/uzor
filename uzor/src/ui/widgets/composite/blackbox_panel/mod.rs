@@ -18,8 +18,7 @@
 //! # Entry points
 //!
 //! - `register_input_coordinator_blackbox_panel` — hit-rect registration only
-//! - `the old L2 register helper`   — register + draw in one call
-//! - `dispatch_blackbox_event`                   — forward events to the caller handler
+//! - `dispatch_blackbox_event` — forward events to the caller handler
 
 pub mod input;
 pub mod render;

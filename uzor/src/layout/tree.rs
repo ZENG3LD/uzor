@@ -40,7 +40,7 @@ pub struct WidgetNode {
     pub id: WidgetId,
     /// Widget kind — drives composite vs atomic logic in flush_input.
     pub kind: WidgetKind,
-    /// Bounding rect (screen-space, already computed by app or layout façade::solve).
+    /// Bounding rect in screen space, already computed by the caller.
     pub rect: Rect,
     /// Sense flags for this widget.
     pub sense: Sense,

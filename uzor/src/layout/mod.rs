@@ -1,6 +1,6 @@
 //! Pure layout mechanics for uzor: docking, solve, dispatch, overlays.
 //!
-//! The old single-writer layout façade and its agent / sync / host doors
+//! The single-writer layout owner and its agent / sync / host doors
 //! were removed in brief C1. Window composition now goes through
 //! `uzor-framework` engines; this module keeps the pure trees, docking
 //! math, click dispatch vocabulary, and overlay helpers those engines

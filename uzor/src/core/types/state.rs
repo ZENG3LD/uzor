@@ -37,20 +37,16 @@ impl WidgetState {
 
 /// Unique widget identifier
 ///
-/// Inner string is `pub(crate)` — outside the crate widget ids can only be
-/// obtained via typed handles from `layout façade::add_modal` etc. or via
-/// the [`unsafe_widget_id`] escape (L1/L2 legacy + L2-INSIDE-L3 blocks).
+/// Inner string is `pub(crate)` — outside the crate, build a [`WidgetId`]
+/// with [`unsafe_widget_id`] or `WidgetId::from`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WidgetId(pub(crate) String);
 
 impl WidgetId {
     /// Construct a `WidgetId` from any string.
     ///
-    /// `pub(crate)` — L3 app code outside this crate must not build raw ids.
-    /// L3 app code receives typed handles from `layout façade::add_modal` etc.
-    ///
-    /// **L1/L2 escape**: use [`unsafe_widget_id`] outside the crate where a
-    /// raw string id is unavoidable (legacy L1/L2 registration, tests).
+    /// `pub(crate)`. Outside the crate use [`unsafe_widget_id`] where a raw
+    /// string id is unavoidable (level-1 registration, tests).
     pub(crate) fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
@@ -76,17 +72,12 @@ impl From<String> for WidgetId {
 ///
 /// # When to use
 ///
-/// - **L1/L2 registration** (`InputCoordinator::register_atomic`, etc.) where
-///   the widget id is a raw string owned by legacy or hand-rolled code.
-/// - **Integration tests** that operate at the L1/L2 level.
-/// - **L2-INSIDE-L3 escape blocks** — see the `L2-INSIDE-L3 BLOCK` markers in
-///   `uzor-framework/examples/level3_dashboard.rs`. Will be removed in Phase D
-///   when those blocks migrate into `BlackboxHandler`.
+/// - Level-1 registration (`InputCoordinator::register_atomic` and the
+///   widget `register_input_coordinator_*` helpers) where the id is a raw string.
+/// - Tests that build ids directly.
 ///
-/// # Do NOT use
-///
-/// - In L3 app code for composite handles — obtain typed handles from
-///   `layout façade::add_modal` / `add_popup` / `add_dropdown` etc. instead.
+/// Prefer a typed handle (`ModalHandle`, `PopupHandle`, …) when the caller
+/// already has one.
 #[doc(hidden)]
 pub fn unsafe_widget_id(s: impl Into<String>) -> WidgetId {
     WidgetId(s.into())

@@ -4,13 +4,11 @@
 //! pipelines + per-widget data types.  Each composite already
 //! exposes a private internal draw function that takes only
 //! `(RenderContext, rect, state, view, settings, kind)` — no
-//! `layout façade`, no `InputCoordinator`, no `app context`.
+//! `InputCoordinator` and no app context.
 //!
-//! The L1 / L2 / L3 wrappers (`the old L3 register helper*`,
-//! `register_input_coordinator_*`, `the old L2 register helper*`)
-//! sit on top of those internals and add the framework plumbing.
-//! Embedders that drive their own input pipeline (tessera, future
-//! tui / web runtimes, custom L0 apps) only need the internals.
+//! Level-1 registration (`register_input_coordinator_*`) sits beside these
+//! paint functions. Embedders that drive their own input pipeline call the
+//! paint functions directly.
 //!
 //! This module re-exports them as one flat list.  No new logic — just
 //! a stable, intention-revealing public surface.
@@ -20,8 +18,8 @@
 //! - `panel` — the current paint path calls `coord.widget_state(...)`
 //!   inside the body to compute edge-handle hover; it's a real L1
 //!   dependency.  Until panel is refactored to take hover state as a
-//!   plain parameter it stays out of `l0`.  Use the L1 / L2 / L3
-//!   wrappers in the meantime.
+//!   plain parameter it stays out of `l0`.  Use the level-1 registration
+//!   in the meantime.
 
 pub mod chrome {
     pub use crate::ui::widgets::composite::chrome::{

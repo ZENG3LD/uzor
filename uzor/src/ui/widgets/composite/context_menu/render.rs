@@ -4,8 +4,6 @@
 //!
 //! - `register_input_coordinator_context_menu` — registers the composite +
 //!   child hit-rects with an `InputCoordinator`.  No drawing.
-//! - `the old L2 register helper`   — convenience wrapper: registers
-//!   and draws in one call using a `app context`.
 //!
 //! # Draw order
 //!

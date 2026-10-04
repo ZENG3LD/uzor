@@ -4,8 +4,6 @@
 //!
 //! - `register_input_coordinator_chrome` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**
-//! - `the old L2 register helper`   — convenience wrapper: registers and
-//!   draws in one call via a `app context`.
 //!
 //! # Draw order (non-Custom kinds)
 //!
@@ -363,8 +361,7 @@ pub fn register_input_coordinator_chrome(
 /// Renders the entire chrome strip into `ctx` based on the given
 /// state + view + settings.  Self-contained: no L1 / L2 / L3 / WM
 /// dependency.  Promoted from a private `draw_chrome_internal` so
-/// embedders can drive their own input pipeline without touching
-/// `layout façade` or `InputCoordinator`.
+/// embedders can paint without an input coordinator.
 pub fn draw_chrome(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,

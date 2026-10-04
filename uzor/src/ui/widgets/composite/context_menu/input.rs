@@ -14,8 +14,7 @@ use crate::layout::{
 use crate::types::Rect;
 
 /// Register a context menu's click patterns (`"{menu-id}:item:N"`) into
-/// `dispatcher`. Used by [`the old L3 register helper`] and by any
-/// engine that owns context-menu state without a `layout façade`.
+/// `dispatcher`.
 pub fn register_context_menu_dispatch(dispatcher: &mut ClickDispatcher, handle: &ContextMenuHandle) {
     dispatcher.on_prefix(
         format!("{}:item:", handle.id.0),

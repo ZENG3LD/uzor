@@ -1,18 +1,11 @@
-//! Dispatch table for L3 layout façade.
+//! Click dispatch table.
 //!
-//! Composites and the app register patterns against `WidgetId`s; when a
+//! Composites and the app register patterns against `WidgetId`s. When a
 //! click resolves to a `WidgetId`, the dispatcher walks the table and emits
-//! a high-level [`DispatchEvent`]. The app matches on the enum instead of
-//! parsing raw id strings.
+//! a [`DispatchEvent`] instead of leaving the caller to parse id strings.
 //!
-//! # Why this lives in `layout`, not in app code
-//!
-//! - `InputCoordinator` (L1) returns a `WidgetId` from `process_click`.
-//! - `layout façade` (L3) owns the coord and knows which composites it
-//!   registered. So it's the right place to decide what a hit on
-//!   `"modal-widget:close"` semantically means.
-//! - The app no longer writes `if id_str == "modal-widget:close" { ... }`
-//!   500 times. It matches on `DispatchEvent::ModalCloseRequested`.
+//! `InputCoordinator` returns the hit id. This table is the semantic layer:
+//! a hit on `"modal-widget:close"` becomes `DispatchEvent::ModalCloseRequested`.
 //!
 //! # How patterns work
 //!
@@ -24,7 +17,7 @@
 //! Exact patterns win over prefix patterns when both could match the same
 //! id. Within the same flavour, **last-registered wins** — the app can
 //! override a composite's default handler by registering its own pattern
-//! after `the old L3 register helper*`.
+//! afterwards.
 
 use crate::layout::docking::LeafId;
 use crate::types::WidgetId;
@@ -275,7 +268,7 @@ struct Entry {
     builder: EventBuilder,
 }
 
-/// Dispatch table embedded in [`layout façade`](super::manager::layout façade).
+/// Click-to-[`DispatchEvent`] table.
 ///
 /// Composites add patterns at `register_*` time; the app may add overrides.
 /// Patterns are matched in **registration order, exact-first** — the first
@@ -295,8 +288,8 @@ impl ClickDispatcher {
 
     /// Forget every registered pattern.
     ///
-    /// `layout façade` calls this at the start of each frame so composites
-    /// can re-register their handlers cleanly. App-level handlers must also
+    /// Callers clear at the start of each frame so composites can
+    /// re-register their handlers. App-level handlers must also
     /// be re-added every frame (same model as the rest of the immediate-mode
     /// composite registration).
     pub fn clear(&mut self) {

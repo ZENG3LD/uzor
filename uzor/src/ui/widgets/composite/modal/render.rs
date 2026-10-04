@@ -5,9 +5,6 @@
 //! - `register_input_coordinator_modal` — registers the composite + all child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**  Use when you need
 //!   to separate registration from rendering (explicit z-order control).
-//! - `the old L2 register helper`   — convenience wrapper: takes a
-//!   `app context`, registers, and draws the chrome in one call.
-//!   Body content is drawn by the caller after this call returns.
 //!
 //! # Draw order for every non-Custom kind
 //!

@@ -195,8 +195,7 @@ impl DropdownState {
 
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
-    /// **Deprecated** — use `sync_hover_from_layout` when a `layout façade`
-    /// is available.  Kept for back-compat with L3 callers.
+    /// Reads the coordinator's hovered widget id.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.open {
             return;
@@ -214,8 +213,7 @@ impl DropdownState {
     /// Updates `hovered_id` (main panel) and `submenu_hovered_id`
     /// (submenu panel).
     ///
-    /// **Deprecated** — use `sync_flat_hover_from_layout` when a
-    /// `layout façade` is available.
+    /// Reads the coordinator's hovered widget id for both panels.
     pub fn sync_flat_hover(&mut self, coord: &InputCoordinator, dropdown_id: &str) {
         if !self.open {
             return;

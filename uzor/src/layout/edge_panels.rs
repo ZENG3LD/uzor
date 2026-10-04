@@ -49,8 +49,7 @@ pub struct EdgeSlot {
 
 /// Registry of all edge panel slots for all four sides.
 ///
-/// Managed internally by `layout façade`; app developers add/remove slots via
-/// `layout_manager.edges_mut()`.
+/// Pure slot list. Callers add and remove slots on this value directly.
 #[derive(Debug, Clone, Default)]
 pub struct EdgePanels {
     slots: Vec<EdgeSlot>,

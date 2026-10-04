@@ -6,25 +6,10 @@
 //! - `register_input_coordinator_toolbar` — registers the composite + child
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**  Use when you
 //!   need explicit z-order control.
-//! - `the old L2 register helper`   — convenience wrapper: registers
-//!   and draws in one call via a `app context`.
-//!
-//! ## Usage
-//!
-//! ```ignore
-//! use uzor::ui::widgets::composite::toolbar::{
-//!     register_input_coordinator_toolbar,
-//!     the old L2 register helper,
-//!     ToolbarView, ToolbarSection, ToolbarItem, ToolbarState,
-//!     ToolbarSettings, ToolbarRenderKind,
-//!     DefaultToolbarStyle,
-//!     HorizontalToolbarStyle, VerticalToolbarStyle,
-//!     ChromeStripStyle, InlineToolbarStyle,
-//!     BackgroundFill,
-//!     ChromeStripView, TabConfig,
-//! };
-//! ```
+//! - Click consumption is [`consume::consume_event`](consume::consume_event)
+//!   and [`consume::drag_outcome_toolbar`](consume::drag_outcome_toolbar).
 
+pub mod consume;
 pub mod input;
 pub mod render;
 pub mod settings;

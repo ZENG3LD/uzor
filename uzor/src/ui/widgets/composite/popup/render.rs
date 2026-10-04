@@ -4,10 +4,6 @@
 //!
 //! - `register_input_coordinator_popup` — registers the composite + body
 //!   overflow strips with an `InputCoordinator`. **No drawing.**
-//! - `the old L2 register helper`   — convenience wrapper: registers,
-//!   draws the chrome, and (for `Custom`) hands off to the caller closure.
-//! - `the old L3 register helper`    — public entry that resolves a
-//!   layout overlay slot and drives the above.
 //!
 //! # Draw order (Plain)
 //!

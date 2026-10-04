@@ -154,17 +154,11 @@ impl ChromeState {
 
     /// Sync per-tab hover state from the input coordinator.
     ///
-    /// **Deprecated** — use `sync_hover_from_coordinator` instead when a
-    /// `layout façade` is available.  Kept for back-compat with L3 callers that
-    /// hold a raw `InputCoordinator` reference.
-    ///
     /// The coordinator tracks which registered child widget is hovered; this
-    /// method translates coordinator widget-ids of the form
-    /// `{chrome_id}:tab:{i}` and `{chrome_id}:tab_close:{i}` into the
-    /// corresponding `TabState` hover flags.
+    /// method translates widget ids of the form `{chrome_id}:tab:{i}` and
+    /// `{chrome_id}:tab_close:{i}` into the corresponding `TabState` hover flags.
     ///
-    /// `chrome_id` — the stable id passed to `the old L3 register helper`
-    ///               (e.g. `"chrome-widget"`).
+    /// `chrome_id` — the stable id passed to registration (e.g. `"chrome-widget"`).
     pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
         let hovered = coord.hovered_widget().map(|w| w.0.clone());
         self.apply_hover_from_id(hovered, chrome_id);

@@ -1,7 +1,6 @@
 /// Chrome strip slot — the system-level titlebar/menubar at the top of the window.
 ///
-/// Managed internally by `layout façade`; app developers configure it via
-/// `layout_manager.chrome_mut()` but do not add/remove it at runtime.
+/// Pure chrome-strip geometry. Callers own the value and set `height` / `visible`.
 #[derive(Debug, Clone)]
 pub struct ChromeSlot {
     /// Preferred height in logical pixels (default 32 px).
